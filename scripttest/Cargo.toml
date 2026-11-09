@@ -1,0 +1,29 @@
+[package]
+name = "scripttest"
+description = "The self-checks of JFScript: lexer, parser, VM, standard library, language services, modules"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[bin]]
+name = "scripttest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+script.workspace = true
+
+[build-dependencies]
+jflib-build.workspace = true

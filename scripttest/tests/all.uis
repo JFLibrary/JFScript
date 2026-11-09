@@ -1,0 +1,3 @@
+#!args --check
+# scripttest is a console program: it runs every self-check of JFScript and ignores the script
+# (cargo jflib test passes --script); a failing check exits with code 1

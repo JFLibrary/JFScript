@@ -1,0 +1,74 @@
+# Does JFScript build on JFLib's four targets, with the rust-version it names and with the newest
+# stable Rust, and do the runner's cases and the self-checks pass on Windows and Linux?
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays: a new stable that breaks something shows before a program does
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check ${{ matrix.target }} (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.98: rust-version in Cargo.toml (keep both equal)
+        toolchain: ["1.98", stable]
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, wasm32-unknown-unknown, aarch64-linux-android]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rust
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal --target ${{ matrix.target }} --no-self-update
+          rustup default ${{ matrix.toolchain }}
+          rustc --version
+      - name: The language
+        run: cargo check --locked -p jfscript --target ${{ matrix.target }}
+      - name: The programs
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo check --locked --workspace --target ${{ matrix.target }}
+
+  test:
+    name: test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Rust
+        run: |
+          rustup toolchain install 1.98 --profile minimal --target ${{ matrix.target }} --no-self-update
+          rustup default 1.98
+      - name: Build
+        run: cargo build --locked --workspace --target ${{ matrix.target }}
+      # what cargo jflib test does: the programs with the first line of their tests/*.uis
+      - name: The runner's cases
+        working-directory: jfs
+        run: ../target/${{ matrix.target }}/debug/jfs --selftest tests/cases
+      - name: The self-checks
+        run: target/${{ matrix.target }}/debug/scripttest --check

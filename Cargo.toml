@@ -1,0 +1,55 @@
+# JFScript: a small scripting language for programs written with JFLib (https://jflib.org): its
+# compiler and VM (script/, the crate jfscript), the runner jfs (jfs/) and the self-checks
+# (scripttest/).  JFLib comes from crates.io.
+[workspace]
+resolver = "3"
+members = ["script", "jfs", "scripttest"]
+default-members = ["jfs"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JFLibrary/JFScript"
+
+# JFLib's crates under the names the code uses, at exact versions like inside JFLib
+[workspace.dependencies]
+rt = { package = "jflib-rt", version = "=0.1.0" }
+agent_core = { package = "jflib-agent-core", version = "=0.1.0" }
+plat = { package = "jflib-plat", version = "=0.1.0" }
+base = { package = "jflib-base", version = "=0.1.0" }
+jflib-build = "=0.1.0"
+script = { package = "jfscript", path = "script" }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(jfgui_assets)',    # ui::main!: the app has assets/
+    'cfg(jfgui_dev)',       # a development build
+    'cfg(jfgui_glibc)',     # Linux against glibc, not static
+    'cfg(jfgui_manifest)',  # rt::main!: PERMISSIONS as a file
+    'cfg(jfgui_package)',   # PACKAGE as a file
+    'cfg(web_threads)',     # the browser with threads
+] }
+
+# Cargo takes no profile from a dependency.  JFLib's runtime needs panic = "abort"; a development
+# build without overflow checks and debug assertions is the build JFLib is tested with.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+debug = 0
+debug-assertions = false
+overflow-checks = false
+codegen-units = 16
+
+# the VM's speed matters in the tests too (limits, the benchmark)
+[profile.dev.package.jfscript]
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+codegen-units = 1
+lto = "fat"
+debug = 0
+strip = "symbols"

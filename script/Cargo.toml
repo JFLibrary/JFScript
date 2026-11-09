@@ -1,0 +1,22 @@
+[package]
+name = "jfscript"
+description = "JFScript: a small dynamic scripting language with a bytecode VM, fuel and its own heap, for JFLib programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# the library keeps the name it had inside JFLib: code says `script::compile`
+[lib]
+name = "script"
+path = "lib.rs"
+test = false
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+agent_core.workspace = true

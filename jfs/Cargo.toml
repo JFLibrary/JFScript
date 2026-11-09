@@ -1,0 +1,31 @@
+[package]
+name = "jfs"
+description = "The runner of JFScript: .jfs files on the command line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[bin]]
+name = "jfs"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rt.workspace = true
+plat.workspace = true
+base.workspace = true
+script.workspace = true
+
+[build-dependencies]
+jflib-build.workspace = true
