@@ -13,13 +13,15 @@ rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JFLibrary/JFScript"
 
-# JFLib's crates under the names the code uses, at exact versions like inside JFLib
+# JFLib's crates under the names the code uses.  A range over JFLib 0.1 and 0.2, so JFScript builds
+# with either from crates.io and JFLib's own workspace (editortest) can take its 0.2 through
+# [patch.crates-io]; Cargo picks one version for all of them (jflib-rt links jflib_rt once).
 [workspace.dependencies]
-rt = { package = "jflib-rt", version = "=0.1.0" }
-agent_core = { package = "jflib-agent-core", version = "=0.1.0" }
-plat = { package = "jflib-plat", version = "=0.1.0" }
-base = { package = "jflib-base", version = "=0.1.0" }
-jflib-build = "=0.1.0"
+rt = { package = "jflib-rt", version = ">=0.1.0, <0.3" }
+agent_core = { package = "jflib-agent-core", version = ">=0.1.0, <0.3" }
+plat = { package = "jflib-plat", version = ">=0.1.0, <0.3" }
+base = { package = "jflib-base", version = ">=0.1.0, <0.3" }
+jflib-build = ">=0.1.0, <0.3"
 script = { package = "jfscript", path = "script" }
 
 [workspace.lints.rust]
