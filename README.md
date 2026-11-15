@@ -1,5 +1,7 @@
 # JFScript
 
+**[JFScript on jflib.org](https://jflib.org/jfscript.html)** · [jflib.org](https://jflib.org) · [Discord](https://discord.gg/cX3jUxVvTm)
+
 A small, dynamically typed scripting language written in Rust for programs built with
 [JFLib](https://jflib.org): a compiler to bytecode and a stack VM with fuel (virtual CPU time), a
 heap of its own with a mark-and-sweep collector, hard limits for memory, depth and steps, modules,
