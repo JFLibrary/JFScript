@@ -52,8 +52,7 @@ cargo jflib test -p scripttest                # every self-check
 python tools/linux_test.py                    # both on Linux, from Windows through WSL
 ```
 
-On Linux, build with `--target x86_64-unknown-linux-gnu` (the flags in `.cargo/config.toml` then
-reach only the programs): `cargo jflib test -p jfs --target x86_64-unknown-linux-gnu`.
+The same commands work on Windows, Linux and macOS, without `--target`.
 
 ## License
 

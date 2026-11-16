@@ -8,7 +8,7 @@ in ulps: fdlibm's exp, log, log2, log10, pow, sin and cos promise less than 1 ul
 round must be exact, NaN must be the one NaN (0x7ff8000000000000) and zeros must carry the
 right sign.  --target both runs the Windows and the Linux build (through WSL) and also checks
 that their answers are bit for bit the same.  The scripttest programs come from Cargo's folder
-(cargo build -p scripttest, with --target x86_64-unknown-linux-gnu for Linux).  Exit code 1 when a case is beyond its bound."""
+(cargo build -p scripttest; for Linux on Windows: python tools/linux_test.py builds it).  Exit code 1 when a case is beyond its bound."""
 import argparse
 import decimal
 import math
@@ -254,8 +254,8 @@ def wsl_path(p):
 def answers(target, out_dir, path):
     exe = ROOT / "target" / ("debug/scripttest.exe" if target == "win" else "x86_64-unknown-linux-gnu/debug/scripttest")
     if not exe.exists():
-        flag = "" if target == "win" else " --target x86_64-unknown-linux-gnu"
-        sys.exit(f"script_math_check: {exe} is missing (cargo build -p scripttest{flag})")
+        how = "cargo build -p scripttest" if target == "win" else "python tools/linux_test.py builds it"
+        sys.exit(f"script_math_check: {exe} is missing ({how})")
     if target == "linux" and os.name == "nt":
         cmd = ["wsl.exe", "-d", "Ubuntu-24.04", "--", wsl_path(exe), "--math", wsl_path(path)]
     else:

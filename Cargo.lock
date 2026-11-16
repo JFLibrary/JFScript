@@ -4,18 +4,18 @@ version = 4
 
 [[package]]
 name = "jflib-agent-core"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbae3433b2f9c67fc83b70e8e738b5043cf2bdde6f4f4a3e516acd362ae6a0a5"
+checksum = "fac900bd67eea0928cb84167485121a790dace0590034bfa3818a1ace2d2c6d4"
 dependencies = [
  "jflib-rt",
 ]
 
 [[package]]
 name = "jflib-base"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5a276a0e393cc1f68d1e2b89f9e0471146ce5317ef149be59a2f0e53e2ba36f"
+checksum = "e8e37af2aacac39a5fd8da318c37eda54d0cfa44986526cdf777f08846c6cafa"
 dependencies = [
  "jflib-plat",
  "jflib-rt",
@@ -23,30 +23,30 @@ dependencies = [
 
 [[package]]
 name = "jflib-build"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63e26bce1e597c79b1ee4e096fef794df735ac66a727125e784109761f5761dd"
+checksum = "e1ae46b16fdf48a73f36c939f681fdc517fd3311df87b9f5f8af4f0029629ba7"
 dependencies = [
  "jflib-compress",
 ]
 
 [[package]]
 name = "jflib-compress"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87777cbae1304ae1043a0002426b543ea74ac7592a41f3a660f8b09eb5fec83e"
+checksum = "82fd4913362f61224d69a887eabdff935f9199f2e507014dbe18d3b1f75dfc12"
 
 [[package]]
 name = "jflib-crypto"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bec7cb04d08e39c6771709fde41b643dcc6ee249500343ebdf6c66a23c4ff61e"
+checksum = "2a4d5348d129c60583e700f8cd0f3a1593800088141095b398d9ca0746f94297"
 
 [[package]]
 name = "jflib-plat"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "493028f7a004eafbcfa33009cd8dff26e84e33e186f6a83b631aceafe0d03d49"
+checksum = "d75c52a53d7cbd363575568bc0c3168b4a4cb473ff26507e101ccd732294aa60"
 dependencies = [
  "jflib-compress",
  "jflib-crypto",
@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "jflib-rt"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0a50e243a77c35e84fe4e2ce6e53e39b9455284d68458606ff6d2ff3172482f"
+checksum = "72ab83f3f103d920fe7ebcb3579618911af363952d2b0a18492bb43409de3488"
 
 [[package]]
 name = "jfs"
