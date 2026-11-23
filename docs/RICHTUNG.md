@@ -74,6 +74,18 @@ eine Tabelle der Entscheidungen am Anfang, wie in JFLib GAME.md.
   Webs).
 - **c) Wie a), dazu später Erweiterungen in WebAssembly** (kompilierte Erweiterungen in jeder Sprache, für Tempo und für
   Dritte); narsil-engine hat eine eigene wasm-Engine (`narsil-wasm`).
+- **d) Wie a), neue Syntax bewusst nah an JavaScript:** wo JFScript keinen Grund hat abzuweichen, folgt Neues dem
+  Vorbild von JavaScript (`a ? b : c`, Zerlegen wie `let [x, y] = p` und `let {a, b} = m`, Kurzschreibweise für Felder).
+  Bewusste Unterschiede bleiben: `int` neben `float` (JavaScript hat nur eine Zahl), `nil`, Maps statt Objekten mit
+  Prototypen, Bereiche `0..n`.
+
+Wo es laufen muss: JF-Apps laufen auch im Browser, auf Android und iOS. JFScript ist `no_std` und läuft dort schon
+(`modeltool` hat in Node dieselbe Prüfsumme). `narsil-jsvm` baut heute nur für Windows, macOS und Linux (keine
+Anpassung für wasm32, Android oder iOS, 142 Stellen mit `std::thread`, `std::time` oder `std::fs`).
+
+Was in jedem Fall gebaut werden muss, unabhängig von der Sprache: das Objektmodell jeder App mit Ereignissen (G4), die
+Rechte je Skript (G5) und der Editor mit Debugger in der App (G8). Die Wahl zwischen a und b ändert nur, welche VM
+darunter liegt.
 
 Für a: eine Sprache, ein Satz Werkzeuge (die Sprachdienste und der Debugger gibt es schon), volle Kontrolle über Sprache,
 Rechte und Determinismus; die Syntax ist JavaScript schon nah, Menschen und KIs finden sich schnell hinein. Gegen a: ein
@@ -84,8 +96,8 @@ Für b: JavaScript kennen viele, KIs schreiben es sehr sicher, die VM ist schnel
 deterministisch; zwei Sprachen heißen zwei Werkzeugketten und zwei Rechtemodelle in jeder App. In die Bibliothek JFLib
 dürfte es nicht (keine fremden Crates), nur in Apps.
 
-**Empfehlung: a**, c als spätere Ergänzung offenhalten. Drei der vier Nutzer brauchen den Determinismus, die Werkzeuge
-sind da, und die Nähe zu JavaScript nimmt b den größten Vorteil.
+**Empfehlung: a mit d**, c als spätere Ergänzung offenhalten. Drei der vier Nutzer brauchen den Determinismus, JFScript
+läuft auf allen Zielen der JF-Apps, die Werkzeuge sind da, und die Nähe zu JavaScript nimmt b den größten Vorteil.
 
 ### G2. Determinismus: überall Pflicht?
 
