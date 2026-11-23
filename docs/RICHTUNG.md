@@ -15,7 +15,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G4 | Objekte, Eigenschaften, Operatoren, Ereignisse | **Wie empfohlen:** Host-Objekte (G4.1), Eigenschaften lesen und setzen über den Host (G4.2), Operatoren nur für Host-Typen (G4.3) und Ereignisse mit `obj.on` / `obj.off` (G4.5) als erste große Stufe (S2); Maps bleiben vorerst, später `class` nach G1 d (G4.4); Rückrufe jetzt, `await` als Kandidat für die Syntax-Stufe (G4.6). | 2026-11-23 |
 
-Die übrigen Fragen (G5 bis G9) sind offen.
+| G5 | Sicherheit und Rechte | **Wie empfohlen:** Rechte je Skript in einem eigenen Rahmen über `plat::policy`, die `PERMISSIONS` der App als Grenze (G5.1); Skripte in Dokumenten beim Öffnen aus, nach Zustimmung („Einmal ausführen“, „Diesem Dokument vertrauen“ über den Hash der Skripte) und dann im engsten Rahmen, keine vertrauenswürdigen Ordner (G5.2); Erweiterungen mit einem Manifest ihrer Rechte (G5.3); Signaturen später (G5.4); Grenzen je Aufruf und ein Budget je Bild, damit die App bedienbar bleibt (G5.5). | 2026-11-23 |
+
+Die übrigen Fragen (G6 bis G9) sind offen.
 
 ## Warum jetzt
 
@@ -233,8 +235,16 @@ gehört in die Host-Schnittstelle von JFScript, die Rechte selbst bleiben in `pl
 Heute: Interpreter, Gleitkomma in Software, Brennstoff je Befehl. Für Automatisierung über Tausende Shapes oder schwere
 Schleifen in Modellen kann das zu langsam werden.
 
-- Messen mit echten Skripten je Nutzer, bevor optimiert wird.
-- Dann: Gleitkomma in Hardware (G2 b), schnellere VM (Register statt Stapel, Zwischenspeicher für Feldzugriffe).
+- Messen mit echten Skripten je Nutzer, bevor optimiert wird. Vorschlag für Zielwerte, als Prüfungen in `scripttest`
+  und in den Apps:
+  - JFDiagrammer: ein Skript geht über 10 000 Shapes und setzt bei jedem eine Eigenschaft, in unter 0,5 s auf der Iris
+    Xe-Klasse (ein Shape kostet dann höchstens 50 µs; nach der Messung von G2 trägt die VM rund 70 ns je Schleifenrunde,
+    der Aufruf des Hosts ist noch nicht gemessen).
+  - `modeltool`: der Skript-Teil eines Modells mit 1000 Teilen in unter 1 s (die Geometrie rechnet Rust).
+  - Ein Handler eines Ereignisses (Auswahl geändert) in unter 5 ms, damit die Oberfläche nicht stockt.
+  - JFNetworker: unverändert (Brennstoff ist dort simulierte Zeit).
+- Dann, wo die Ziele verfehlt werden: Gleitkomma in Hardware (G2 b), schnellere VM (Register statt Stapel,
+  Zwischenspeicher für Feldzugriffe), billigere Aufrufe des Hosts.
 - **Kein JIT:** iOS und der Browser erlauben keinen, und die Komplexität ist groß.
 
 ### G7. Verträglichkeit, Versionen, Ort
