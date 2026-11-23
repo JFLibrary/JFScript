@@ -11,7 +11,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 | G1 | Eine Sprache für alle JF-Apps? | **a mit d:** JFScript wird die Skriptsprache aller JF-Apps (Simulation, Modelle, Automatisierung, Erweiterungen); neue Syntax folgt JavaScript, wo es keinen Grund gibt abzuweichen. WebAssembly für Erweiterungen (c) bleibt für später offen; JavaScript über `narsil-jsvm` (b) nicht. | 2026-11-23 |
 | G2 | Determinismus, Gleitkomma | **b:** Die Sprache bleibt deterministisch (Uhr, Zufall, Dateien nur über den Host). Gleitkomma in Hardware für `+ − × ÷` und die Wurzel mit NaN in einer Form wird geprüft und nur eingebaut, wenn Tests dieselben Bits auf allen Zielen zeigen (mit der Stufe für Tempo); keine zweite Betriebsart. | 2026-11-23 |
 
-Die übrigen Fragen (G3 bis G9) sind offen.
+| G3 | Typen | **Wie empfohlen:** dynamisch bleiben; Typen zuerst in den Beschreibungen des Hosts (mit G4), damit die Sprachdienste das Objektmodell einer App kennen; optionale Angaben im Skript in der Form von TypeScript als spätere Stufe, zur Laufzeit ohne Wirkung. | 2026-11-23 |
+
+Die übrigen Fragen (G4 bis G9) sind offen.
 
 ## Warum jetzt
 
@@ -160,20 +162,34 @@ c würde die heutigen Skripte von JFNetworker brechen und die Sprache für klein
 
 ### G4. Objekte: Host-Objekte, eigene Typen, Operatoren, Ereignisse
 
-Das ist die Frage, an der fast alle Wünsche hängen.
+Das ist die Frage, an der fast alle Wünsche hängen. Wie es heute ohne Host-Objekte aussieht, zeigen die Seiten-Skripte
+von JFNetworker (`pagescript.rs`): ein Element ist die Map `{kind, node, tag}` (dasselbe Element ist nur für die letzten
+paar berührten dieselbe Map), Text setzt `el.set_text(x)` statt `el.text = x` („jfs has no setters“), Ereignisse
+kommen über `el.on(type, f)` und `el.off(type, f)`. In `modeltool` ist ein Mesh die Map `{mesh: 3}`, die das Skript
+ändern kann und die der Host nie freigeben kann.
 
-- **Host-Objekte** (ein Wert, den das Skript nicht öffnen kann: Typ und Id des Hosts; `obj.m(..)` geht an den Host;
-  `type()` und `print` fragen ihn; der Sammler meldet freigegebene Werte). Alle Nutzer brauchen sie: Knoten des
-  Dokuments in JFNetworker, Meshes in `modeltool`, Shapes und Zellen in JFDiagrammer.
-- **Operatoren für Host-Typen** (`a + b` ruft den Host, wenn `a` ein Host-Wert ist): so wird ein Vektor in `modeltool`
-  ein Host-Typ, ein Punkt in JFDiagrammer ebenso, ohne einen Vektortyp fest in die Sprache zu bauen.
-- **Eigene Typen im Skript** (Records oder Klassen): heute Maps. Möglichkeiten: Maps bleiben; Records mit festen Feldern;
-  Klassen mit Methoden.
-- **Ereignisse:** eine Form für alle Apps (`doc.on("selection", fn(e) {..})` oder Felder wie `on_change`), vom Host
-  ausgelöst, mit Brennstoff und Grenzen wie jeder Aufruf.
+- **G4.1 Host-Objekte:** ein eigener Wert, den das Skript nicht öffnen kann (Typ und Id des Hosts). `obj.m(..)` geht an
+  den Host, `type()`, `str()` und `print` fragen ihn, `==` vergleicht die Identität, der Sammler meldet freigegebene
+  Werte (`Host::drop`). Alle Nutzer brauchen sie: Elemente in JFNetworker, Meshes in `modeltool`, Shapes und Zellen in
+  JFDiagrammer. *Empfehlung: ja.*
+- **G4.2 Eigenschaften lesen und setzen:** `shape.text` und `shape.text = "x"` gehen an den Host (lesen und setzen je
+  Eigenschaft), wie in JavaScript und VBA. *Empfehlung: ja, für Host-Objekte.*
+- **G4.3 Operatoren:** nur für Host-Typen (`a + b` fragt den Host, wenn `a` oder `b` ein Host-Wert ist; ebenso `==` für
+  Werttypen wie Vektoren, die der Host so kennzeichnet). So wird ein Vektor in `modeltool` ein Host-Typ, ein Punkt in
+  JFDiagrammer ebenso, ohne einen Vektortyp fest in die Sprache zu bauen. Keine Operatoren für Maps und Skript-Typen.
+  *Empfehlung: so.*
+- **G4.4 Eigene Typen im Skript:** heute Maps. Möglichkeiten: Maps bleiben; Records mit festen Feldern; Klassen wie in
+  JavaScript (`class`, zuerst ohne Vererbung). *Empfehlung: Maps bleiben, bis Erweiterungen eigene Typen zeigen; dann
+  `class` nach G1 d.*
+- **G4.5 Ereignisse:** eine Form für alle Apps, die es in JFNetworker schon gibt: `obj.on("type", fn(e) {..})` und
+  `obj.off("type", f)`, das Ereignis ein Host-Objekt; jeder Aufruf eines Handlers ist ein eigener Aufruf mit Brennstoff
+  und Grenzen; ob ein Ereignis nach oben weitergeht (Shape, Seite, Dokument), legt der Host fest. *Empfehlung: so.*
+- **G4.6 Lange Vorgänge** (Dateidialog, Netz, Warten): heute Rückrufe (`fetch(url, fn(err, resp))`). Nach G1 d wäre
+  `await` der JavaScript-nahe Weg; die VM kann einen Lauf schon an jeder Stelle anhalten, das ist die Grundlage dafür.
+  *Empfehlung: Rückrufe jetzt, `await` als Kandidat für den Durchgang über die Syntax (S3).*
 
-**Empfehlung:** Host-Objekte als erste große Stufe, Operatoren nur für Host-Typen, Ereignisse als Konvention der
-Host-Schnittstelle darüber; eigene Typen im Skript erst, wenn Erweiterungen sie zeigen (dann Records vor Klassen).
+**Empfehlung:** G4.1, G4.2, G4.3 und G4.5 als erste große Stufe (S2, die Host-Schnittstelle in zweiter Fassung, mit den
+Typen der Beschreibungen nach G3); G4.4 und G4.6 später.
 
 ### G5. Sicherheit und Rechte
 
