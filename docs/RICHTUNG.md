@@ -356,7 +356,7 @@ Nach den Entscheidungen G1 bis G9:
 | Stufe | Inhalt | Erste Nutzer |
 | --- | --- | --- |
 | S0 | Dieses Papier | – |
-| S1 | Was in jeder Richtung richtig ist und nichts Bestehendes ändert: die Stelle des Aufrufs und Warnungen für den Host (`cx.position()`, `cx.warn`), Mathematik (`tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, Winkel in Grad, bei 90° exakt), Bereiche mit Schritt und `linspace`, die Warnung bei `int / int` (G7.2); in `modeltool` englische Namen der Parameter (G9.3) | `modeltool`, JFNetworker |
+| S1 | Was in jeder Richtung richtig ist und nichts Bestehendes ändert: die Stelle des Aufrufs und Warnungen für den Host (`cx.position()`, `cx.warn`), Mathematik (`tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, Winkel in Grad, bei 90° exakt), Bereiche mit Schritt und `linspace`, die Warnung bei `int / int` (G7.2); in `modeltool` englische Namen der Parameter (G9.3). **In JFScript fertig am 2026-11-24:** `cx.position()`, `cx.warn` und `vm.take_warnings()`; `math.tan`, `asin`, `acos`, `atan`, `atan2` (fdlibm, Bit für Bit wie Javas `StrictMath`, `atan2` mit der Korrektur von FreeBSD), `math.hypot` (genau gerundet, beliebig viele Werte), `math.sin_deg`, `cos_deg`, `tan_deg` (exakt, wo das Ergebnis eine Gleitkommazahl ist); `list.range(start, end, step)` und `list.linspace(start, end, n)` im Modul `list`, also ohne neue globale Namen; die Warnung bei `int / int` in `check`. Der Teil in `modeltool` folgt in JFLib. | `modeltool`, JFNetworker |
 | S2 | Die Host-Schnittstelle in zweiter Fassung (G4): Host-Objekte, Eigenschaften, Operatoren für Host-Typen, Ereignisse mit `on` / `off`; die Beschreibungen des Hosts mit Typen für die Sprachdienste und den Objektkatalog (G3, G8.3) | Seiten in JFNetworker (Elemente als Host-Objekte), Meshes und Vektoren in `modeltool` |
 | S3 | Ein Durchgang über die Syntax nach G1 d: Bedingungsausdruck, benannte Argumente, Zerlegen, Listen aus Schleifen, `await` als Kandidat (G4.6); Versionen der Sprache mit automatischer Umstellung (G7.1); Meldungen in der Sprache der App (G9) | alle |
 | S4 | Rechte je Skript und Skripte in Dokumenten (G5.1, G5.2, G5.5); der Crate `jfscript-ide` im Repository von JFScript mit Debugger, Konsole und dem Fenster „Skripte“ (G8.1, G8.2) | JFDiagrammer |
@@ -369,4 +369,5 @@ die Prüfsumme von `modeltool` gleich, solange nicht ausdrücklich eine Version 
 
 ## Zu entscheiden
 
-Nichts mehr: G1 bis G9 und die Reihenfolge sind entschieden (Tabelle am Anfang). S1 läuft.
+Nichts mehr: G1 bis G9 und die Reihenfolge sind entschieden (Tabelle am Anfang). S1 ist in JFScript fertig, der
+Teil in `modeltool` folgt.
