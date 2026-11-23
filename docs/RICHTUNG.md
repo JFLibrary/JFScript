@@ -23,7 +23,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G8 | Werkzeuge für Anwender | **Wie empfohlen:** Debugger und Konsole als sprachneutrale Bausteine in JFLib neben `ui.code_editor`, die Anbindung von JFScript in einem kleinen Crate seines Repositorys (G8.1); ein gemeinsames Fenster „Skripte“, JFDiagrammer als erste App (G8.2); ein Objektkatalog aus den Beschreibungen des Hosts (G8.3); Makro-Rekorder später je App, die Objektmodelle von Anfang an so, dass jeder Befehl einen Aufruf hat (G8.4); JFNetworker kann wechseln, muss nicht (G8.5). | 2026-11-23 |
 
-Offen ist noch G9.
+| G9 | Sprache der Meldungen und Namen | **Wie empfohlen:** Meldungen in der Sprache der App über eine eigene Tabelle von JFScript (zuerst `de` und `en`, ohne Angabe Deutsch wie heute) (G9.1); die Texte der Sprachdienste und des Objektkatalogs auf demselben Weg, die Beschreibungen der Hosts in ihren Sprachen (G9.2); Namen in den Objektmodellen englisch, auch die Parameter, die von `modeltool` werden vor den benannten Argumenten umgestellt; Schlüsselwörter nie übersetzt (G9.3). | 2026-11-23 |
+
+Offen ist nur noch die Reihenfolge der Stufen.
 
 ## Warum jetzt
 
@@ -339,25 +341,25 @@ Aus JFLib GEOM.md, „Was JFScript braucht“, in der Rangfolge des Bewertungsla
 3, 5, 7 und 9 sind in jeder Richtung richtig und ändern nichts Bestehendes. 4, 8 und 10 passen zu jeder Richtung, sollten
 aber in einem Durchgang über die Syntax entworfen werden, nicht einzeln. 1, 2 und 6 warten auf G4 und G7.
 
-## Mögliche Stufen nach den Entscheidungen
+## Stufen
+
+Nach den Entscheidungen G1 bis G9:
 
 | Stufe | Inhalt | Erste Nutzer |
 | --- | --- | --- |
-| S0 | Dieses Papier: die Entscheidungen G1 bis G9 | – |
-| S1 | Was in jeder Richtung richtig ist: Stelle des Aufrufs und Warnungen, Mathematik, Bereiche, Beschreibungen des Hosts für die Sprachdienste | `modeltool`, JFNetworker |
-| S2 | Host-Objekte, Operatoren für Host-Typen, Ereignisse (die Host-Schnittstelle, zweite Fassung) | Seiten in JFNetworker, Meshes in `modeltool` |
-| S3 | Ein Durchgang über die Syntax: Bedingungsausdruck, benannte Argumente, Zerlegen, Listen aus Schleifen; Versionen der Sprache | alle |
-| S4 | Rechte je Skript, Skripte in Dokumenten, der gemeinsame Editor mit Debugger | JFDiagrammer |
-| S5 | Tempo (gemessen, Gleitkomma nach G2), optionale Typen (G3) | alle |
-| S6 | Die Automatisierung von JFDiagrammer (UI-21) auf S2 bis S4 | JFDiagrammer |
+| S0 | Dieses Papier | – |
+| S1 | Was in jeder Richtung richtig ist und nichts Bestehendes ändert: die Stelle des Aufrufs und Warnungen für den Host (`cx.position()`, `cx.warn`), Mathematik (`tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, Winkel in Grad, bei 90° exakt), Bereiche mit Schritt und `linspace`, die Warnung bei `int / int` (G7.2); in `modeltool` englische Namen der Parameter (G9.3) | `modeltool`, JFNetworker |
+| S2 | Die Host-Schnittstelle in zweiter Fassung (G4): Host-Objekte, Eigenschaften, Operatoren für Host-Typen, Ereignisse mit `on` / `off`; die Beschreibungen des Hosts mit Typen für die Sprachdienste und den Objektkatalog (G3, G8.3) | Seiten in JFNetworker (Elemente als Host-Objekte), Meshes und Vektoren in `modeltool` |
+| S3 | Ein Durchgang über die Syntax nach G1 d: Bedingungsausdruck, benannte Argumente, Zerlegen, Listen aus Schleifen, `await` als Kandidat (G4.6); Versionen der Sprache mit automatischer Umstellung (G7.1); Meldungen in der Sprache der App (G9) | alle |
+| S4 | Rechte je Skript und Skripte in Dokumenten (G5.1, G5.2, G5.5); Debugger und Konsole als Bausteine in JFLib, das Fenster „Skripte“ (G8.1, G8.2) | JFDiagrammer |
+| S5 | Tempo gegen die Zielwerte (G6), Gleitkomma in Hardware, wenn die Tests dieselben Bits zeigen (G2) | alle |
+| S6 | Die Automatisierung von JFDiagrammer (FEATURES.md UI-21) auf S2 bis S4 | JFDiagrammer |
+| später | optionale Typangaben (G3 b), `class` (G4.4), Erweiterungen mit Manifest (G5.3), Signaturen (G5.4), Makro-Rekorder (G8.4), Erweiterungen in WebAssembly (G1 c), crates.io (G7.4) | – |
 
 Jede Stufe hält die Skripte von JFNetworker lauffähig (`scripttest`, die Fälle von `jfs`, die Tests von JFNetworker) und
 die Prüfsumme von `modeltool` gleich, solange nicht ausdrücklich eine Version der Sprache sie ändert.
 
 ## Zu entscheiden
 
-G1 bis G8 sind entschieden (Tabelle am Anfang). Offen:
-
-1. **G9:** Meldungen und Texte der Sprachdienste in der Sprache der App (zuerst `de` und `en`, ohne Angabe Deutsch)?
-   Namen in den Objektmodellen englisch, auch die Parameter von `modeltool`?
-2. **Reihenfolge:** S1 (was in jeder Richtung richtig ist) sofort, oder zusammen mit S2?
+G1 bis G9 sind entschieden (Tabelle am Anfang). Offen ist nur die Reihenfolge: S1 sofort (klein, ändert nichts
+Bestehendes, hilft `modeltool` gleich), oder zusammen mit S2?
