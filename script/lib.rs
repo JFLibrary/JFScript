@@ -63,6 +63,7 @@ extern crate alloc;
 
 pub mod ast;
 pub mod check;
+mod intdiv;
 pub mod lex;
 mod parse;
 mod code;
