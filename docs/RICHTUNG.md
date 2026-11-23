@@ -1,8 +1,16 @@
 # JFScript: Richtung (Entwurf eines Entscheidungspapiers)
 
-Stand 2026-11-23, Entwurf zur Besprechung. **Nichts hier ist entschieden.** Das Papier soll festlegen, wofür JFScript da
-ist und wie es wächst, bevor eine einzelne App es in ihre Richtung ausbaut. Bis dahin bleibt JFScript unverändert;
+Stand 2026-11-23, Entwurf zur Besprechung. Das Papier soll festlegen, wofür JFScript da ist und wie es wächst, bevor
+eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden sind, bleibt JFScript unverändert;
 `modeltool`, JFNetworker und die Tests kommen mit der heutigen Sprache aus.
+
+## Entscheidungen
+
+| Nr. | Frage | Entscheidung des Nutzers | Datum |
+| --- | --- | --- | --- |
+| G1 | Eine Sprache für alle JF-Apps? | **a mit d:** JFScript wird die Skriptsprache aller JF-Apps (Simulation, Modelle, Automatisierung, Erweiterungen); neue Syntax folgt JavaScript, wo es keinen Grund gibt abzuweichen. WebAssembly für Erweiterungen (c) bleibt für später offen; JavaScript über `narsil-jsvm` (b) nicht. | 2026-11-23 |
+
+Die übrigen Fragen (G2 bis G9) sind offen.
 
 ## Warum jetzt
 
