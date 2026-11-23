@@ -118,9 +118,24 @@ seine Rechte (wie heute bei `jfs`). Das passt zu allen Nutzern. Offen ist nur da
   Android. Die Mathematik (`sin`, `pow`, ...) bleibt fdlibm.
 - **c) Zwei Betriebsarten:** deterministisch für Simulationen und Modelle, schnell für Apps.
 
-**Empfehlung: b**, vorher gemessen und gegen die heutigen Tests geprüft (Flush-to-Zero darf in keinem Thread eines
-Hosts gesetzt sein). Eine zweite Betriebsart (c) nur, wenn b nicht reicht: zwei Semantiken derselben Sprache sind eine
-dauernde Fehlerquelle.
+Gemessen am 2026-11-23 mit `jfs` (Release, Ryzen 5 3600 unter Last, Median aus drei Läufen, je 3 Millionen Runden):
+
+| Schleife | Zeit | je Runde |
+| --- | ---: | ---: |
+| leer (`s = i`) | 199 ms | 66 ns |
+| drei Ganzzahl-Rechnungen | 232 ms | 77 ns |
+| drei Gleitkomma-Rechnungen | 367 ms | 122 ns |
+| `math.sin` und zwei Rechnungen (300 000 Runden) | 403 ms | 1,3 µs |
+
+Eine Gleitkomma-Rechnung kostet in Software rund 18 ns statt rund 4 ns für eine ganzzahlige; in einer typischen Schleife
+macht das das Ganze etwa anderthalbmal so langsam, weil die VM selbst (66 ns je Runde) den Großteil trägt. Teuer ist die
+Mathematik: ein `sin` kostet über eine Mikrosekunde. Der größere Hebel für Tempo ist die VM (G6), das Gleitkomma der
+zweite.
+
+**Empfehlung: b**, vorher gegen die heutigen Tests geprüft (Flush-to-Zero darf in keinem Thread eines Hosts gesetzt
+sein; NaN nach jeder Rechnung auf eine Form). Eine zweite Betriebsart (c) nur, wenn b nicht reicht: zwei Semantiken
+derselben Sprache sind eine dauernde Fehlerquelle. Der Determinismus der Sprache selbst bleibt Pflicht: keine Uhr, kein
+Zufall, keine Dateien im Kern, nur über den Host.
 
 ### G3. Typen
 
