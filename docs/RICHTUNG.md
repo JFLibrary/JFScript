@@ -17,7 +17,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G5 | Sicherheit und Rechte | **Wie empfohlen:** Rechte je Skript in einem eigenen Rahmen über `plat::policy`, die `PERMISSIONS` der App als Grenze (G5.1); Skripte in Dokumenten beim Öffnen aus, nach Zustimmung („Einmal ausführen“, „Diesem Dokument vertrauen“ über den Hash der Skripte) und dann im engsten Rahmen, keine vertrauenswürdigen Ordner (G5.2); Erweiterungen mit einem Manifest ihrer Rechte (G5.3); Signaturen später (G5.4); Grenzen je Aufruf und ein Budget je Bild, damit die App bedienbar bleibt (G5.5). | 2026-11-23 |
 
-Die übrigen Fragen (G6 bis G9) sind offen.
+| G6 | Tempo | **Wie empfohlen:** erst messen, mit den Zielwerten als Prüfungen (10 000 Shapes mit einer Eigenschaft unter 0,5 s auf der Iris Xe-Klasse, der Skript-Teil eines Modells mit 1000 Teilen unter 1 s, ein Handler unter 5 ms, JFNetworker unverändert); erst bei verfehlten Zielen optimieren; kein JIT. | 2026-11-23 |
+
+Die übrigen Fragen (G7 bis G9) sind offen.
 
 ## Warum jetzt
 
@@ -249,13 +251,24 @@ Schleifen in Modellen kann das zu langsam werden.
 
 ### G7. Verträglichkeit, Versionen, Ort
 
-- Die `.jfs` der Anwender von JFNetworker (in ihren Projekten) müssen weiterlaufen: Änderungen der Semantik (etwa
-  `int / int`, das heute abschneidet) nur mit einer Version der Sprache je Datei oder Projekt und einer Umstellung durch
-  den Formatierer.
-- Name JFScript und Endung `.jfs` bleiben.
-- **Ort:** das eigene Repository bleibt. Wird JFScript die Sprache aller Apps, sollte es auf crates.io (ein Crate auf
-  crates.io darf nicht von git abhängen; JFDiagrammer und andere Apps ziehen später in eigene Repos). Das ändert die
-  Entscheidung vom 2026-11-09.
+- **G7.1 Bestehende Skripte:** Die `.jfs` der Anwender von JFNetworker (in ihren Projekten) müssen weiterlaufen. Neues
+  ist frei (neue Syntax, neue Funktionen, Host-Objekte); was die Bedeutung von bestehendem Code ändert, nur mit einer
+  Version der Sprache (eine Angabe je Datei oder Projekt) und einer automatischen Umstellung durch den Formatierer.
+  Möglichkeiten: nie etwas brechen; brechen nur mit Version und Umstellung; brechen frei, solange es wenige Anwender
+  gibt. *Empfehlung: nur mit Version und Umstellung, und so selten wie möglich.*
+- **G7.2 `int / int`:** schneidet heute ab (`1 / 3` ist 0, wie in C, Rust und Go), in Geometrie ein leiser Fehler
+  (Wunsch 6). JavaScript kennt nur eine Zahl, `/` gibt dort immer eine Kommazahl; `//` scheidet aus, das ist in JFScript
+  wie in JavaScript ein Kommentar. Möglichkeiten: bleibt, dazu eine Warnung der Sprachdienste, wo zwei Ganzzahlen geteilt
+  werden; `/` gibt immer `float` und `int.div(a, b)` teilt ganzzahlig (ein Bruch nach G7.1). *Empfehlung: bleibt, mit der
+  Warnung; kein Bruch für eine Feinheit.*
+- **G7.3 Name:** JFScript und die Endung `.jfs` bleiben.
+- **G7.4 Ort:** das eigene Repository bleibt, Programme nehmen JFScript per git (Entscheidung vom 2026-11-09). crates.io
+  wird nur nötig, wenn ein Crate von JFLib selbst JFScript braucht (ein Crate auf crates.io darf nicht von git
+  abhängen); Apps in eigenen Repos können git nehmen, wie JFNetworker es tut. Das lässt sich vermeiden, wenn die
+  Bausteine von JFLib für Skripte (der Editor nach G8) neutral bleiben: JFLib gibt eine Schnittstelle für Sprachdienste
+  und Debugger, die App steckt JFScript hinein. *Empfehlung: bei git bleiben, die Bausteine von JFLib neutral halten;
+  crates.io neu entscheiden, wenn die Host-Schnittstelle in zweiter Fassung (S2) stabil ist oder Dritte JFScript nutzen
+  sollen.*
 
 ### G8. Werkzeuge für Anwender
 
@@ -314,6 +327,7 @@ die Prüfsumme von `modeltool` gleich, solange nicht ausdrücklich eine Version 
 3. **G3:** dynamisch bleiben, optionale Typen später?
 4. **G4:** Host-Objekte als erste große Stufe, Operatoren nur für Host-Typen?
 5. **G5:** Skripte aus Dokumenten nur nach Zustimmung, Rechte je Skript über `plat::policy`?
-6. **G7:** JFScript auf crates.io, wenn es die Sprache aller Apps wird?
+6. **G7:** Brüche nur mit Version und Umstellung? `int / int` bleibt mit einer Warnung? Bei git bleiben und die Bausteine
+   von JFLib neutral halten?
 7. **G8:** ein gemeinsamer Skript-Editor mit Debugger in JFLib?
 8. **Reihenfolge:** S1 sofort nach den Entscheidungen, oder erst nach S2?
