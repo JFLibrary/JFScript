@@ -563,6 +563,193 @@ pub fn run(t: &mut T) {
     asserts(t);
     bench_same(t);
     scripts(t);
+    positions(t);
+    warnings(t);
+}
+
+// ---------------------------------------------------------------- (S1) positions, warnings
+
+/// a host that notes cx.position() of its calls ("here", in "each" after its callbacks) and
+/// warns ("warn"); "each(list, f)" calls f through cx.call, "pause" yields; files for import
+#[derive(Default, Clone)]
+struct Where {
+    files: Vec<(String, String)>,
+    seen: Vec<String>,
+}
+
+const WHERE_NAMES: &[&str] = &["here", "warn", "each", "pause", "nop"];
+
+impl Host for Where {
+    fn call(&mut self, cx: &mut Cx, name: &str, args: &[Value]) -> Result<Value, Fail> {
+        let note = |cx: &Cx, what: &str| {
+            let p = cx.position();
+            format!("{}{}:{}:{}", what, p.file, p.line, p.col)
+        };
+        match name {
+            "here" => {
+                let s = note(cx, "");
+                self.seen.push(s);
+                Ok(Value::Nil)
+            }
+            "warn" => {
+                let m = args.first().map(|v| cx.display(*v)).unwrap_or_default();
+                cx.warn(&m);
+                Ok(Value::Nil)
+            }
+            "each" => {
+                let items = args.first().and_then(|l| cx.list(*l)).map(|l| l.to_vec()).unwrap_or_default();
+                for x in &items {
+                    cx.keep(*x);
+                }
+                let f = args.get(1).copied().unwrap_or(Value::Nil);
+                for x in items {
+                    cx.call(self, f, &[x])?;
+                }
+                let s = note(cx, "each ");
+                self.seen.push(s);
+                Ok(Value::Nil)
+            }
+            "pause" => {
+                cx.yield_now();
+                Ok(Value::Nil)
+            }
+            "nop" => Ok(Value::Nil),
+            _ => Err(Fail::Unknown),
+        }
+    }
+    fn knows(&self, name: &str) -> bool {
+        WHERE_NAMES.contains(&name)
+    }
+    fn load(&mut self, _: &mut Cx, path: &str) -> Result<String, String> {
+        self.files.iter().find(|f| f.0 == path).map(|f| f.1.clone()).ok_or_else(|| String::from("die Datei gibt es nicht"))
+    }
+}
+
+const WHERE_MAIN: &str = "fn inner() {
+  here()
+}
+fn outer() { inner() }
+here()
+outer()
+[1, 2].map(fn(x) { here() })
+each([1], fn(x) { here() })
+let m = import(\"lib/mod.jfs\")
+m.go()
+pause()
+here()
+[3].map(here)
+each([4], fn(x) { each([5], fn(y) { warn(\"tief\") }) })
+";
+
+const WHERE_MOD: &str = "here()
+fn go() {
+  here()
+  warn(\"im Modul\")
+}
+";
+
+/// a VM of WHERE_MAIN (strict, the host's names) and its host
+fn where_vm(lim: Limits) -> (Vm, Where) {
+    let host = Where { files: vec![(String::from("app/lib/mod.jfs"), String::from(WHERE_MOD))], seen: Vec::new() };
+    let vm = match script::compile_with("app/main.jfs", WHERE_MAIN, WHERE_NAMES) {
+        Ok(p) => Vm::new(&p, lim),
+        Err(d) => {
+            plat::write_stdout(format!("FAIL scriptmod: WHERE_MAIN does not compile: {:?}\n", d).as_bytes());
+            Vm::new(&script::compile("").expect("empty"), lim)
+        }
+    };
+    (vm, host)
+}
+
+fn positions(t: &mut T) {
+    let (mut vm, mut host) = where_vm(Limits::default());
+    let (_, r) = finish(&mut vm, &mut host, u64::MAX);
+    t.check("the program runs", r.is_ok());
+    let want = [
+        "app/main.jfs:5:1",       // top-level code
+        "app/main.jfs:2:3",       // inside two calls
+        "app/main.jfs:7:20",      // in a callback of list.map
+        "app/main.jfs:7:20",
+        "app/main.jfs:8:19",      // in a callback of the host's own cx.call
+        "each app/main.jfs:8:1",  // the native itself after its callbacks
+        "app/lib/mod.jfs:1:1",    // a module's top-level code while import runs it
+        "app/lib/mod.jfs:3:3",    // a function of the module
+        "app/main.jfs:12:1",      // after a yield
+        "app/main.jfs:13:5",      // a native as the callback of list.map: map's call
+        "each app/main.jfs:14:19", // cx.call inside cx.call
+        "each app/main.jfs:14:1",
+    ];
+    t.eq("positions through calls, callbacks, modules and yields", host.seen.clone(), want.iter().map(|s| String::from(*s)).collect::<Vec<_>>());
+    let w: Vec<String> = vm.warnings().iter().map(|w| format!("{}:{}", w.file, w)).collect();
+    t.eq("warnings with their positions", w, vec![String::from("app/lib/mod.jfs:4:3: Warnung: im Modul"), String::from("app/main.jfs:14:37: Warnung: tief")]);
+    // the same in slices of any size and with a debugger stepping through: positions and
+    // warnings do not depend on where a run stops
+    for slice in [1u64, 2, 3, 7, 50] {
+        let (mut v2, mut h2) = where_vm(Limits::default());
+        let (_, r2) = finish(&mut v2, &mut h2, slice);
+        t.check(&format!("slices of {}: runs", slice), r2.is_ok());
+        t.eq(&format!("slices of {}: the same positions", slice), h2.seen, host.seen.clone());
+        t.eq(&format!("slices of {}: the same warnings", slice), v2.take_warnings(), vm.warnings().to_vec());
+    }
+    let (mut v3, mut h3) = where_vm(Limits::default());
+    let _ = v3.set_breakpoint("app/main.jfs", 2, None);
+    let _ = v3.set_breakpoint("app/lib/mod.jfs", 3, None);
+    let (pauses, _) = stops(&mut v3, &mut h3, 5, |_, _| Some(Step::Into));
+    t.check("the debugger stopped", pauses.len() > 5);
+    t.eq("stepping: the same positions", h3.seen, host.seen.clone());
+    t.eq("stepping: the same warnings", v3.take_warnings(), vm.warnings().to_vec());
+    // a clone mid-run goes on with the same positions
+    let (mut v4, mut h4) = where_vm(Limits::default());
+    let st = v4.run(&mut h4, u64::MAX);
+    t.check("the pause yields", st == Status::Yielded);
+    let (mut v5, mut h5) = (v4.clone(), h4.clone());
+    let _ = finish(&mut v4, &mut h4, u64::MAX);
+    let _ = finish(&mut v5, &mut h5, u64::MAX);
+    t.eq("a clone: the same positions", h5.seen, h4.seen);
+    t.eq("a clone: the same warnings", v5.warnings().to_vec(), v4.warnings().to_vec());
+    // scripts of one VM: each with its name; a call of the host as a function value
+    let stub = script::compile_with("seite", "", WHERE_NAMES).expect("the empty program");
+    let mut vm = Vm::new(&stub, Limits::default());
+    let mut host = Where::default();
+    let _ = finish_vm(&mut vm, &mut host);
+    t.check("a script links", vm.add_script("a.jfs", "fn wo() {\n  here()\n}").is_ok());
+    let _ = finish_vm(&mut vm, &mut host);
+    t.check("another one", vm.add_script("b.jfs", "wo()\nlet h = here\n  h()").is_ok());
+    let _ = finish_vm(&mut vm, &mut host);
+    t.eq("positions in the scripts of a VM", host.seen, vec![String::from("a.jfs:2:3"), String::from("b.jfs:3:3")]);
+}
+
+fn warnings(t: &mut T) {
+    let run = |src: &str| -> (Vm, Option<script::Error>) {
+        let mut vm = match script::compile_with("w.jfs", src, WHERE_NAMES) {
+            Ok(p) => Vm::new(&p, Limits::default()),
+            Err(_) => Vm::new(&script::compile("").expect("empty"), Limits::default()),
+        };
+        let e = finish_vm(&mut vm, &mut Where::default());
+        (vm, e)
+    };
+    let (mut vm, e) = run("warn(\"a\")\nlet x = 1\n  warn(\"b ${x}\")\nprint(\"weiter\")");
+    t.check("warnings do not stop the script", e.is_none() && vm.output() == "weiter\n");
+    let w = vm.take_warnings();
+    t.eq("two warnings", w.iter().map(|w| (w.line, w.col, w.msg.as_str(), w.file.as_str())).collect::<Vec<_>>(), vec![(1, 1, "a", "w.jfs"), (3, 3, "b 1", "w.jfs")]);
+    t.eq("the text of a warning", w.first().map(|w| w.to_string()), Some(String::from("1:1: Warnung: a")));
+    t.eq("take_warnings empties the list", vm.warnings().len(), 0);
+    // an error after a warning: the warning stays for the host
+    let (vm, e) = run("warn(\"vorher\")\nthrow \"kaputt\"");
+    t.check("the error ends the run", e.is_some_and(|e| e.msg == "kaputt"));
+    t.eq("the warning before it stays", vm.warnings().iter().map(|w| w.msg.as_str()).collect::<Vec<_>>(), vec!["vorher"]);
+    // a host that never takes them: at most MAX_WARNINGS, the rest counted
+    let (mut vm, e) = run("for i in 0..1005 { warn(\"w${i}\") }");
+    t.check("many warnings run", e.is_none());
+    t.eq("at most MAX_WARNINGS kept", (vm.warnings().len(), vm.warnings_dropped()), (script::MAX_WARNINGS, 5));
+    t.eq("the first ones are kept", vm.warnings().last().map(|w| w.msg.clone()), Some(String::from("w999")));
+    let _ = vm.take_warnings();
+    t.eq("the count stays after a take", vm.warnings_dropped(), 5);
+    // warnings cost nothing: the fuel and the output of a run are those without them
+    let (a, _) = run("for i in 0..100 { warn(i) }\nprint(1)");
+    let (b, _) = run("for i in 0..100 { nop(i) }\nprint(1)");
+    t.eq("warnings do not change fuel or output", (a.call_fuel(), a.output().to_string()), (b.call_fuel(), b.output().to_string()));
+    t.eq("a VM without warnings has none", b.warnings().len(), 0);
 }
 
 // run the pending invocation to its end -> the error, if any

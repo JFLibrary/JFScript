@@ -1,0 +1,18 @@
+# the functions of S1: tan, the arc functions, atan2, hypot, angles in degrees (exact at
+# multiples of 30 and 45 degrees), list.range and list.linspace
+args: -e "print(math.sin_deg(30), math.cos_deg(90), math.tan_deg(45), math.tan_deg(90), math.atan2(1, -1), math.hypot(3, 4), math.hypot([1, 2, 2]), math.asin(2))"
+--- stdout
+0.5 0.0 1.0 inf 2.356194490192345 5.0 3.0 nan
+===
+args: -e "print(list.range(5), list.range(0, 10, 3), list.range(10, 0, -4), list.range(0, 1, 0.25), list.linspace(0, 1, 5))"
+--- stdout
+[0, 1, 2, 3, 4] [0, 3, 6, 9] [10, 6, 2] [0.0, 0.25, 0.5, 0.75] [0.0, 0.25, 0.5, 0.75, 1.0]
+===
+# a step of 0 is an error with its place
+args: -e "let l = list.range(0, 10, 0)"
+exit: 1
+--- stderr
+-e:1:14: Fehler: list.range: step darf nicht 0 sein
+    let l = list.range(0, 10, 0)
+                 ^
+  im Hauptprogramm (1:14)

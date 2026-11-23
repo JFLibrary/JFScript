@@ -1,0 +1,4 @@
+// warnmod.jfs -- a module whose function starts a timer that is too short (warnings.test)
+fn start(f) {
+  return timer.every(0, f)
+}

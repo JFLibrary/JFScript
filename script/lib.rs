@@ -21,7 +21,9 @@
 //   Vm::new(&program, limits)    a VM (vm.rs): run(host, fuel) -> Done | Yielded | Error,
 //                                call(name, args), call_value, global / set_global, pin,
 //                                output; Value (16 bytes, heap.rs), Host and Cx for native
-//                                functions; num: float arithmetic in software
+//                                functions; num: float arithmetic in software;
+//                                cx.position() and cx.warn(text) (the script's call that
+//                                reached a native, a warning there), vm.take_warnings()
 //   library()                    the standard library every host gets (stdlib.rs: str, list,
 //                                map, bytes, math, json, int / float.parse; math.rs: exp, log,
 //                                pow, sin, cos .. in software), found by name before the host
@@ -92,7 +94,7 @@ pub use lex::{TokClass, TokKind};
 pub use parse::MAX_DEPTH;
 pub use code::Program;
 pub use heap::{Ref, Value};
-pub use vm::{Cx, Error, ErrorKind, Fail, Host, Limits, Pin, Status, TraceLine, Vm};
+pub use vm::{Cx, Error, ErrorKind, Fail, Host, Limits, Pin, Position, Status, TraceLine, Vm, Warning, MAX_WARNINGS};
 pub use code::LineEntry;
 pub use debug::{Breakpoint, FrameInfo, Pause, PauseReason, Step};
 
