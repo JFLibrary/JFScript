@@ -13,7 +13,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G3 | Typen | **Wie empfohlen:** dynamisch bleiben; Typen zuerst in den Beschreibungen des Hosts (mit G4), damit die Sprachdienste das Objektmodell einer App kennen; optionale Angaben im Skript in der Form von TypeScript als spätere Stufe, zur Laufzeit ohne Wirkung. | 2026-11-23 |
 
-Die übrigen Fragen (G4 bis G9) sind offen.
+| G4 | Objekte, Eigenschaften, Operatoren, Ereignisse | **Wie empfohlen:** Host-Objekte (G4.1), Eigenschaften lesen und setzen über den Host (G4.2), Operatoren nur für Host-Typen (G4.3) und Ereignisse mit `obj.on` / `obj.off` (G4.5) als erste große Stufe (S2); Maps bleiben vorerst, später `class` nach G1 d (G4.4); Rückrufe jetzt, `await` als Kandidat für die Syntax-Stufe (G4.6). | 2026-11-23 |
+
+Die übrigen Fragen (G5 bis G9) sind offen.
 
 ## Warum jetzt
 
@@ -196,13 +198,35 @@ Typen der Beschreibungen nach G3); G4.4 und G4.6 später.
 Skripte, die in Dokumenten mitkommen (wie VBA-Makros), sind das größte Risiko. JFLib hat dafür schon Bausteine:
 `PERMISSIONS`, Fragen an den Anwender und eigene Rechte je Plugin (`plat::policy::on_behalf`).
 
-- Jedes Skript bekommt einen eigenen Rahmen von Rechten; Funktionen des Hosts, die etwas außerhalb der App tun (Dateien,
-  Netz, Programme), prüfen ihn.
-- Skripte aus Dokumenten laufen nie von selbst: erst nach einer Zustimmung je Dokument oder je Herausgeber; Signaturen
-  später.
-- Die Grenzen der VM (Speicher, Brennstoff) bleiben für jedes Skript an.
+Drei Arten von Skripten mit verschiedenem Vertrauen:
 
-**Empfehlung:** so; der Rahmen gehört in die Host-Schnittstelle von JFScript, die Rechte selbst in `plat::policy`.
+| Art | Woher | Vertrauen |
+| --- | --- | --- |
+| eigene Skripte | der Anwender schreibt sie in der App, sie liegen in seinem Ordner | wie der Anwender |
+| Skripte in Dokumenten | kommen mit einer Datei (wie VBA in `.vsdm`, `.docm`) | keins, bis der Anwender zustimmt |
+| Erweiterungen | installierte Pakete, später auch von Dritten | was ihr Manifest verlangt und der Anwender bei der Installation erlaubt |
+
+- **G5.1 Rechte je Skript:** Jedes Skript läuft in einem eigenen Rahmen (wie Plugins: `plat::policy::on_behalf`). Was
+  über das Objektmodell der App hinausgeht (Dateien, Netz, Programme, Zwischenablage, Drucken), prüft der Rahmen; die
+  `PERMISSIONS` der App sind die obere Grenze. Fehlt ein Recht, fragt die App wie heute (`plat::policy`, Fragen an den
+  Anwender). *Empfehlung: ja.*
+- **G5.2 Skripte in Dokumenten** sind aus, wenn eine Datei geöffnet wird: eine Leiste sagt „Dieses Dokument enthält
+  Skripte“ mit „Einmal ausführen“ und „Diesem Dokument vertrauen“ (gemerkt über den Hash der Skripte, ändert sich ein
+  Skript, wird wieder gefragt). Auch erlaubt laufen sie im engsten Rahmen: das eigene Dokument, sonst nichts ohne
+  Frage. Möglichkeiten dazu: nie ausführen (wie heute VBA in JFDiagrammer), nach Zustimmung (so), oder vertrauenswürdige
+  Ordner wie in Office. *Empfehlung: nach Zustimmung, ohne vertrauenswürdige Ordner.*
+- **G5.3 Erweiterungen** bringen ein Manifest mit den Rechten, die sie brauchen (in der Form von `PERMISSIONS`); der
+  Anwender sieht sie bei der Installation und kann eine Erweiterung abschalten (FEATURES.md von JFDiagrammer, UI-20).
+  *Empfehlung: ja, mit der Stufe für Erweiterungen.*
+- **G5.4 Signaturen** für Erweiterungen und Dokument-Skripte, damit ein Herausgeber einmal vertraut werden kann. Braucht
+  eine Kette von Zertifikaten und eine Stelle, die sie ausgibt. *Empfehlung: später, wenn es Erweiterungen von Dritten
+  gibt.*
+- **G5.5 Die App bleibt bedienbar:** jeder Aufruf hat Brennstoff und Speicher-Grenzen, auf dem Thread der Oberfläche
+  dazu ein Budget je Bild (wie die Seiten-Skripte in JFNetworker, `CALL_FUEL` und `FRAME_FUEL`); ein Skript, das zu
+  lange rechnet, endet mit einer Meldung, die App läuft weiter. *Empfehlung: ja, für alle Apps gleich.*
+
+**Empfehlung:** G5.1, G5.2 und G5.5 mit der Stufe für Rechte (S4), G5.3 mit den Erweiterungen, G5.4 später. Der Rahmen
+gehört in die Host-Schnittstelle von JFScript, die Rechte selbst bleiben in `plat::policy`.
 
 ### G6. Tempo
 
