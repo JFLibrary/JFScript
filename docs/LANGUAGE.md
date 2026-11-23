@@ -259,13 +259,14 @@ let shard = "user:42".hash() % 8                     // FNV-1a, stable everywher
   read or written, 1 per 8 list values and 1 per 4 map entries copied or visited, 1 per
   comparison of a sort, 2 for `sqrt`, 4 for `exp log log2 log10 sin cos tan asin acos atan
   atan2 sin_deg cos_deg tan_deg` and `hypot` (plus 1 per 8 values), 8 for `pow`, 1 per float
-  that `list.range` or `list.linspace` makes (on top of the list), plus what callbacks cost. Long operations pay as they go, so `Limits::fuel` stops a huge sort,
-  split or JSON job in the middle (`ErrorKind::Fuel`, not catchable), and a list being
-  sorted stays as it was.
+  that `list.range` or `list.linspace` makes (on top of the list), plus what callbacks cost.
+  Long operations pay as they go, so `Limits::fuel` stops a huge sort, split or JSON job in
+  the middle (`ErrorKind::Fuel`, not catchable), and a list being sorted stays as it was.
 * Heap: results are allocated in the VM, so `Limits::heap` holds for them (`ErrorKind::Heap`,
   not catchable), and a text or list whose size is known before it is built (`repeat`,
   `replace`, `join`, `format`, `list.range`, `list.linspace`) is checked first:
-  `"x".repeat(1000000000000)` and `list.range(0, 1e18)` fail at once instead of allocating. JSON needs up to about three times the heap limit as temporary memory for its
+  `"x".repeat(1000000000000)` and `list.range(0, 1e18)` fail at once instead of allocating.
+  JSON needs up to about three times the heap limit as temporary memory for its
   syntax tree.
 
 **Hosts with names of their own**: `compile` checks names against `script::GLOBALS` (the host
