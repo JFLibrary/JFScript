@@ -19,7 +19,7 @@ cargo jflib test -p jfs                       # the example cases (Linux from Wi
 
 | Option | Meaning |
 |---|---|
-| `--check` | only the diagnostics, on stdout: `FILE:LINE:COL: Fehler: …` and the warnings; exit code 1 when one is an error |
+| `--check` | only the diagnostics, on stdout: `FILE:LINE:COL: Fehler: …` and the warnings (also a division of two ints, which truncates); exit code 1 when one is an error |
 | `--test` | every argument is a file of tests: their functions `test_*` run, each in a fresh VM (below) |
 | `--debug` | the script in the console debugger, its commands on standard input (below) |
 | `--virtual-time` | a virtual clock: timers run without waiting, `now()` starts at 0 and stands still while code runs |
@@ -51,7 +51,7 @@ a host of JFNetworker:
 | `now()` | milliseconds since the start (float), real or virtual clock |
 | `rand()`, `rand(n)`, `rand(a, b)` | `[0, 1)`, `0 .. n-1`, `a .. b` |
 | `config` | the map of `JFS_CONFIG`, `--config`, `env` (the `--env` variables), `args`, `script` |
-| `timer.after(ms, f)`, `timer.every(ms, f)`, `timer.cancel(id)` | an event loop; due timers run in the order of their times, then of their creation |
+| `timer.after(ms, f)`, `timer.every(ms, f)`, `timer.cancel(id)` | an event loop; due timers run in the order of their times, then of their creation; `every` runs at most every 10 µs (a shorter period is a warning) |
 | `disk.get / put / delete / scan` | as in JFNetworker (JSON values, callbacks `fn(err, ..)` after the current code) |
 | `net`, `dns`, `http`, `metrics` | JFNetworker's: a catchable error ("… gibt es nur in JFNetworker") |
 | `import(path)` | a module: another `.jfs` file's top-level names as a map, its path relative to the importing file |
@@ -70,6 +70,14 @@ error.jfs:7:14: Fehler: Division durch 0
   in average (7:14)
   in report (11:15)
   im Hauptprogramm (20:1)
+```
+
+A warning of a host function (`Cx::warn` in [`script/vm.rs`](../script/vm.rs); here
+`timer.every` below 10 µs) goes to stderr with the place of the script's call and does not change
+the exit code; with `--test` it is part of what a failing test printed:
+
+```text
+app.jfs:4:18: Warnung: timer.every: 0 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
 ```
 
 ## Modules
