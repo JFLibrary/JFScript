@@ -19,7 +19,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G6 | Tempo | **Wie empfohlen:** erst messen, mit den Zielwerten als Prüfungen (10 000 Shapes mit einer Eigenschaft unter 0,5 s auf der Iris Xe-Klasse, der Skript-Teil eines Modells mit 1000 Teilen unter 1 s, ein Handler unter 5 ms, JFNetworker unverändert); erst bei verfehlten Zielen optimieren; kein JIT. | 2026-11-23 |
 
-Die übrigen Fragen (G7 bis G9) sind offen.
+| G7 | Verträglichkeit, Versionen, Ort | **Wie empfohlen:** Brüche nur mit einer Version der Sprache und einer automatischen Umstellung, so selten wie möglich (G7.1); `int / int` schneidet weiter ab, die Sprachdienste warnen (G7.2); Name und `.jfs` bleiben (G7.3); JFScript bleibt im eigenen Repository per git, die Bausteine von JFLib für Skripte bleiben sprachneutral, crates.io wird nach S2 oder für Dritte neu entschieden (G7.4). | 2026-11-23 |
+
+Die übrigen Fragen (G8 und G9) sind offen.
 
 ## Warum jetzt
 
@@ -272,12 +274,30 @@ Schleifen in Modellen kann das zu langsam werden.
 
 ### G8. Werkzeuge für Anwender
 
-Ein Ersatz für VBA braucht in der App einen Editor mit Debugger und eine Konsole (wie den VBA-Editor). JFNetworker hat
-das schon für sich gebaut.
+Ein Ersatz für VBA braucht in der App, was der VBA-Editor bietet: Editor, Debugger, Konsole, eine Liste der Skripte und
+einen Objektkatalog. Was es schon gibt:
 
-**Empfehlung:** daraus ein gemeinsamer Baustein für alle Apps (Editor mit den Sprachdiensten, Konsole, Haltepunkte und
-Variablen), in JFLib neben dem Editor-Widget; die Apps geben ihr Objektmodell mit Beschreibungen für die Sprachdienste
-dazu.
+- **Der Editor** ist in JFLib und sprachneutral: `ui.code_editor` mit Hervorhebung, Diagnosen, Vervollständigen, Hover
+  und Signaturhilfe über eine Schnittstelle (`code_assist.rs`), einer Spalte für Haltepunkte, der Zeile des Debuggers
+  (`ui.code_reveal`) und Ereignissen für Definition, Umbenennen und Formatieren. `editortest` zeigt ihn mit JFScript.
+- **Debugger, Konsole und Skriptverwaltung** hat JFNetworker für sich gebaut (`src/workspace/ide`, rund 4900 Zeilen mit
+  Explorer, Ausgabe, Terminal, Problemen, Debugger und Tests), eng an seine Geräte gebunden.
+
+Die Teilfragen:
+
+- **G8.1 Debugger und Konsole als Bausteine in JFLib:** sprachneutral über eine Schnittstelle (Haltepunkte, Aufrufe,
+  Variablen als Baum, Beobachten, Schritte; eine Konsole mit Eingabezeile); JFScript liefert die Anbindung in einem
+  kleinen Crate seines Repositorys (das schon `jflib` nimmt). *Empfehlung: ja.*
+- **G8.2 Ein Fenster „Skripte“** für alle Apps aus diesen Bausteinen: die Skripte des Anwenders, des Dokuments und der
+  Erweiterungen, ausführen, an Schaltflächen und Tastenkürzel hängen, ein- und ausschalten (mit den Rechten aus G5); die
+  App gibt ihr Objektmodell und ihre Orte dazu. *Empfehlung: ja, als gemeinsamer Baustein, den JFDiagrammer als erste
+  App nimmt.*
+- **G8.3 Objektkatalog:** alle Objekte, Eigenschaften, Methoden und Ereignisse einer App zum Nachschlagen, erzeugt aus
+  denselben Beschreibungen wie die Sprachdienste (G3); daraus auch die Referenz der App als Seite. *Empfehlung: ja.*
+- **G8.4 Makro-Rekorder:** Bedienschritte als Skript aufzeichnen, wie in VBA. Geht nur, wenn jeder Befehl der App einen
+  Aufruf im Objektmodell hat. *Empfehlung: später, je App; die Objektmodelle von Anfang an so entwerfen, dass jeder
+  Befehl einen Aufruf hat.*
+- **G8.5 JFNetworker** kann später auf die gemeinsamen Bausteine wechseln, muss aber nicht. *Empfehlung: offenlassen.*
 
 ### G9. Sprache der Meldungen
 
