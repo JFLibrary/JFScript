@@ -7,8 +7,10 @@
 //   parse_partial(name, src)     the tree of what parsed plus the errors (editor features)
 //   check(src)                   syntax errors plus name resolution against GLOBALS: unknown
 //                                names (warnings), duplicate declarations, break / continue
-//                                outside a loop, return outside a function (errors);
-//                                check_with(src, globals) with other predeclared names
+//                                outside a loop, return outside a function (errors), a
+//                                division of two certain ints (a warning: it truncates;
+//                                intdiv.rs); check_with(src, globals) with other predeclared
+//                                names
 //   resolve(&program, globals)   the resolution part alone (for the compiler)
 //   tokens(src)                  (byte start, length, TokKind) of every token, covering every
 //                                byte, for syntax highlighting; never fails
@@ -25,8 +27,9 @@
 //                                cx.position() and cx.warn(text) (the script's call that
 //                                reached a native, a warning there), vm.take_warnings()
 //   library()                    the standard library every host gets (stdlib.rs: str, list,
-//                                map, bytes, math, json, int / float.parse; math.rs: exp, log,
-//                                pow, sin, cos .. in software), found by name before the host
+//                                map, bytes, math, json, int / float.parse, list.range /
+//                                linspace; math.rs: exp, log, pow, sin, cos, tan, asin, atan2,
+//                                sin_deg .. in software), found by name before the host
 //   ls::index(src) / definition / references / rename / complete / hover / signature /
 //   folding / symbols            language services for editors (ls.rs: symbols with their
 //                                positions and scopes, also on code that does not parse)
