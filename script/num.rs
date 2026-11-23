@@ -3,6 +3,7 @@
 //
 //   add sub mul div sqrt     correctly rounded (to nearest, ties to even)
 //   rem                      fmod: exact, with the sign of the dividend
+//   hypot(&[x, y, ..])       sqrt of the sum of the squares, correctly rounded (the sum exact)
 //   from_i64(i)              correctly rounded; to_i64(x) truncates (None for NaN, infinity and
 //                            values outside i64)
 //   cmp / eq / lt / le       comparisons: NaN is unordered, -0 == +0
@@ -251,6 +252,73 @@ pub fn sqrt(a: f64) -> f64 {
             pack(false, k / 2 + 63, r, r as u128 * r as u128 != n)
         }
     }
+}
+
+/// 64-bit words of the exact sum of squares in hypot: every square of two floats fits (from
+/// 2^-2148 to below 2^2048), with room for 2^30 of them
+const HYPOT_WORDS: usize = 67;
+
+/// sqrt(x0^2 + x1^2 + ..), correctly rounded (the sum of the squares is exact, in a fixed
+/// point number of 4288 bits); +inf when one value is infinite (even with a NaN), else NaN when
+/// one is NaN; +0 for no values
+pub fn hypot(xs: &[f64]) -> f64 {
+    let mut nan = false;
+    for x in xs {
+        match unpack(x.to_bits()).1 {
+            Class::Inf => return inf(false),
+            Class::Nan => nan = true,
+            _ => {}
+        }
+    }
+    if nan {
+        return NAN;
+    }
+    // the sum of m^2 * 2^(2e + 2148) for |x| = m * 2^e (e >= -1074)
+    let mut acc = [0u64; HYPOT_WORDS];
+    for x in xs {
+        let b = x.to_bits();
+        let be = ((b >> 52) & 0x7FF) as i32;
+        let (m, e) = if be == 0 { (b & FRAC, -1074) } else { ((b & FRAC) | 1 << 52, be - 1075) };
+        if m == 0 {
+            continue;
+        }
+        let sq = m as u128 * m as u128;
+        let at = (2 * e + 2148) as usize;
+        let (w, o) = (at / 64, (at % 64) as u32);
+        // sq < 2^106 shifted by o: three words
+        let lo = sq << o;
+        let hi = if o == 0 { 0 } else { (sq >> (128 - o)) as u64 };
+        let mut carry = 0u128;
+        let mut i = w;
+        for part in [lo as u64, (lo >> 64) as u64, hi] {
+            let s = acc[i] as u128 + part as u128 + carry;
+            acc[i] = s as u64;
+            carry = s >> 64;
+            i += 1;
+        }
+        while carry != 0 && i < HYPOT_WORDS {
+            let s = acc[i] as u128 + carry;
+            acc[i] = s as u64;
+            carry = s >> 64;
+            i += 1;
+        }
+    }
+    let Some(top) = acc.iter().rposition(|w| *w != 0) else { return 0.0 };
+    let len = 64 * top as i32 + 64 - acc[top].leading_zeros() as i32;
+    // t = acc >> s with 127 or 128 bits, s even; the bits below s only tell that there are some
+    let s = if (len - 128) & 1 == 0 { len - 128 } else { len - 127 };
+    let word = |i: usize| -> u128 { acc.get(i).copied().unwrap_or(0) as u128 };
+    let (t, sticky) = if s <= 0 {
+        ((word(0) | word(1) << 64) << -s, false)
+    } else {
+        let (w, o) = ((s / 64) as usize, (s % 64) as u32);
+        let low = word(w) | word(w + 1) << 64;
+        let t = if o == 0 { low } else { (low >> o) | word(w + 2) << (128 - o) };
+        (t, acc[..w].iter().any(|x| *x != 0) || (o != 0 && acc[w] << (64 - o) != 0))
+    };
+    let r = isqrt(t);
+    // sqrt(t * 2^(s - 2148)) = sqrt(t) * 2^((s - 2148) / 2), r with bit 63 set
+    pack(false, (s - 2148) / 2 + 63, r, sticky || r as u128 * r as u128 != t)
 }
 
 /// i as a float, correctly rounded

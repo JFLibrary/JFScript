@@ -3,6 +3,8 @@
 //   l.len()  l.push(x, ..)  l.pop()  l.insert(i, x)  l.remove(i)  l.slice(start, end)
 //   l.reverse()  l.sort(cmp)  l.map(f)  l.filter(f)  l.reduce(f, init)  l.contains(x)
 //   l.index(x)  l.join(sep)
+//   list.range(start, end, step)  list.range(end)  list.linspace(start, end, n)   new lists
+//                       of numbers (functions of the module, like str.from_code)
 //
 // insert, remove, reverse and sort change the list (reverse and sort return it); slice, map
 // and filter make a new one.  insert takes 0..=len, remove 0..len (a negative index is an
@@ -19,12 +21,13 @@
 // end, so an error or an exception in cmp leaves it as it was.  1 fuel per comparison.
 
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::heap::{self, Obj, Value};
 use crate::num;
-use crate::stdlib::{arg, bad, call, err, is_nan, keep, list_fuel, new_list, num_cmp, span, spend, want_fn, want_int, want_list};
+use crate::stdlib::{arg, bad, call, err, heap_full, is_nan, keep, list_fuel, new_list, num_cmp, span, spend, want_fn, want_int, want_list};
 use crate::strlib;
 use crate::vm::{Exc, Host, Vm};
 
@@ -306,4 +309,132 @@ pub(crate) fn sort(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Valu
         }
     });
     Ok(a[0])
+}
+
+// ---- list.range, list.linspace: functions of the module (not methods)
+
+/// the most values a list can hold under the heap limit (32 bytes and 16 per value)
+fn max_items(vm: &Vm) -> u64 {
+    vm.lim.heap.saturating_sub(32) / 16
+}
+
+fn is_finite(x: f64) -> bool {
+    x.to_bits() & 0x7FF0_0000_0000_0000 != 0x7FF0_0000_0000_0000
+}
+
+/// a finite number (int or float) for range and linspace
+fn finite(f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
+    match arg(a, i) {
+        v @ Value::Int(_) => Ok(v),
+        Value::Float(x) if !is_finite(x) => {
+            let mut s = String::new();
+            num::fmt(x, &mut s);
+            err(format!("{}: {} muss endlich sein, nicht {}", f, p, s))
+        }
+        v @ Value::Float(_) => Ok(v),
+        v => bad(f, p, "eine Zahl", v),
+    }
+}
+
+fn float_of(v: Value) -> f64 {
+    match v {
+        Value::Int(i) => num::from_i64(i),
+        Value::Float(x) => x,
+        _ => num::NAN,
+    }
+}
+
+/// list.range(start, end, step) / list.range(end): start, start + step, .. while before end
+/// (end excluded; step 1 by default, a negative step counts down), as a..b in a for loop;
+/// ints when all three are ints, else floats (start + i * step: no error adds up)
+pub(crate) fn range(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    const F: &str = "list.range";
+    let (start, end, step) = if arg(a, 1) == Value::Nil && arg(a, 2) == Value::Nil {
+        (Value::Int(0), finite(F, a, 0, "end")?, Value::Int(1))
+    } else {
+        let step = if arg(a, 2) == Value::Nil { Value::Int(1) } else { finite(F, a, 2, "step")? };
+        (finite(F, a, 0, "start")?, finite(F, a, 1, "end")?, step)
+    };
+    let max = max_items(vm);
+    if let (Value::Int(s), Value::Int(e), Value::Int(d)) = (start, end, step) {
+        if d == 0 {
+            return err(format!("{}: step darf nicht 0 sein", F));
+        }
+        let (s, e, d) = (s as i128, e as i128, d as i128);
+        let n = if d > 0 && e > s {
+            (e - s + d - 1) / d
+        } else if d < 0 && s > e {
+            (s - e - d - 1) / -d
+        } else {
+            0
+        };
+        if n as u64 > max {
+            return Err(heap_full(vm));
+        }
+        spend(vm, 1 + list_fuel(n as usize))?;
+        let items: Vec<Value> = (0..n).map(|i| Value::Int((s + i * d) as i64)).collect();
+        return vm.alloc(Obj::List(items)).map(Value::List);
+    }
+    let (s, e, d) = (float_of(start), float_of(end), float_of(step));
+    if d.to_bits() << 1 == 0 {
+        return err(format!("{}: step darf nicht 0 sein", F));
+    }
+    let up = d.to_bits() >> 63 == 0;
+    let at = |i: u64| if i == 0 { s } else { num::add(s, num::mul(num::from_i64(i as i64), d)) };
+    let before = |v: f64| if up { num::lt(v, e) } else { num::lt(e, v) };
+    // the values grow (or shrink) with i: the count is the first i whose value is not before end
+    if before(at(max)) {
+        return Err(heap_full(vm));
+    }
+    let (mut lo, mut hi) = (0u64, max);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if before(at(mid)) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    spend(vm, 1 + list_fuel(lo as usize) + lo)?;
+    let items: Vec<Value> = (0..lo).map(|i| Value::Float(at(i))).collect();
+    vm.alloc(Obj::List(items)).map(Value::List)
+}
+
+/// list.linspace(start, end, n): n floats from start to end, both included, evenly spaced:
+/// start + (i * (end - start)) / (n - 1), so linspace(0, 1, 11) holds 0.3 and linspace(0, 360,
+/// 7) exactly 60, 120 ..
+pub(crate) fn linspace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    const F: &str = "list.linspace";
+    let s = float_of(finite(F, a, 0, "start")?);
+    let e = float_of(finite(F, a, 1, "end")?);
+    let n = want_int(F, a, 2, "n")?;
+    if n < 0 {
+        return err(format!("{}: n darf nicht negativ sein, nicht {}", F, n));
+    }
+    if n as u64 > max_items(vm) {
+        return Err(heap_full(vm));
+    }
+    spend(vm, 1 + list_fuel(n as usize) + n as u64)?;
+    let mut items = Vec::with_capacity(n as usize);
+    if n >= 1 {
+        items.push(Value::Float(s));
+    }
+    if n >= 2 {
+        let k = num::from_i64(n - 1);
+        let d = num::sub(e, s);
+        if is_finite(num::mul(k, d)) {
+            for i in 1..n - 1 {
+                items.push(Value::Float(num::add(s, num::div(num::mul(num::from_i64(i), d), k))));
+            }
+        } else {
+            // end - start (or a multiple of it) overflows: in halves, with the fraction i / (n - 1)
+            let (hs, hd) = (num::mul(s, 0.5), num::sub(num::mul(e, 0.5), num::mul(s, 0.5)));
+            for i in 1..n - 1 {
+                let t = num::div(num::from_i64(i), k);
+                items.push(Value::Float(num::mul(num::add(hs, num::mul(t, hd)), 2.0)));
+            }
+        }
+        items.push(Value::Float(e));
+    }
+    vm.alloc(Obj::List(items)).map(Value::List)
 }

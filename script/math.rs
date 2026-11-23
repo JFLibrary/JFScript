@@ -1,18 +1,32 @@
 // math -- the transcendental functions of the script library in software: exp, log, log2,
-// log10, pow, sin, cos and round, bit-identical on every target
+// log10, pow, sin, cos, tan, asin, acos, atan, atan2, the sine, cosine and tangent of
+// degrees and round, bit-identical on every target
 //
 //   exp(x) log(x) log2(x) log10(x)   ports of fdlibm (as in FreeBSD and musl), error below
-//   pow(x, y) sin(x) cos(x)          1 ulp; exact where the result is exact: log2(8) = 3,
-//                                    pow(2, 10) = 1024, pow(x, 0.5) = sqrt(x), exp(0) = 1
+//   pow(x, y) sin(x) cos(x) tan(x)   1 ulp; exact where the result is exact: log2(8) = 3,
+//   asin(x) acos(x) atan(x)          pow(2, 10) = 1024, pow(x, 0.5) = sqrt(x), exp(0) = 1,
+//   atan2(y, x)                      atan2(1, 1) = pi/4 rounded
+//   sin_deg(x) cos_deg(x) tan_deg(x) x in degrees: the argument reduced exactly (fmod by 360,
+//                                    the quadrant, the rest r in [-45, 45] times 128 bits of
+//                                    pi/180), then fdlibm's kernels; exact wherever the result
+//                                    is a float (sin and cos at multiples of 30 degrees, tan
+//                                    at multiples of 45: Niven's theorem says there are no
+//                                    others), signed zeros and infinities as sinPi, cosPi and
+//                                    tanPi of IEEE 754-2019 (tan_deg(90) = inf, tan_deg(180)
+//                                    = -0)
 //   round(x)                         to the nearest integer, halves away from zero
 //   scalbn(x, n)                     x * 2^n, rounded once
 //
 // Every float operation is one of num's correctly rounded integer routines (through the F
 // wrapper below, so the ports read like the C originals), so the results depend on nothing
-// but the input bits.  sin and cos reduce their argument exactly: integer Payne-Hanek with
-// 1280 bits of 2/pi (computed with Python's integers from Machin's formula), so sin(1e300) is
-// as good as sin(1).  NaN results are num::NAN; special values follow C99 Annex F (pow(x, 0)
-// = 1 even for NaN, pow(-1, inf) = 1, log(0) = -inf, sin(inf) = NaN).
+// but the input bits.  sin, cos and tan reduce their argument exactly: integer Payne-Hanek
+// with 1280 bits of 2/pi (computed with Python's integers from Machin's formula), so
+// sin(1e300) is as good as sin(1).  NaN results are num::NAN; special values follow C99 Annex
+// F (pow(x, 0) = 1 even for NaN, pow(-1, inf) = 1, log(0) = -inf, sin(inf) = NaN, asin(2) =
+// NaN, atan2(+-0, -0) = +-pi).  The constants of tan, atan, atan2, asin and acos are fdlibm's
+// (checked bit for bit against Java's StrictMath, which is fdlibm); atan2 takes FreeBSD's fix
+// for |y / x| > 2^60 with x < 0 (pi/2 rounded, where fdlibm 5.3 is one ulp above).  hypot is
+// in num (correctly rounded).
 
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
@@ -645,6 +659,14 @@ fn rem_pio2(x: f64) -> (i32, F, F) {
     };
     // r = mag * 2^-128 * pi/2
     let (hi, lo) = mul_wide(mag, PIO2_Q127);
+    let (y0, y1) = dd(hi, lo, -255);
+    let (y0, y1) = if neg_r != neg { (-y0, -y1) } else { (y0, y1) };
+    (if neg { -q } else { q }, y0, y1)
+}
+
+/// y0 + y1 = the 256-bit number hi * 2^128 + lo, times 2^p: y0 rounded to nearest, y1 the
+/// rest to 63 bits; (0, 0) for 0
+fn dd(hi: u128, lo: u128, p: i32) -> (F, F) {
     let (v, lz) = if hi != 0 {
         let lz = hi.leading_zeros();
         (if lz == 0 { hi } else { (hi << lz) | (lo >> (128 - lz)) }, lz as i32)
@@ -652,28 +674,23 @@ fn rem_pio2(x: f64) -> (i32, F, F) {
         let lz = lo.leading_zeros();
         (lo << lz, 128 + lz as i32)
     } else {
-        (0, 0)
+        return (F(0.0), F(0.0));
     };
-    // the value is v * 2^(-127 - lz), v with bit 127 set
-    let (y0, y1) = if v == 0 {
-        (F(0.0), F(0.0))
-    } else {
-        let mut m53 = (v >> 75) as u64;
-        let rest = v & ((1u128 << 75) - 1);
-        let half = 1u128 << 74;
-        let mut tail = rest as i128;
-        if rest > half || (rest == half && m53 & 1 == 1) {
-            m53 += 1;
-            tail -= 1i128 << 75;
-        }
-        let y0 = scalbn(num::from_i64(m53 as i64), -52 - lz);
-        let ta = tail.unsigned_abs();
-        let drop = (128 - ta.leading_zeros()).saturating_sub(63);
-        let y1 = scalbn(num::from_i64((ta >> drop) as i64), drop as i32 - 127 - lz);
-        (F(y0), if tail < 0 { -F(y1) } else { F(y1) })
-    };
-    let (y0, y1) = if neg_r != neg { (-y0, -y1) } else { (y0, y1) };
-    (if neg { -q } else { q }, y0, y1)
+    // the value is v * 2^q, v with bit 127 set
+    let q = p + 128 - lz;
+    let mut m53 = (v >> 75) as u64;
+    let rest = v & ((1u128 << 75) - 1);
+    let half = 1u128 << 74;
+    let mut tail = rest as i128;
+    if rest > half || (rest == half && m53 & 1 == 1) {
+        m53 += 1;
+        tail -= 1i128 << 75;
+    }
+    let y0 = scalbn(num::from_i64(m53 as i64), q + 75);
+    let ta = tail.unsigned_abs();
+    let drop = (128 - ta.leading_zeros()).saturating_sub(63);
+    let y1 = scalbn(num::from_i64((ta >> drop) as i64), q + drop as i32);
+    (F(y0), if tail < 0 { -F(y1) } else { F(y1) })
 }
 
 /// the sine
@@ -719,4 +736,457 @@ pub fn cos(x: f64) -> f64 {
         2 => (-kcos(y0, y1)).0,
         _ => ksin(y0, y1, true).0,
     }
+}
+
+// ---- tan
+
+/// a float from its bits
+const fn b(bits: u64) -> F {
+    F(f64::from_bits(bits))
+}
+
+const PIO4: F = b(0x3FE9_21FB_5444_2D18);
+const PIO4LO: F = b(0x3C81_A626_3314_5C07);
+const T: [F; 13] = [
+    b(0x3FD5_5555_5555_5563), b(0x3FC1_1111_1110_FE7A), b(0x3FAB_A1BA_1BB3_41FE), b(0x3F96_64F4_8406_D637),
+    b(0x3F82_26E3_E96E_8493), b(0x3F6D_6D22_C956_0328), b(0x3F57_DBC8_FEE0_8315), b(0x3F43_44D8_F2F2_6501),
+    b(0x3F30_26F7_1A8D_1068), b(0x3F14_7E88_A037_92A6), b(0x3F12_B80F_32F0_A7E9), b(0xBEF3_75CB_DB60_5373),
+    b(0x3EFB_2A70_74BF_7AD4),
+];
+
+/// tan(x + y) (k = 1) or -1 / tan(x + y) (k = -1) for |x + y| <= pi/4, y the tail (fdlibm's
+/// __kernel_tan, its 2004 version)
+fn ktan(x: F, y: F, k: i32) -> F {
+    let hx = x.hi() as i32;
+    let ix = hx & 0x7FFF_FFFF;
+    if ix < 0x3E30_0000 {
+        // |x| < 2^-28
+        if ix as u32 | x.lo() == 0 && k == -1 {
+            return F(num::div(1.0, num::abs(x.0)));
+        }
+        if k == 1 {
+            return x;
+        }
+        // -1 / (x + y), carefully
+        let w = x + y;
+        let z = w.with_lo(0);
+        let v = y - (z - x);
+        let a = F(-1.0) / w;
+        let t = a.with_lo(0);
+        let s = ONE + t * z;
+        return t + a * (s + t * v);
+    }
+    let big = ix >= 0x3FE5_9428;
+    let (mut x, mut y) = (x, y);
+    if big {
+        // |x| >= 0.6744: tan(pi/4 - x)
+        if hx < 0 {
+            x = -x;
+            y = -y;
+        }
+        x = (PIO4 - x) + (PIO4LO - y);
+        y = F(0.0);
+    }
+    let z = x * x;
+    let w = z * z;
+    // x^5 (T1 + x^2 T2 + ..) split into its odd and even halves
+    let r = T[1] + w * (T[3] + w * (T[5] + w * (T[7] + w * (T[9] + w * T[11]))));
+    let v = z * (T[2] + w * (T[4] + w * (T[6] + w * (T[8] + w * (T[10] + w * T[12])))));
+    let s = z * x;
+    let r = y + z * (s * (r + v) + y) + T[0] * s;
+    let w = x + r;
+    if big {
+        let v = int(k);
+        let t = v - TWO * (x - (w * w / (w + v) - r));
+        return if hx < 0 { -t } else { t };
+    }
+    if k == 1 {
+        return w;
+    }
+    // -1 / (x + r), carefully
+    let z = w.with_lo(0);
+    let v = r - (z - x);
+    let a = F(-1.0) / w;
+    let t = a.with_lo(0);
+    let s = ONE + t * z;
+    t + a * (s + t * v)
+}
+
+/// the tangent
+pub fn tan(x: f64) -> f64 {
+    let ix = F(x).hi() & 0x7FFF_FFFF;
+    if ix <= 0x3FE9_21FB {
+        return ktan(F(x), F(0.0), 1).0;
+    }
+    if ix >= 0x7FF0_0000 {
+        return NAN;
+    }
+    let (n, y0, y1) = rem_pio2(x);
+    ktan(y0, y1, 1 - ((n & 1) << 1)).0
+}
+
+// ---- atan, atan2
+
+const ATANHI: [F; 4] = [b(0x3FDD_AC67_0561_BB4F), b(0x3FE9_21FB_5444_2D18), b(0x3FEF_730B_D281_F69B), b(0x3FF9_21FB_5444_2D18)];
+const ATANLO: [F; 4] = [b(0x3C7A_2B7F_222F_65E2), b(0x3C81_A626_3314_5C07), b(0x3C70_0788_7AF0_CBBD), b(0x3C91_A626_3314_5C07)];
+const AT: [F; 11] = [
+    b(0x3FD5_5555_5555_550D), b(0xBFC9_9999_9998_EBC4), b(0x3FC2_4924_9200_83FF), b(0xBFBC_71C6_FE23_1671),
+    b(0x3FB7_45CD_C54C_206E), b(0xBFB3_B0F2_AF74_9A6D), b(0x3FB1_0D66_A0D0_3D51), b(0xBFAD_DE2D_52DE_FD9A),
+    b(0x3FA9_7B4B_2476_0DEB), b(0xBFA2_B444_2C6A_6C2F), b(0x3F90_AD3A_E322_DA11),
+];
+
+/// the arc tangent, in (-pi/2, pi/2)
+pub fn atan(x: f64) -> f64 {
+    let hx = F(x).hi() as i32;
+    let ix = hx & 0x7FFF_FFFF;
+    let mut x = F(x);
+    let id: usize;
+    if ix >= 0x4410_0000 {
+        // |x| >= 2^66
+        if num::is_nan(x.0) {
+            return NAN;
+        }
+        return if hx > 0 { (ATANHI[3] + ATANLO[3]).0 } else { (-ATANHI[3] - ATANLO[3]).0 };
+    }
+    if ix < 0x3FDC_0000 {
+        // |x| < 0.4375
+        if ix < 0x3E40_0000 {
+            // |x| < 2^-27
+            return x.0;
+        }
+        id = 4;
+    } else {
+        x = F(num::abs(x.0));
+        if ix < 0x3FF3_0000 {
+            if ix < 0x3FE6_0000 {
+                // 7/16 <= |x| < 11/16
+                id = 0;
+                x = (TWO * x - ONE) / (TWO + x);
+            } else {
+                // 11/16 <= |x| < 19/16
+                id = 1;
+                x = (x - ONE) / (x + ONE);
+            }
+        } else if ix < 0x4003_8000 {
+            // |x| < 2.4375
+            id = 2;
+            x = (x - F(1.5)) / (ONE + F(1.5) * x);
+        } else {
+            id = 3;
+            x = F(-1.0) / x;
+        }
+    }
+    let z = x * x;
+    let w = z * z;
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+    if id == 4 {
+        return (x - x * (s1 + s2)).0;
+    }
+    let z = ATANHI[id] - ((x * (s1 + s2) - ATANLO[id]) - x);
+    if hx < 0 { (-z).0 } else { z.0 }
+}
+
+const PI: F = b(0x4009_21FB_5444_2D18);
+const PI_O_2: F = b(0x3FF9_21FB_5444_2D18);
+const PI_O_4: F = b(0x3FE9_21FB_5444_2D18);
+const PI_LO: F = b(0x3CA1_A626_3314_5C07);
+
+/// the angle of the point (x, y) (FreeBSD's e_atan2.c): atan(y / x) in the right quadrant,
+/// in [-pi, pi]; C99 for zeros and infinities (atan2(+-0, -0) = +-pi, atan2(+-0, +0) = +-0)
+pub fn atan2(y: f64, x: f64) -> f64 {
+    if num::is_nan(x) || num::is_nan(y) {
+        return NAN;
+    }
+    let (hx, lx) = words(x);
+    let (hy, ly) = words(y);
+    let (ix, iy) = (hx & 0x7FFF_FFFF, hy & 0x7FFF_FFFF);
+    if hx.wrapping_sub(0x3FF0_0000) as u32 | lx == 0 {
+        // x = 1
+        return atan(y);
+    }
+    // 2 * sign(x) + sign(y)
+    let mut m = ((hy >> 31) & 1) | ((hx >> 30) & 2);
+    if iy as u32 | ly == 0 {
+        return match m {
+            0 | 1 => y,
+            2 => (PI + TINY).0,
+            _ => (-PI - TINY).0,
+        };
+    }
+    if ix as u32 | lx == 0 {
+        return if hy < 0 { (-PI_O_2 - TINY).0 } else { (PI_O_2 + TINY).0 };
+    }
+    if ix == 0x7FF0_0000 {
+        let r = if iy == 0x7FF0_0000 {
+            match m {
+                0 => PI_O_4 + TINY,
+                1 => -PI_O_4 - TINY,
+                2 => F(3.0) * PI_O_4 + TINY,
+                _ => F(-3.0) * PI_O_4 - TINY,
+            }
+        } else {
+            match m {
+                0 => F(0.0),
+                1 => F(-0.0),
+                2 => PI + TINY,
+                _ => -PI - TINY,
+            }
+        };
+        return r.0;
+    }
+    if iy == 0x7FF0_0000 {
+        return if hy < 0 { (-PI_O_2 - TINY).0 } else { (PI_O_2 + TINY).0 };
+    }
+    let k = (iy - ix) >> 20;
+    let z = if k > 60 {
+        // |y / x| > 2^60: pi/2 with the sign of y
+        m &= 1;
+        PI_O_2 + HALF * PI_LO
+    } else if hx < 0 && k < -60 {
+        // 0 > |y| / x > -2^-60
+        F(0.0)
+    } else {
+        F(atan(num::abs(num::div(y, x))))
+    };
+    match m {
+        0 => z.0,
+        1 => (-z).0,
+        2 => (PI - (z - PI_LO)).0,
+        _ => ((z - PI_LO) - PI).0,
+    }
+}
+
+// ---- asin, acos
+
+const PIO2_HI: F = b(0x3FF9_21FB_5444_2D18);
+const PIO2_LO: F = b(0x3C91_A626_3314_5C07);
+const PS: [F; 6] = [
+    b(0x3FC5_5555_5555_5555), b(0xBFD4_D612_03EB_6F7D), b(0x3FC9_C155_0E88_4455),
+    b(0xBFA4_8228_B568_8F3B), b(0x3F49_EFE0_7501_B288), b(0x3F02_3DE1_0DFD_F709),
+];
+const QS: [F; 4] = [b(0xC003_3A27_1C8A_2D4B), b(0x4000_2AE5_9C59_8AC8), b(0xBFE6_066C_1B8D_0159), b(0x3FB3_B8C5_B12E_9282)];
+
+/// the rational function of asin and acos: p(t) / q(t)
+fn asin_r(t: F) -> F {
+    let p = t * (PS[0] + t * (PS[1] + t * (PS[2] + t * (PS[3] + t * (PS[4] + t * PS[5])))));
+    let q = ONE + t * (QS[0] + t * (QS[1] + t * (QS[2] + t * QS[3])));
+    p / q
+}
+
+/// the arc sine, in [-pi/2, pi/2]; NaN outside [-1, 1]
+pub fn asin(x: f64) -> f64 {
+    let (hx, lx) = words(x);
+    let ix = hx & 0x7FFF_FFFF;
+    let x = F(x);
+    if ix >= 0x3FF0_0000 {
+        if (ix - 0x3FF0_0000) as u32 | lx == 0 {
+            // +-1: +-pi/2
+            return (x * PIO2_HI + x * PIO2_LO).0;
+        }
+        return NAN;
+    }
+    if ix < 0x3FE0_0000 {
+        // |x| < 0.5
+        if ix < 0x3E50_0000 {
+            // |x| < 2^-26
+            return x.0;
+        }
+        return (x + x * asin_r(x * x)).0;
+    }
+    // 0.5 <= |x| < 1
+    let t = (ONE - F(num::abs(x.0))) * HALF;
+    let r = asin_r(t);
+    let s = F(num::sqrt(t.0));
+    let t = if ix >= 0x3FEF_3333 {
+        // |x| > 0.975
+        PIO2_HI - (TWO * (s + s * r) - PIO2_LO)
+    } else {
+        let w = s.with_lo(0);
+        let c = (t - w * w) / (s + w);
+        let p = TWO * s * r - (PIO2_LO - TWO * c);
+        let q = PIO4 - TWO * w;
+        PIO4 - (p - q)
+    };
+    if hx > 0 { t.0 } else { (-t).0 }
+}
+
+/// the arc cosine, in [0, pi]; NaN outside [-1, 1]
+pub fn acos(x: f64) -> f64 {
+    let (hx, lx) = words(x);
+    let ix = hx & 0x7FFF_FFFF;
+    let x = F(x);
+    if ix >= 0x3FF0_0000 {
+        if (ix - 0x3FF0_0000) as u32 | lx == 0 {
+            // acos(1) = 0, acos(-1) = pi
+            return if hx > 0 { 0.0 } else { (PI + TWO * PIO2_LO).0 };
+        }
+        return NAN;
+    }
+    if ix < 0x3FE0_0000 {
+        // |x| < 0.5
+        if ix <= 0x3C60_0000 {
+            // |x| < 2^-57
+            return (PIO2_HI + PIO2_LO).0;
+        }
+        let r = asin_r(x * x);
+        return (PIO2_HI - (x - (PIO2_LO - x * r))).0;
+    }
+    if hx < 0 {
+        // x <= -0.5
+        let z = (ONE + x) * HALF;
+        let s = F(num::sqrt(z.0));
+        let w = asin_r(z) * s - PIO2_LO;
+        return (PI - TWO * (s + w)).0;
+    }
+    // x >= 0.5
+    let z = (ONE - x) * HALF;
+    let s = F(num::sqrt(z.0));
+    let df = s.with_lo(0);
+    let c = (z - df * df) / (s + df);
+    let w = asin_r(z) * s + c;
+    (TWO * (df + w)).0
+}
+
+// ---- sin, cos and tan of degrees
+
+/// pi/180 * 2^133, rounded (bit 127 set)
+const PI180_Q133: u128 = 0x8EFA_3512_94E9_C8AE_0EC5_F66E_9485_C4D9;
+
+/// sqrt(1/2), correctly rounded: sin and cos of 45 degrees
+const SQRT_HALF: f64 = f64::from_bits(0x3FE6_A09E_667F_3BCD);
+
+/// x degrees = 360 j + 90 k + r exactly, with r in [-45, 45] (k: the quadrant, any sign; at
+/// the ties r is 45 or -45); for finite x
+fn deg_reduce(x: f64) -> (i32, f64) {
+    // exact, |y| < 360, with the sign of x
+    let y = num::rem(x, 360.0);
+    let a = num::abs(y);
+    let k = if num::le(a, 45.0) {
+        0
+    } else if num::le(a, 135.0) {
+        1
+    } else if num::le(a, 225.0) {
+        2
+    } else if num::le(a, 315.0) {
+        3
+    } else {
+        4
+    };
+    // exact: a and 90 k are multiples of a's ulp, |r| <= 45
+    let r = num::sub(a, num::from_i64(90 * k as i64));
+    if is_neg(y) { (-k, num::neg(r)) } else { (k, r) }
+}
+
+/// r degrees in radians as y0 + y1, for 0 < |r| <= 45: r's mantissa times 128 bits of pi/180,
+/// exactly
+fn deg_rad(r: f64) -> (F, F) {
+    let bits = r.to_bits();
+    let be = ((bits >> 52) & 0x7FF) as i32;
+    let frac = bits & ((1 << 52) - 1);
+    let (m, e) = if be == 0 { (frac, -1074) } else { (frac | 1 << 52, be - 1075) };
+    let (hi, lo) = mul_wide(m as u128, PI180_Q133);
+    let (y0, y1) = dd(hi, lo, e - 133);
+    if is_neg(r) { (-y0, -y1) } else { (y0, y1) }
+}
+
+fn is_zero(x: f64) -> bool {
+    x.to_bits() << 1 == 0
+}
+
+fn is_neg(x: f64) -> bool {
+    x.to_bits() >> 63 != 0
+}
+
+/// |x| is a, exactly
+fn abs_is(x: f64, a: f64) -> bool {
+    x.to_bits() << 1 == a.to_bits() << 1
+}
+
+/// sin of r degrees, |r| <= 45 (exact at 0, 30 and 45: 0, 1/2, sqrt(1/2) rounded)
+fn sin_r(r: f64) -> f64 {
+    if is_zero(r) {
+        return r;
+    }
+    let v = if abs_is(r, 30.0) {
+        0.5
+    } else if abs_is(r, 45.0) {
+        SQRT_HALF
+    } else {
+        let (y0, y1) = deg_rad(r);
+        return ksin(y0, y1, true).0;
+    };
+    if is_neg(r) { -v } else { v }
+}
+
+/// cos of r degrees, |r| <= 45
+fn cos_r(r: f64) -> f64 {
+    if is_zero(r) {
+        1.0
+    } else if abs_is(r, 45.0) {
+        SQRT_HALF
+    } else {
+        let (y0, y1) = deg_rad(r);
+        kcos(y0, y1).0
+    }
+}
+
+/// the sine of x degrees: exact where the result is a float (multiples of 30 degrees: 0,
+/// +-1/2, +-1), a zero with the sign of x (sinPi of IEEE 754-2019); NaN for inf and NaN
+pub fn sin_deg(x: f64) -> f64 {
+    if !finite(x) {
+        return NAN;
+    }
+    let (k, r) = deg_reduce(x);
+    let v = match k.rem_euclid(4) {
+        0 => sin_r(r),
+        1 => cos_r(r),
+        2 => num::neg(sin_r(r)),
+        _ => num::neg(cos_r(r)),
+    };
+    if is_zero(v) { f64::from_bits(x.to_bits() & 1 << 63) } else { v }
+}
+
+/// the cosine of x degrees: exact where the result is a float, +0 at 90 + 180 n
+pub fn cos_deg(x: f64) -> f64 {
+    if !finite(x) {
+        return NAN;
+    }
+    let (k, r) = deg_reduce(x);
+    let v = match k.rem_euclid(4) {
+        0 => cos_r(r),
+        1 => num::neg(sin_r(r)),
+        2 => num::neg(cos_r(r)),
+        _ => sin_r(r),
+    };
+    if is_zero(v) { 0.0 } else { v }
+}
+
+/// the tangent of x degrees: exact at multiples of 45 degrees (0, +-1, +-inf); +inf at
+/// 90 + 360 n, -inf at 270 + 360 n, the zeros signed as tanPi of IEEE 754-2019
+pub fn tan_deg(x: f64) -> f64 {
+    if !finite(x) {
+        return NAN;
+    }
+    let (k, r) = deg_reduce(x);
+    let q = k.rem_euclid(4);
+    if is_zero(r) {
+        return match q {
+            1 => f64::INFINITY,
+            3 => f64::NEG_INFINITY,
+            // a multiple of 180: sin / cos with their signs
+            _ => f64::from_bits((x.to_bits() & 1 << 63) ^ if q == 2 { 1 << 63 } else { 0 }),
+        };
+    }
+    let odd = q & 1 != 0;
+    if abs_is(r, 45.0) {
+        // tan is 1 there, -1 / tan as well
+        return if is_neg(r) != odd { -1.0 } else { 1.0 };
+    }
+    let (y0, y1) = deg_rad(r);
+    ktan(y0, y1, if odd { -1 } else { 1 }).0
+}
+
+fn finite(x: f64) -> bool {
+    x.to_bits() & 0x7FF0_0000_0000_0000 != 0x7FF0_0000_0000_0000
 }
