@@ -19,9 +19,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G6 | Tempo | **Wie empfohlen:** erst messen, mit den Zielwerten als Prüfungen (10 000 Shapes mit einer Eigenschaft unter 0,5 s auf der Iris Xe-Klasse, der Skript-Teil eines Modells mit 1000 Teilen unter 1 s, ein Handler unter 5 ms, JFNetworker unverändert); erst bei verfehlten Zielen optimieren; kein JIT. | 2026-11-23 |
 
-| G7 | Verträglichkeit, Versionen, Ort | **Wie empfohlen:** Brüche nur mit einer Version der Sprache und einer automatischen Umstellung, so selten wie möglich (G7.1); `int / int` schneidet weiter ab, die Sprachdienste warnen (G7.2); Name und `.jfs` bleiben (G7.3); JFScript bleibt im eigenen Repository per git, die Bausteine von JFLib für Skripte bleiben sprachneutral, crates.io wird nach S2 oder für Dritte neu entschieden (G7.4). | 2026-11-23 |
+| G7 | Verträglichkeit, Versionen, Ort | **Wie empfohlen:** Brüche nur mit einer Version der Sprache und einer automatischen Umstellung, so selten wie möglich (G7.1); `int / int` schneidet weiter ab, die Sprachdienste warnen (G7.2); Name und `.jfs` bleiben (G7.3); JFScript bleibt im eigenen Repository per git, JFLib hängt nie von JFScript ab, crates.io wird nach S2 oder für Dritte neu entschieden (G7.4; mit G8 am 2026-11-23 geschärft: JFLib bekommt keine Bausteine nur für Skripte). | 2026-11-23 |
 
-| G8 | Werkzeuge für Anwender | **Wie empfohlen:** Debugger und Konsole als sprachneutrale Bausteine in JFLib neben `ui.code_editor`, die Anbindung von JFScript in einem kleinen Crate seines Repositorys (G8.1); ein gemeinsames Fenster „Skripte“, JFDiagrammer als erste App (G8.2); ein Objektkatalog aus den Beschreibungen des Hosts (G8.3); Makro-Rekorder später je App, die Objektmodelle von Anfang an so, dass jeder Befehl einen Aufruf hat (G8.4); JFNetworker kann wechseln, muss nicht (G8.5). | 2026-11-23 |
+| G8 | Werkzeuge für Anwender | **Getrennt von JFLib** (der Nutzer, nach einer ersten Fassung mit Bausteinen in JFLib): Alles für Skripte liegt im Repository von JFScript, in einem eigenen Crate neben der Sprache (Arbeitsname `jfscript-ide`): Debugger-Ansicht, Konsole, das Fenster „Skripte“, der Objektkatalog, die Anbindung an `plat::policy`; er baut auf den allgemeinen Widgets von JFLib (`ui.code_editor` mit seiner Schnittstelle für Sprachdienste, Bäume, Listen, Text) und nimmt `jflib` von crates.io; Apps nehmen ihn per git. In JFLib kommt nichts nur für Skripte; fehlt ein allgemeines Widget, kommt es als gewöhnliche Funktion von `lib/ui` (G8.1). Das Fenster „Skripte“ mit JFDiagrammer als erster App (G8.2); der Objektkatalog aus den Beschreibungen des Hosts (G8.3); Makro-Rekorder später je App, die Objektmodelle von Anfang an so, dass jeder Befehl einen Aufruf hat (G8.4); JFNetworker kann wechseln, muss nicht (G8.5). | 2026-11-23 |
 
 | G9 | Sprache der Meldungen und Namen | **Wie empfohlen:** Meldungen in der Sprache der App über eine eigene Tabelle von JFScript (zuerst `de` und `en`, ohne Angabe Deutsch wie heute) (G9.1); die Texte der Sprachdienste und des Objektkatalogs auf demselben Weg, die Beschreibungen der Hosts in ihren Sprachen (G9.2); Namen in den Objektmodellen englisch, auch die Parameter, die von `modeltool` werden vor den benannten Argumenten umgestellt; Schlüsselwörter nie übersetzt (G9.3). | 2026-11-23 |
 
@@ -270,9 +270,9 @@ Schleifen in Modellen kann das zu langsam werden.
 - **G7.3 Name:** JFScript und die Endung `.jfs` bleiben.
 - **G7.4 Ort:** das eigene Repository bleibt, Programme nehmen JFScript per git (Entscheidung vom 2026-11-09). crates.io
   wird nur nötig, wenn ein Crate von JFLib selbst JFScript braucht (ein Crate auf crates.io darf nicht von git
-  abhängen); Apps in eigenen Repos können git nehmen, wie JFNetworker es tut. Das lässt sich vermeiden, wenn die
-  Bausteine von JFLib für Skripte (der Editor nach G8) neutral bleiben: JFLib gibt eine Schnittstelle für Sprachdienste
-  und Debugger, die App steckt JFScript hinein. *Empfehlung: bei git bleiben, die Bausteine von JFLib neutral halten;
+  abhängen); Apps in eigenen Repos können git nehmen, wie JFNetworker es tut. Das lässt sich vermeiden, wenn JFLib nie
+  von JFScript abhängt: nach G8 liegen alle Werkzeuge für Skripte im Repository von JFScript, JFLib liefert nur
+  allgemeine Widgets. *Empfehlung: bei git bleiben, JFLib frei von JFScript halten;
   crates.io neu entscheiden, wenn die Host-Schnittstelle in zweiter Fassung (S2) stabil ist oder Dritte JFScript nutzen
   sollen.*
 
@@ -289,10 +289,16 @@ einen Objektkatalog. Was es schon gibt:
 
 Die Teilfragen:
 
-- **G8.1 Debugger und Konsole als Bausteine in JFLib:** sprachneutral über eine Schnittstelle (Haltepunkte, Aufrufe,
-  Variablen als Baum, Beobachten, Schritte; eine Konsole mit Eingabezeile); JFScript liefert die Anbindung in einem
-  kleinen Crate seines Repositorys (das schon `jflib` nimmt). *Empfehlung: ja.*
-- **G8.2 Ein Fenster „Skripte“** für alle Apps aus diesen Bausteinen: die Skripte des Anwenders, des Dokuments und der
+- **G8.1 Wo die Werkzeuge liegen:** im Repository von JFScript, in einem eigenen Crate neben der Sprache (Arbeitsname
+  `jfscript-ide`): Debugger-Ansicht (Haltepunkte, Aufrufe, Variablen als Baum, Beobachten, Schritte), Konsole mit
+  Eingabezeile, das Fenster „Skripte“ (G8.2), der Objektkatalog (G8.3) und die Anbindung an die Rechte über
+  `plat::policy` (G5). Er setzt sich aus den allgemeinen Widgets von JFLib zusammen (`ui.code_editor` mit seiner
+  Schnittstelle für Sprachdienste, die auch Rust, JSON und Markdown bedient; Bäume, Listen, Text) und nimmt `jflib` von
+  crates.io wie JFScript heute. Apps nehmen ihn per git, auch JFDiagrammer, solange es im Repository von JFLib liegt
+  (wie `editortest` und `modeltool` die Sprache). In JFLib kommt nichts nur für Skripte; fehlt ein allgemeines Widget,
+  kommt es als gewöhnliche Funktion von `lib/ui`. *Entschieden so (der Nutzer, 2026-11-23); eine erste Fassung hatte
+  sprachneutrale Bausteine für Debugger und Konsole in JFLib vorgesehen.*
+- **G8.2 Ein Fenster „Skripte“** für alle Apps, im selben Crate: die Skripte des Anwenders, des Dokuments und der
   Erweiterungen, ausführen, an Schaltflächen und Tastenkürzel hängen, ein- und ausschalten (mit den Rechten aus G5); die
   App gibt ihr Objektmodell und ihre Orte dazu. *Empfehlung: ja, als gemeinsamer Baustein, den JFDiagrammer als erste
   App nimmt.*
@@ -351,7 +357,7 @@ Nach den Entscheidungen G1 bis G9:
 | S1 | Was in jeder Richtung richtig ist und nichts Bestehendes ändert: die Stelle des Aufrufs und Warnungen für den Host (`cx.position()`, `cx.warn`), Mathematik (`tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, Winkel in Grad, bei 90° exakt), Bereiche mit Schritt und `linspace`, die Warnung bei `int / int` (G7.2); in `modeltool` englische Namen der Parameter (G9.3) | `modeltool`, JFNetworker |
 | S2 | Die Host-Schnittstelle in zweiter Fassung (G4): Host-Objekte, Eigenschaften, Operatoren für Host-Typen, Ereignisse mit `on` / `off`; die Beschreibungen des Hosts mit Typen für die Sprachdienste und den Objektkatalog (G3, G8.3) | Seiten in JFNetworker (Elemente als Host-Objekte), Meshes und Vektoren in `modeltool` |
 | S3 | Ein Durchgang über die Syntax nach G1 d: Bedingungsausdruck, benannte Argumente, Zerlegen, Listen aus Schleifen, `await` als Kandidat (G4.6); Versionen der Sprache mit automatischer Umstellung (G7.1); Meldungen in der Sprache der App (G9) | alle |
-| S4 | Rechte je Skript und Skripte in Dokumenten (G5.1, G5.2, G5.5); Debugger und Konsole als Bausteine in JFLib, das Fenster „Skripte“ (G8.1, G8.2) | JFDiagrammer |
+| S4 | Rechte je Skript und Skripte in Dokumenten (G5.1, G5.2, G5.5); der Crate `jfscript-ide` im Repository von JFScript mit Debugger, Konsole und dem Fenster „Skripte“ (G8.1, G8.2) | JFDiagrammer |
 | S5 | Tempo gegen die Zielwerte (G6), Gleitkomma in Hardware, wenn die Tests dieselben Bits zeigen (G2) | alle |
 | S6 | Die Automatisierung von JFDiagrammer (FEATURES.md UI-21) auf S2 bis S4 | JFDiagrammer |
 | später | optionale Typangaben (G3 b), `class` (G4.4), Erweiterungen mit Manifest (G5.3), Signaturen (G5.4), Makro-Rekorder (G8.4), Erweiterungen in WebAssembly (G1 c), crates.io (G7.4) | – |
