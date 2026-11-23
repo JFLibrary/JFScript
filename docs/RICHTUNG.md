@@ -1,6 +1,6 @@
-# JFScript: Richtung (Entwurf eines Entscheidungspapiers)
+# JFScript: Richtung (Entscheidungspapier)
 
-Stand 2026-11-23, Entwurf zur Besprechung. Das Papier soll festlegen, wofür JFScript da ist und wie es wächst, bevor
+Stand 2026-11-23, entschieden am selben Tag. Das Papier soll festlegen, wofür JFScript da ist und wie es wächst, bevor
 eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden sind, bleibt JFScript unverändert;
 `modeltool`, JFNetworker und die Tests kommen mit der heutigen Sprache aus.
 
@@ -25,7 +25,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G9 | Sprache der Meldungen und Namen | **Wie empfohlen:** Meldungen in der Sprache der App über eine eigene Tabelle von JFScript (zuerst `de` und `en`, ohne Angabe Deutsch wie heute) (G9.1); die Texte der Sprachdienste und des Objektkatalogs auf demselben Weg, die Beschreibungen der Hosts in ihren Sprachen (G9.2); Namen in den Objektmodellen englisch, auch die Parameter, die von `modeltool` werden vor den benannten Argumenten umgestellt; Schlüsselwörter nie übersetzt (G9.3). | 2026-11-23 |
 
-Offen ist nur noch die Reihenfolge der Stufen.
+| Reihenfolge | S1 sofort oder mit S2? | **S1 sofort** (klein, ändert nichts Bestehendes, hilft `modeltool` gleich). | 2026-11-23 |
+
+Alle Grundfragen sind entschieden.
 
 ## Warum jetzt
 
@@ -367,5 +369,4 @@ die Prüfsumme von `modeltool` gleich, solange nicht ausdrücklich eine Version 
 
 ## Zu entscheiden
 
-G1 bis G9 sind entschieden (Tabelle am Anfang). Offen ist nur die Reihenfolge: S1 sofort (klein, ändert nichts
-Bestehendes, hilft `modeltool` gleich), oder zusammen mit S2?
+Nichts mehr: G1 bis G9 und die Reihenfolge sind entschieden (Tabelle am Anfang). S1 läuft.
