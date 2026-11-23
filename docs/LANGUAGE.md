@@ -27,6 +27,9 @@ loop {
         Status::Error(e) => { log(&e.to_string()); break }   // message, position, stack trace
     }
 }
+for w in vm.take_warnings() {                         // what natives warned about (cx.warn)
+    log(&format!("{}:{}", w.file, w));                // "server.jfs:7:3: Warnung: …"
+}
 let req = vm.new_str("GET /")?;
 vm.call("on_request", &[req])?;                       // a global function, then run() again
 let v = vm.global("hits");                            // read and set globals
@@ -37,7 +40,7 @@ names such as `str.split` or `list.map` never reach the host:
 
 ```rust
 #[derive(Default)]
-struct MyHost { handlers: Vec<script::Pin> }
+struct MyHost { handlers: Vec<script::Pin>, parts: Vec<(String, u32)> }
 
 impl Host for MyHost {
     fn call(&mut self, cx: &mut Cx, name: &str, args: &[Value]) -> Result<Value, Fail> {
@@ -61,6 +64,12 @@ impl Host for MyHost {
                 Ok(Value::Nil)
             }
             "fail" => Err(cx.error("kaputt")),                          // a catchable exception
+            "model.add" => {                                            // where the script said it
+                let at = cx.position();                                 // file, line, col of the call
+                self.parts.push((at.file, at.line));
+                if floating(args) { cx.warn("das Teil schwebt 2 cm über dem Boden") }
+                Ok(Value::Nil)
+            }
             _ => Err(Fail::Unknown),                                    // "Unbekannte Funktion …"
         }
     }
@@ -87,6 +96,21 @@ impl Host for MyHost {
   `cx.fuel()` is the fuel of the invocation so far, over all its runs and this call included:
   a host that turns fuel into time knows the moment a native is called at (JFNetworker's
   scripts send a packet then: `apps/JFNetworker/crates/jfn_sim/scriptsvc.rs`).
+* Where a native was called: `cx.position()` gives a `Position { file, line, col }` of the
+  script's call that reached it, from the line table (the file is `Program::name`, a module's
+  path or the name of a script of `add_script`; line and column from 1, the column of the
+  called name as in errors). In a callback that a native runs through `cx.call` (the host's
+  own, `list.map`, `list.sort`) it is the call inside the callback; a native that a library
+  function calls directly (`[1, 2].map(log)`) gets that function's call. Yields, slices of any
+  size, a debugger and clones of the VM do not change it.
+* Warnings: `cx.warn(text)` notes a `Warning { file, line, col, msg }` at `cx.position()` and
+  the script goes on (no fuel, no output, nothing catchable). The host takes them with
+  `vm.take_warnings()` (oldest first; `vm.warnings()` only looks); a VM keeps at most
+  `script::MAX_WARNINGS` (1000) between two takes and counts the others
+  (`vm.warnings_dropped()`, since the VM was made). A host that never takes them sees no
+  difference. `Warning`'s text is `3:5: Warnung: …` like a `Diagnostic`'s; the file in front is
+  the host's to add. Scripts themselves have no `warn(..)` (it would be a new global name, which
+  a host may already use).
 * Values (`Value`, 16 bytes) refer to the VM's heap. A value the host keeps beyond the next
   `run` must be pinned (`pin` / `pinned` / `unpin`), e.g. a request handler; `valid(v)` tells
   a stale one, and the API returns `None` or an error instead of crashing on it. The host's own
@@ -107,7 +131,8 @@ impl Host for MyHost {
 * `Vm: Clone + Send`: a clone is a full copy (heap included) that runs on independently, also
   from the middle of a yielded invocation; a `Program` is shared (`Arc`) between VMs.
 * Semantics for script writers: `nil` and `false` are falsy, everything else is truthy; `int`
-  is i64 with wrapping `+ - *`, `/` and `%` truncate and throw on 0; an `int` meeting a `float`
+  is i64 with wrapping `+ - *`, `/` and `%` truncate and throw on 0 (`7 / 2` is `3`; the editor
+  warns where both sides are certainly ints, below); an `int` meeting a `float`
   becomes a `float`; `==` compares numbers exactly across types, `str` and `bytes` by content,
   lists, maps and functions by identity; maps keep insertion order, keys are `str`, `int` or
   `bool`, a missing key reads `nil`; `for k, v in map` visits the keys present at its start;
@@ -128,10 +153,10 @@ variable (`let list = []`). `script::library()` lists every name for editors.
 |---|---|
 | built in | `print(..)`, `len(x)`, `type(x)` (`"nil" "bool" "int" "float" "str" "bytes" "list" "map" "fn"`), `str(x)`, `int(x)` (truncates floats, parses `"42"`, `"0x1F"`, `"-0b11"`, throws otherwise), `float(x)` |
 | `str` | `s.len()` `s.slice(start, end)` `s.split(sep, n)` `sep.join(list)` `s.trim(chars)` `s.trim_start(chars)` `s.trim_end(chars)` `s.find(sub, from)` `s.find_last(sub)` `s.contains(sub)` `s.starts_with(p)` `s.ends_with(p)` `s.count(sub)` `s.replace(from, to, n)` `s.upper()` `s.lower()` `s.repeat(n)` `s.chars()` `s.bytes()` `s.code(i)` `str.from_code(n, ..)` `s.format(args..)` `s.hash()` |
-| `list` | `l.len()` `l.push(x, ..)` `l.pop()` `l.insert(i, x)` `l.remove(i)` `l.slice(start, end)` `l.reverse()` `l.sort(cmp)` `l.map(f)` `l.filter(f)` `l.reduce(f, init)` `l.contains(x)` `l.index(x)` `l.join(sep)` |
+| `list` | `l.len()` `l.push(x, ..)` `l.pop()` `l.insert(i, x)` `l.remove(i)` `l.slice(start, end)` `l.reverse()` `l.sort(cmp)` `l.map(f)` `l.filter(f)` `l.reduce(f, init)` `l.contains(x)` `l.index(x)` `l.join(sep)`; `list.range(start, end, step)` `list.range(end)` `list.linspace(start, end, n)` |
 | `map` | `m.len()` `m.keys()` `m.values()` `m.entries()` `m.has(k)` `m.get(k, default)` `m.delete(k)` `m.merge(other, ..)` |
 | `bytes` | `bytes()` `bytes("text")` (UTF-8) `bytes([1, 2])` `bytes(1, 2)` `b.len()` `b.slice(start, end)` `b.hex()` `bytes.from_hex(hex)` `b.text(lossy)` `b.hash()`; also `b[i]`, `b + b`, `for x in b` |
-| `math` | `abs` `min` `max` `clamp` `floor` `ceil` `round` `trunc` `sqrt` `pow` `exp` `log` `log2` `log10` `sin` `cos` `is_nan` `is_finite`; `math.pi` `math.e` `math.tau` `math.inf` `math.nan` |
+| `math` | `abs` `min` `max` `clamp` `floor` `ceil` `round` `trunc` `sqrt` `pow` `exp` `log` `log2` `log10` `sin` `cos` `tan` `asin` `acos` `atan` `atan2(y, x)` `hypot(x, y, ..)` `sin_deg` `cos_deg` `tan_deg` `is_nan` `is_finite`; `math.pi` `math.e` `math.tau` `math.inf` `math.nan` |
 | `json` | `json.encode(v, indent)` `json.decode(text)` |
 | `int`, `float` | `int.parse(s, base)` `float.parse(s)` (`nil` when `s` is no number), `int.max` `int.min` |
 
@@ -177,6 +202,19 @@ let shard = "user:42".hash() % 8                     // FNV-1a, stable everywher
   numbers by value (ints against floats exactly, `nan` last), strings and bytes by their
   bytes, and throws for other or mixed types; an error or an exception in `cmp` leaves the
   list as it was.
+* New lists of numbers (functions of the module, like `str.from_code`: `[1].range(3)` is
+  `list.range([1], 3)`, an error): `list.range(start, end, step)` gives `start`, `start + step`,
+  … while before `end` (`end` excluded, as `a..b` in a `for`; `step` 1 by default, a negative one
+  counts down: `list.range(10, 0, -3)` is `[10, 7, 4, 1]`), `list.range(n)` counts from 0. Ints
+  when all three are ints (exact up to `int.max`), else floats computed as `start + i * step`, so
+  no error adds up (`list.range(0, 1, 0.1)` has 10 values, the fourth
+  `0.30000000000000004` as in JavaScript and numpy). `list.linspace(start, end, n)` gives `n`
+  floats from `start` to `end`, both included, `start + (i * (end - start)) / (n - 1)` as in
+  MATLAB (`list.linspace(0, 1, 11)` holds `0.3`, `list.linspace(0, 360, 7)` exactly `60.0`,
+  `120.0` …; huge spans in halves without overflow). Errors: `step` 0, a value that is no
+  number, `nan` or infinite, a negative `n`. The name `range` follows Python and the
+  `Iterator.range` proposal of JavaScript; both live in `list` because they make lists and a new
+  global name could collide with a host's.
 * Maps: `keys` / `values` / `entries` in insertion order; `delete` answers whether the key was
   there; `merge` makes a new map (later maps win, a key keeps its first position);
   `get(k, d)` answers `d` for a missing key.
@@ -187,9 +225,27 @@ let shard = "user:42".hash() % 8                     // FNV-1a, stable everywher
   `script::num`: errors below 1 ulp, exact where the result is (`math.log2(8)` is `3.0`,
   `math.pow(2, 10)` is `1024.0`), `exp` and `pow` bit for bit like Java's `StrictMath`
   except that `pow` follows C99 where Java answers NaN (`pow(1, nan)`, `pow(-1, inf)` and
-  `pow(1, inf)` are 1; `pow(x, 0)` is 1 even for `nan`); `sin` / `cos` reduce their argument
-  exactly, so `sin(1e300)` is right too. `tools/script_math_check.py [--target both]` checks
-  them against Python's `decimal` (and Windows against Linux).
+  `pow(1, inf)` are 1; `pow(x, 0)` is 1 even for `nan`); `sin` / `cos` / `tan` reduce their
+  argument exactly, so `sin(1e300)` is right too. `tan`, `asin`, `acos`, `atan` and `atan2(y, x)`
+  are fdlibm's as well and give Java's `StrictMath` bits; `atan2` takes FreeBSD's fix where
+  `|y / x| > 2^60` and `x < 0` (π/2 rounded, fdlibm one ulp above). C99's special values:
+  `asin(2)` is `nan`, `atan(inf)` π/2, `atan2(±0, -0)` ±π, `atan2(±0, +0)` ±0,
+  `atan2(inf, -inf)` 3π/4. `hypot(x, y, ..)` (also of one list, like `min`) is the length of the
+  vector, correctly rounded (the sum of the squares is exact, no overflow on the way:
+  `hypot(1e308, 1e308)` is `1.4142135623730951e308`), `inf` when a value is infinite even
+  beside `nan`, `0.0` without values; so `hypot(a, b) == hypot(a, b, 0)` always. Angles in
+  degrees: `sin_deg`, `cos_deg` and `tan_deg` reduce exactly (by 360, then to the nearest
+  multiple of 90, then 128 bits of π/180) and are exact wherever the result is a float: at
+  multiples of 30° (`0`, `±0.5`, `±1`; `sin_deg(45)` is `sqrt(0.5)` rounded, the same as
+  `cos_deg(45)`) and for `tan_deg` at multiples of 45° (`±1`, and `inf` at 90°, `-inf` at
+  270°); by Niven's theorem there are no other such points. Zeros carry the signs of `sinPi`,
+  `cosPi` and `tanPi` of IEEE 754-2019 (`sin_deg(-180)` is `-0.0`, `cos_deg(90)` `0.0`,
+  `tan_deg(180)` `-0.0`). Elsewhere they are below 1 ulp like the others.
+  `tools/script_math_check.py [--target both] [--java]` checks them against Python's `decimal`
+  (and Windows against Linux, and with `--java` every function against `StrictMath`: `tan`,
+  `asin`, `acos`, `atan` and `exp` bit for bit; `atan2` except the fix; `hypot` where fdlibm's
+  is not correctly rounded, 6 % of random cases; `pow` at C99's special values; `sin`, `cos`
+  and `log` in under 1 % of the cases and `log10` in 14 %, from FreeBSD's newer kernels).
 * json: `encode` writes compact JSON (or `indent` 1 to 8 spaces per level); int and bool keys
   become their text; `nan` / `inf`, bytes, functions, colliding keys (`1` and `"1"`), data
   that contains itself and more than 64 levels throw. `decode` takes a str or bytes and makes
@@ -201,14 +257,16 @@ let shard = "user:42".hash() % 8                     // FNV-1a, stable everywher
   `list.insert: Index 5 liegt außerhalb der Liste (Länge 3)`).
 * Fuel follows the work, on top of the 1 of the call: 1 per new object, 1 per 64 bytes of text
   read or written, 1 per 8 list values and 1 per 4 map entries copied or visited, 1 per
-  comparison of a sort, 2 for `sqrt`, 4 for `exp log log2 log10 sin cos`, 8 for `pow`, plus
-  what callbacks cost. Long operations pay as they go, so `Limits::fuel` stops a huge sort,
-  split or JSON job in the middle (`ErrorKind::Fuel`, not catchable), and a list being
-  sorted stays as it was.
+  comparison of a sort, 2 for `sqrt`, 4 for `exp log log2 log10 sin cos tan asin acos atan
+  atan2 sin_deg cos_deg tan_deg` and `hypot` (plus 1 per 8 values), 8 for `pow`, 1 per float
+  that `list.range` or `list.linspace` makes (on top of the list), plus what callbacks cost.
+  Long operations pay as they go, so `Limits::fuel` stops a huge sort, split or JSON job in
+  the middle (`ErrorKind::Fuel`, not catchable), and a list being sorted stays as it was.
 * Heap: results are allocated in the VM, so `Limits::heap` holds for them (`ErrorKind::Heap`,
-  not catchable), and a text whose size is known before it is built (`repeat`, `replace`,
-  `join`, `format`) is checked first: `"x".repeat(1000000000000)` fails at once instead of
-  allocating. JSON needs up to about three times the heap limit as temporary memory for its
+  not catchable), and a text or list whose size is known before it is built (`repeat`,
+  `replace`, `join`, `format`, `list.range`, `list.linspace`) is checked first:
+  `"x".repeat(1000000000000)` and `list.range(0, 1e18)` fail at once instead of allocating.
+  JSON needs up to about three times the heap limit as temporary memory for its
   syntax tree.
 
 **Hosts with names of their own**: `compile` checks names against `script::GLOBALS` (the host
@@ -217,6 +275,24 @@ API of JFNetworker) and only warns about others. A host with another set passes 
 library are known anyway, and a name that is neither declared nor known is an error with its
 line and column ("Unbekannter Name prnt – meinst du print?"), so a typing error stops the script
 before it runs. `check_with(src, globals)` gives the editor's diagnostics for such a host.
+
+**A division of two ints** truncates (`7 / 2` is `3`, as in C, Rust and Go; JavaScript has only
+one number). That stays (G7.2 of the direction paper), and `check` / `check_with` warn where both
+sides are certainly ints ([`intdiv.rs`](../script/intdiv.rs)): int literals, `len(..)` and
+`int(..)` (the built-ins, not a variable of that name), `-a` and `+ - * / %` of such values,
+`a ?? b` of two, and variables whose every assignment in the file is one (`let`, `=`, `+=` …,
+also in nested functions; a `let` without a value counts, `nil` throws in arithmetic) and the
+variable of a `for` over `a..b`. Parameters, fields, indexes, calls and the other loop variables
+never are, so the warning is never wrong within the file (a later script of `add_script` or a
+host's `set_global` could still change a top-level variable unseen). Exact divisions of literals
+(`6 / 2`) and by `0` get none. The message names both ways out:
+
+```text
+3:9: Warnung: Ganzzahlige Division: n / 3 schneidet ab (7 / 2 ist 3) – float(n) / 3 rechnet mit Komma, int(n / 3) schneidet ausdrücklich ab
+```
+
+`int(n / 3)` says the truncation is meant and is not warned about; `compile` ignores the warning
+like every other.
 
 **The runner `jfs`** ([`apps/jfs`](../jfs/README.md)) runs scripts on the command line:
 
@@ -236,7 +312,9 @@ callback is left, or at `--until MS`) and `disk` (in memory, or in a JSON file w
 uses only the standard library, `print`, `log` and `timer` runs the same in JFNetworker and in
 `jfs`. The limits come from `--fuel`, `--heap`, `--depth` and `--stack` (else
 `Limits::default()`). Errors of the compiler and of the run go to stderr with file, line,
-column, the source line and the calls; exit code 1 (2 for a wrong command line). Its tests
+column, the source line and the calls; exit code 1 (2 for a wrong command line). Warnings of
+host functions (`cx.warn`; the runner's own: `timer.every` below 10 µs) go to stderr as
+`FILE:LINE:COL: Warnung: …` in order with the log lines and leave the exit code. Its tests
 are example scripts with their expected stdout, stderr, exit code and files
 (`apps/jfs/tests/cases/*.test`), run by `python build_rs.py test jfs` on Windows and Linux.
 

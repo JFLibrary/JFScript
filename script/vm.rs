@@ -28,6 +28,12 @@
 //                                                          paths
 //   vm.add_script(name, src)  then run() as above          a further script with the same
 //                                                          top-level names (module.rs)
+//   cx.position() / cx.warn(text)                          (S1) in a native: the file, line
+//                                                          and column of the script's call; a
+//                                                          warning there that does not stop
+//                                                          the script
+//   vm.take_warnings() / warnings() / warnings_dropped()   the warnings (Warning: file, line,
+//                                                          col, msg), oldest first
 //
 // Fuel is virtual CPU time: one unit per instruction, more for instructions that copy (string
 // and list concatenation, literals, iterating a map), plus what natives charge.  run(host,
@@ -181,6 +187,35 @@ impl core::fmt::Display for Error {
         Ok(())
     }
 }
+
+/// (S1) a place in the scripts: the file (Program::name, a module's path or the name of a
+/// script of Vm::add_script), line and column of the call (from 1; 0 when not in a script)
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Position {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+/// (S1) a warning a native gave with Cx::warn: the script's call that reached it and the
+/// host's text; the script goes on
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Warning {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    pub msg: String,
+}
+
+impl core::fmt::Display for Warning {
+    /// "3:5: Warnung: das Teil schwebt 2 cm über dem Boden" (the file in front is the host's)
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{}:{}: Warnung: {}", self.line, self.col, self.msg)
+    }
+}
+
+/// the warnings a VM keeps until the host takes them (Vm::take_warnings); more are counted
+pub const MAX_WARNINGS: usize = 1000;
 
 /// the outcome of run()
 #[derive(Clone, PartialEq, Debug)]
@@ -382,6 +417,9 @@ pub struct Vm {
     /// a frame of code the running exec does not hold yet was pushed (import, a function of
     /// a module linked in a callback): exec returned Yielded for it, its caller calls it again
     pub(crate) relink: bool,
+    /// (S1) what natives warned about (Cx::warn), until the host takes it
+    warnings: Vec<Warning>,
+    warnings_dropped: u64,
 }
 
 const WRITE_CAP: usize = 4 << 20; // bytes of one value text (shared nodes print once per use)
@@ -441,6 +479,8 @@ impl Vm {
             dbg: None,
             native_yield: false,
             relink: false,
+            warnings: Vec::new(),
+            warnings_dropped: 0,
         }
     }
 
@@ -996,12 +1036,46 @@ impl Vm {
         let mut trace = Vec::new();
         for f in self.frames.iter().rev() {
             let p = &self.code.protos[f.proto as usize];
-            let at = (f.pc as usize).saturating_sub(1).min(p.pos.len().saturating_sub(1));
-            let (line, col) = p.pos.get(at).copied().unwrap_or((0, 0));
-            let file = self.units[p.unit as usize].path.clone();
-            trace.push(TraceLine { func: p.name.clone(), file, line, col });
+            let (file, line, col) = self.call_site(f);
+            trace.push(TraceLine { func: p.name.clone(), file: String::from(file), line, col });
         }
         trace
+    }
+
+    /// the file, line and column of a frame's current instruction (for a caller: its call)
+    fn call_site(&self, f: &Frame) -> (&str, u32, u32) {
+        let p = &self.code.protos[f.proto as usize];
+        let at = (f.pc as usize).saturating_sub(1).min(p.pos.len().saturating_sub(1));
+        let (line, col) = p.pos.get(at).copied().unwrap_or((0, 0));
+        (&self.units[p.unit as usize].path, line, col)
+    }
+
+    /// (S1) where the running native was called: the call of the innermost frame
+    pub(crate) fn position(&self) -> Position {
+        match self.frames.last() {
+            Some(f) => {
+                let (file, line, col) = self.call_site(f);
+                Position { file: String::from(file), line, col }
+            }
+            None => Position::default(),
+        }
+    }
+
+    /// the warnings natives gave (Cx::warn) since the last take_warnings, oldest first
+    pub fn warnings(&self) -> &[Warning] {
+        &self.warnings
+    }
+
+    /// the warnings natives gave since the last take_warnings, emptying the list; at most
+    /// MAX_WARNINGS are kept in between, later ones only counted (warnings_dropped)
+    pub fn take_warnings(&mut self) -> Vec<Warning> {
+        core::mem::take(&mut self.warnings)
+    }
+
+    /// how many warnings did not fit (more than MAX_WARNINGS before a take_warnings), since
+    /// the VM was made
+    pub fn warnings_dropped(&self) -> u64 {
+        self.warnings_dropped
     }
 
     /// an Error at the current instruction, with the trace of all frames
@@ -2377,6 +2451,25 @@ impl Cx<'_> {
     /// end the run after this call returns (Status::Yielded; run() continues after the call)
     pub fn yield_now(&mut self) {
         self.vm.yield_req = true;
+    }
+
+    /// (S1) where the script called this native: the file, line and column of the call (from
+    /// the line table; in a module its path).  In a callback the native runs through call()
+    /// (list.map, a host's own), the call inside the callback; for a native called by a
+    /// library function (list.map(log)), the call of that function.
+    pub fn position(&self) -> Position {
+        self.vm.position()
+    }
+
+    /// (S1) a warning at position() that does not stop the script: the host takes it with
+    /// Vm::take_warnings (a host that never does keeps at most MAX_WARNINGS)
+    pub fn warn(&mut self, msg: &str) {
+        if self.vm.warnings.len() >= MAX_WARNINGS {
+            self.vm.warnings_dropped += 1;
+            return;
+        }
+        let Position { file, line, col } = self.vm.position();
+        self.vm.warnings.push(Warning { file, line, col, msg: String::from(msg) });
     }
 
     /// add text to the print output

@@ -91,6 +91,7 @@ pub fn run(t: &mut T) {
     newlines(t);
     recovery(t);
     checks(t);
+    int_division(t);
     tokens(t);
     robustness(t);
 }
@@ -342,6 +343,89 @@ fn checks(t: &mut T) {
     t.eq("syntax and names", one("let = 1\nprint(zz)"), vec![(1, true), (2, false)]);
     t.eq("check_with", script::check_with("host.ping()", &["host"]), Vec::new());
     t.eq("catch scope", one("try { } catch e { }\nprint(e)"), vec![(2, false)]);
+}
+
+/// (S1) the warning for a division of two ints (intdiv.rs): only where both sides are
+/// certainly ints, never elsewhere
+fn int_division(t: &mut T) {
+    // (line, col, end_col) of the int-division warnings
+    let warned = |src: &str| -> Vec<(u32, u32, u32)> {
+        script::check(src).iter().filter(|d| !d.error && d.msg.starts_with("Ganzzahlige Division")).map(|d| (d.line, d.col, d.end_col)).collect()
+    };
+    let yes = [
+        ("literals", "let a = 7 / 2", (1, 9, 14)),
+        ("negative literals", "let a = -7 / 2", (1, 9, 15)),
+        ("len and int", "let a = len(\"abc\") / int(\"2\")", (1, 9, 30)),
+        ("a for variable over a range", "for i in 0..10 {\n  print(i / 4)\n}", (2, 9, 14)),
+        ("a variable of int values", "let n = 3\nn = n * 2 + 1\nn -= 1\nprint(n / 4)", (4, 7, 12)),
+        ("a let without a value, then ints", "let x\nx = 4\nprint(x / 3)", (3, 7, 12)),
+        ("a variable of variables", "let a = 2\nlet b = a\nlet c = b % 3\nprint(c / a)", (4, 7, 12)),
+        ("assigned in a closure, still ints", "let n = 1\nfn up() { n += 1 }\nprint(n / 2)", (3, 7, 12)),
+        ("a local", "fn f() {\n  let k = 8\n  return k / 3\n}", (3, 10, 15)),
+        ("?? of ints", "let a = 1\nprint((a ?? 2) / 3)", (2, 7, 19)),
+        ("/=", "let k = 9\nk /= 2", (2, 1, 7)),
+        ("operations of ints", "let a = 5\nprint((a + 1) / (a - 1))", (2, 7, 24)),
+        ("a top-level let read in a function", "fn f() { return n / 2 }\nlet n = 10", (1, 17, 22)),
+        ("unicode names", "let größe = 10\nprint(größe / 3)", (2, 7, 16)),
+        ("nested in another expression", "let a = 4\nprint(1.5 + a / 3)", (2, 13, 18)),
+    ];
+    for (what, src, at) in yes {
+        t.eq(&format!("int division: {}", what), warned(src), vec![at]);
+    }
+    let no = [
+        ("a float", "let a = 7 / 2.0\nlet b = 7.0 / 2"),
+        ("float()", "let n = 3\nprint(float(n) / 2)"),
+        ("int(..) says it is meant", "let n = 7\nprint(int(n / 2))"),
+        ("a parameter", "fn f(p) { return p / 2 }"),
+        ("a variable that gets a float", "let n = 4\nn = 0.5\nprint(n / 2)"),
+        ("a float in a closure", "let n = 4\nfn half() { n = n / 2.0 }\nprint(n / 2)"),
+        ("+= of a float", "let n = 4\nn += 0.5\nprint(n / 2)"),
+        ("a call", "fn two() { return 2 }\nprint(two() / 2)"),
+        ("a method", "print([1, 2].len() / 2)"),
+        ("a field", "let m = {a: 4}\nprint(m.a / 2)"),
+        ("an index", "let l = [4]\nprint(l[0] / 2)"),
+        ("a host name", "print(config.port / 2)"),
+        ("an unknown name", "print(zz / 2)"),
+        ("a for variable over a list", "for x in [1, 2] { print(x / 2) }"),
+        ("the index of for k, v", "for i, x in [1, 2] { print(i / 2) }"),
+        ("a catch variable", "try { throw 1 } catch e { print(e / 2) }"),
+        ("an exact division of literals", "print(6 / 2, -9 / 3, 0 / 5)"),
+        ("a division by the literal 0", "print(1 / 0)"),
+        ("nil", "print(nil / 2)"),
+        ("len shadowed", "let len = fn(x) { return 0.5 }\nprint(len(\"ab\") / 2)"),
+        ("int shadowed by a parameter", "fn f(int) { return int(3) / 2 }"),
+        ("int as a local fn of the block", "if true {\n  print(int(3) / 2)\n  fn int(x) { return x + 0.5 }\n}"),
+        ("?? with a float", "let a = nil\nprint((a ?? 2.5) / 2)"),
+        ("?? of an unknown", "fn f(p) { return (p ?? 1) / 2 }"),
+        ("a variable of a string", "let s = \"a\"\ns = s / 2\nprint(s / 2)"),
+        ("a chain that ends in a float", "let a = 1\nlet b = a\nlet c = b\na = c + 0.5\nprint(c / 2)"),
+        ("a modulo of floats", "let a = 7.5 % 2\nprint(a / 2)"),
+        ("a str variable /=", "let s = \"x\"\ns /= 2"),
+        ("a field /=", "let m = {a: 3}\nm.a /= 2"),
+    ];
+    for (what, src) in no {
+        t.eq(&format!("no int division warning: {}", what), warned(src), Vec::new());
+    }
+    // the message: the operands and the two fixes; check_with and compile_with too; compile
+    // is not stopped by it
+    let d = script::check("let n = 7\nprint((n + 1) / 2)");
+    t.eq("int division message", d.first().map(|d| d.msg.as_str()),
+         Some("Ganzzahlige Division: (n + 1) / 2 schneidet ab (7 / 2 ist 3) – float(n + 1) / 2 rechnet mit Komma, int((n + 1) / 2) schneidet ausdrücklich ab"));
+    let d = script::check("let k = 9\nk /= 2");
+    t.eq("int division message of /=", d.first().map(|d| d.msg.as_str()),
+         Some("Ganzzahlige Division: k /= 2 schneidet ab (7 / 2 ist 3) – k = float(k) / 2 rechnet mit Komma, k = int(k / 2) schneidet ausdrücklich ab"));
+    let d = script::check("let a = 1\nprint(len(\"eine recht lange Zeichenkette\") / a)");
+    t.eq("int division message of long operands", d.first().map(|d| d.msg.as_str()),
+         Some("Ganzzahlige Division: a / b schneidet ab (7 / 2 ist 3) – float(a) / b rechnet mit Komma, int(a / b) schneidet ausdrücklich ab"));
+    t.eq("check_with warns too", script::check_with("let n = 4\nhost.f(n / 3)", &["host"]).len(), 1);
+    t.check("compile is not stopped", script::compile("let n = 4\nprint(n / 3)").is_ok() && script::compile_with("x", "let n = 4\nprint(n / 3)", &[]).is_ok());
+    // a long chain of variables: the fixpoint does not take quadratic time
+    let mut src = String::from("let v0 = 1\n");
+    for i in 1..3000 {
+        src.push_str(&format!("let v{} = v{} + 1\n", i, i - 1));
+    }
+    src.push_str("v0 = 0.5\nprint(v2999 / 2)");
+    t.eq("a chain of 3000 variables that ends in a float", warned(&src), Vec::new());
 }
 
 fn tokens(t: &mut T) {

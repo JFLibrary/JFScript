@@ -1,0 +1,10 @@
+# --check: a division of two ints is a warning (it truncates), with the two fixes; the exit
+# code stays 0; float(..) and int(..) need none
+args: --check -e "let n = 7; print(n / 2, float(n) / 2, int(n / 2), n / 2.0)"
+--- stdout
+-e:1:18: Warnung: Ganzzahlige Division: n / 2 schneidet ab (7 / 2 ist 3) – float(n) / 2 rechnet mit Komma, int(n / 2) schneidet ausdrücklich ab
+===
+# the run itself is as before: 7 / 2 is 3
+args: -e "let n = 7; print(n / 2, float(n) / 2)"
+--- stdout
+3 3.5

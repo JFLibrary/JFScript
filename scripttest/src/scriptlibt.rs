@@ -4,7 +4,8 @@
 // numbers, a stop in the middle of a big sort), the heap limit for results, the collector
 // while callbacks run, yields against an uninterrupted run, the host API (Vm::json_*,
 // Cx::spend / keep / json_*), and math bit for bit (vectors and a sweep whose hash must be
-// the same on Windows and Linux; tools/script_math_check.py checks the accuracy)
+// the same on Windows and Linux; tools/script_math_check.py checks the accuracy); (S1) tan,
+// the arc functions, atan2, hypot and the degree functions, list.range and list.linspace
 //
 //   scripttest --math FILE   answers "fn x_hex [y_hex]" lines with the result bits (for
 //                          tools/script_math_check.py)
@@ -90,6 +91,8 @@ pub fn run(t: &mut T) {
     maps(t);
     bytes(t);
     maths(t);
+    maths_s1(t);
+    ranges(t);
     math_bits(t);
     parsing(t);
     json(t);
@@ -339,6 +342,146 @@ const MATH_BITS: [(&str, u64, u64, u64); 47] = [
     ("pow", 0x4000000000000000, 0xC090C80000000000, 0x0000000000000001),
 ];
 
+/// (S1) the same for tan, asin, acos, atan, atan2 (y, x), hypot and the degree functions; tan,
+/// asin, acos and atan are also the bits of Java's StrictMath, atan2 except at |y / x| > 2^60
+/// with x < 0 (FreeBSD's fix), hypot is correctly rounded
+const MATH_BITS_S1: [(&str, u64, u64, u64); 39] = [
+    ("tan", 0x3FF0000000000000, 0x0000000000000000, 0x3FF8EB245CBEE3A6),
+    ("tan", 0x3FE0000000000000, 0x0000000000000000, 0x3FE17B4F5BF3474A),
+    ("tan", 0xC004000000000000, 0x0000000000000000, 0x3FE7E79B4E00BB15),
+    ("tan", 0x4480F0CF064DD592, 0x0000000000000000, 0xBFFA0F79C1B6B258),
+    ("tan", 0x3FF921FB54442D18, 0x0000000000000000, 0x434D02967C31CDB5),
+    ("tan", 0x3FE6666666666666, 0x0000000000000000, 0x3FEAF406C2FC78AE),
+    ("tan", 0x3E29C511DC3A41DF, 0x0000000000000000, 0x3E29C511DC3A41DF),
+    ("asin", 0x3FD3333333333333, 0x0000000000000000, 0x3FD380159E14F6FF),
+    ("asin", 0xBFE6666666666666, 0x0000000000000000, 0xBFE8D00E692AFD95),
+    ("asin", 0x3FEFAE147AE147AE, 0x0000000000000000, 0x3FF6DE3C6F33D51D),
+    ("asin", 0x3E112E0BE826D695, 0x0000000000000000, 0x3E112E0BE826D695),
+    ("acos", 0x3FD3333333333333, 0x0000000000000000, 0x3FF441F5ECBEEF59),
+    ("acos", 0xBFE6666666666666, 0x0000000000000000, 0x4002C501446CD5F2),
+    ("acos", 0x3FEFAE147AE147AE, 0x0000000000000000, 0x3FC21DF72882BFD8),
+    ("acos", 0xBFEFFFEB074A771D, 0x0000000000000000, 0x400918D2A3D6C3DF),
+    ("atan", 0x3FD3333333333333, 0x0000000000000000, 0x3FD2A73A661EAF06),
+    ("atan", 0xBFE3333333333333, 0x0000000000000000, 0xBFE14B1DD5F90CE1),
+    ("atan", 0x3FF0000000000000, 0x0000000000000000, 0x3FE921FB54442D18),
+    ("atan", 0x4000000000000000, 0x0000000000000000, 0x3FF1B6E192EBBE44),
+    ("atan", 0xC202A05F20000000, 0x0000000000000000, 0xBFF921FB543D4DE0),
+    ("atan2", 0x3FF0000000000000, 0x4000000000000000, 0x3FDDAC670561BB4F),
+    ("atan2", 0xC008000000000000, 0xC010000000000000, 0xC003FC176B7A8560),
+    ("atan2", 0x7E37E43C8800759C, 0x81A56E1FC2F8F359, 0x3FF921FB54442D18),
+    ("atan2", 0x4014000000000000, 0xC028000000000000, 0x4005F97315254857),
+    ("hypot", 0x3FF0000000000000, 0x3FF0000000000000, 0x3FF6A09E667F3BCD),
+    ("hypot", 0x000012688B70E62B, 0x00003739A252B281, 0x00003A365FF2EA11),
+    ("hypot", 0x7E37E43C8800759C, 0x7E37E43C8800759C, 0x7E40E4D50F99B211),
+    ("hypot", 0x4008000000000000, 0x3BC79CA10C924223, 0x4008000000000000),
+    ("sin_deg", 0x3FF0000000000000, 0x0000000000000000, 0x3F91DF0B2B89DD1E),
+    ("sin_deg", 0x4024000000000000, 0x0000000000000000, 0x3FC63A1A7E0B738A),
+    ("sin_deg", 0xC059000000000000, 0x0000000000000000, 0xBFEF838B8C811C17),
+    ("sin_deg", 0x433FF973CAFA805A, 0x0000000000000000, 0x3FF0000000000000),
+    ("cos_deg", 0x3FF0000000000000, 0x0000000000000000, 0x3FEFFEC097F5AF8A),
+    ("cos_deg", 0x4056400000000000, 0x0000000000000000, 0x3F91DF0B2B89DD1E),
+    ("cos_deg", 0x4202A05F20000000, 0x0000000000000000, 0x3FC63A1A7E0B738A),
+    ("tan_deg", 0x3FF0000000000000, 0x0000000000000000, 0x3F91DFBD9410A422),
+    ("tan_deg", 0x4056400000000000, 0x0000000000000000, 0x404CA51D76749A70),
+    ("tan_deg", 0xC04E000000000000, 0x0000000000000000, 0xBFFBB67AE8584CAB),
+    ("tan_deg", 0x40567FFFFFFFFFFF, 0x0000000000000000, 0x432CA5DC1A63C1F8),
+];
+
+/// (S1) tan, asin, acos, atan, atan2, hypot and the degree functions from scripts: special
+/// values, signed zeros, exact values, errors, fuel
+fn maths_s1(t: &mut T) {
+    cases(t, &[
+        ("print(math.tan(0), math.tan(-0.0), math.tan(1), math.tan(math.pi / 4), math.tan(math.inf), math.tan(math.nan), math.tan(1e300))",
+         "0.0 -0.0 1.5574077246549023 0.9999999999999999 nan nan 1.4214488238747245\n"),
+        ("print(math.atan(1) * 4 == math.pi, math.atan(0), math.atan(-0.0), math.atan(math.inf), math.atan(-math.inf), math.atan(math.nan), math.atan(1e300))",
+         "true 0.0 -0.0 1.5707963267948966 -1.5707963267948966 nan 1.5707963267948966\n"),
+        ("print(math.asin(1), math.asin(-1), math.asin(0.5), math.asin(-0.0), math.asin(2), math.asin(-1.5), math.acos(1), math.acos(-1), math.acos(0), math.acos(0.5), math.acos(1.0000001))",
+         "1.5707963267948966 -1.5707963267948966 0.5235987755982989 -0.0 nan nan 0.0 3.141592653589793 1.5707963267948966 1.0471975511965979 nan\n"),
+        ("print(math.atan2(0, 0), math.atan2(-0.0, 0), math.atan2(0, -0.0), math.atan2(-0.0, -0.0), math.atan2(1, 0), math.atan2(-1, 0), math.atan2(1, 1), math.atan2(1, -1), math.atan2(-1, -1))",
+         "0.0 -0.0 3.141592653589793 -3.141592653589793 1.5707963267948966 -1.5707963267948966 0.7853981633974483 2.356194490192345 -2.356194490192345\n"),
+        ("print(math.atan2(math.inf, math.inf), math.atan2(-math.inf, -math.inf), math.atan2(1, -math.inf), math.atan2(-1, -math.inf), math.atan2(1, math.inf), math.atan2(-1, math.inf), math.atan2(math.inf, 5), math.atan2(math.nan, 1), math.atan2(1e300, -1e-300))",
+         "0.7853981633974483 -2.356194490192345 3.141592653589793 -3.141592653589793 0.0 -0.0 1.5707963267948966 nan 1.5707963267948966\n"),
+        ("print(math.hypot(3, 4), math.hypot(-3, 4), math.hypot(1, 2, 2), math.hypot([2, 3, 6]), math.hypot(), math.hypot(5), math.hypot(-0.0), math.hypot(math.inf, math.nan), math.hypot(math.nan, 1))",
+         "5.0 5.0 3.0 7.0 0.0 5.0 0.0 inf nan\n"),
+        ("print(math.hypot(1e308, 1e308), math.hypot(5e-324, 5e-324), math.hypot(1.7e308, 1.7e308), math.hypot([1, 1, 1, 1]), math.hypot(1e-300, 1e300), math.hypot(3e-320, 4e-320), math.hypot(3, 4) == math.hypot(3, 4, 0, -0.0))",
+         "1.4142135623730951e308 5e-324 inf 2.0 1e300 5e-320 true\n"),
+        ("for d in [-360, -270, -180, -150, -135, -90, -60, -45, -30, -0.0, 0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 300, 315, 330, 360, 450, 9000000000000090] {\n  print(d, math.sin_deg(d), math.cos_deg(d), math.tan_deg(d))\n}",
+         "-360 -0.0 1.0 -0.0\n-270 1.0 0.0 inf\n-180 -0.0 -1.0 0.0\n-150 -0.5 -0.8660254037844386 0.5773502691896257\n-135 -0.7071067811865476 -0.7071067811865476 1.0\n\
+-90 -1.0 0.0 -inf\n-60 -0.8660254037844386 0.5 -1.7320508075688774\n-45 -0.7071067811865476 0.7071067811865476 -1.0\n-30 -0.5 0.8660254037844386 -0.5773502691896257\n\
+-0.0 -0.0 1.0 -0.0\n0 0.0 1.0 0.0\n30 0.5 0.8660254037844386 0.5773502691896257\n45 0.7071067811865476 0.7071067811865476 1.0\n60 0.8660254037844386 0.5 1.7320508075688774\n\
+90 1.0 0.0 inf\n120 0.8660254037844386 -0.5 -1.7320508075688774\n135 0.7071067811865476 -0.7071067811865476 -1.0\n150 0.5 -0.8660254037844386 -0.5773502691896257\n\
+180 0.0 -1.0 -0.0\n210 -0.5 -0.8660254037844386 0.5773502691896257\n225 -0.7071067811865476 -0.7071067811865476 1.0\n240 -0.8660254037844386 -0.5 1.7320508075688774\n\
+270 -1.0 0.0 -inf\n300 -0.8660254037844386 0.5 -1.7320508075688774\n315 -0.7071067811865476 0.7071067811865476 -1.0\n330 -0.5 0.8660254037844386 -0.5773502691896257\n\
+360 0.0 1.0 0.0\n450 1.0 0.0 inf\n9000000000000090 1.0 0.0 inf\n"),
+        ("print(math.sin_deg(1), math.cos_deg(1), math.tan_deg(1), math.sin_deg(89.99999999999999), math.tan_deg(89.99999999999999), math.sin_deg(math.inf), math.cos_deg(math.nan), math.tan_deg(-math.inf), math.sin_deg(5e-324))",
+         "0.01745240643728351 0.9998476951563913 0.017455064928217585 1.0 4031832051015932.0 nan nan nan 0.0\n"),
+        ("print(math.sin_deg(30) == 0.5, math.cos_deg(60) == 0.5, math.sin_deg(45) == math.cos_deg(45), math.sin_deg(45) == math.sqrt(0.5), math.tan_deg(45) == 1, math.sin_deg(20) == math.cos_deg(70), math.tan_deg(-30) == -math.tan_deg(30))",
+         "true true true true true true true\n"),
+        ("print(math.tan(\"x\"))", "ERR 1:12 math.tan: x muss eine Zahl sein, nicht str"),
+        ("print(math.atan2(1))", "ERR 1:12 math.atan2: x muss eine Zahl sein, nicht nil"),
+        ("print(math.hypot(1, \"a\"))", "ERR 1:12 math.hypot: x muss eine Zahl sein, nicht str"),
+        ("print(math.hypot([1, [2]]))", "ERR 1:12 math.hypot: x muss eine Zahl sein, nicht list"),
+        ("print(math.sin_deg(nil))", "ERR 1:12 math.sin_deg: x muss eine Zahl sein, nicht nil"),
+    ]);
+    // fuel: 4 each (hypot plus 1 per 8 values), on top of the call
+    let base = fuel_of("let x = math.abs(1)");
+    for f in ["tan", "asin", "acos", "atan", "sin_deg", "cos_deg", "tan_deg"] {
+        t.eq(&format!("fuel of math.{}", f), fuel_of(&format!("let x = math.{}(1)", f)) - base, 4);
+    }
+    t.eq("fuel of math.atan2", fuel_of("let x = math.atan2(1, 2)") - fuel_of("let x = math.min(1, 2)"), 4);
+    let l = "let l = []\nfor i in 0..800 { l.push(i) }\n";
+    t.eq("fuel of math.hypot of 800 values", fuel_of(&format!("{}let x = math.hypot(l)", l)) - fuel_of(&format!("{}let x = math.abs(1)", l)), 4 + 100);
+}
+
+/// (S1) list.range and list.linspace: ints and floats, negative steps, the limits of heap and
+/// fuel, the errors
+fn ranges(t: &mut T) {
+    cases(t, &[
+        ("print(list.range(5), list.range(0), list.range(-3), list.range(2, 5), list.range(5, 2), list.range(0, 10, 3), list.range(10, 0, -3), list.range(-5, 5, 5), list.range(3, 3, -1))",
+         "[0, 1, 2, 3, 4] [] [] [2, 3, 4] [] [0, 3, 6, 9] [10, 7, 4, 1] [-5, 0] []\n"),
+        ("print(list.range(int.max - 2, int.max), list.range(int.min, int.min + 2), list.range(int.max, int.min, int.min), list.range(0, 3, int.max), list.range(int.min, int.max, int.max))",
+         "[9223372036854775805, 9223372036854775806] [-9223372036854775808, -9223372036854775807] [9223372036854775807, -1] [0] [-9223372036854775808, -1, 9223372036854775806]\n"),
+        ("print(list.range(0, 1, 0.25), list.range(1, 0, -0.25), list.range(0.5, 3), list.range(0, 2.5), list.range(-0.0, 1)[0], list.range(0, 1, 0.1))",
+         "[0.0, 0.25, 0.5, 0.75] [1.0, 0.75, 0.5, 0.25] [0.5, 1.5, 2.5] [0.0, 1.0, 2.0] -0.0 [0.0, 0.1, 0.2, 0.30000000000000004, 0.4, 0.5, 0.6000000000000001, 0.7000000000000001, 0.8, 0.9]\n"),
+        ("print(list.range(1e16, 1e16 + 2, 0.1).len(), type(list.range(3)[0]), type(list.range(0, 3, 1.0)[0]), list.range(0, 3, 1.0) == list.range(0, 3, 1.0))",
+         "11 int float false\n"),
+        ("print(list.linspace(0, 1, 5), list.linspace(0, 1, 11), list.linspace(0, 360, 7))",
+         "[0.0, 0.25, 0.5, 0.75, 1.0] [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 360.0]\n"),
+        ("print(list.linspace(2, 2, 3), list.linspace(1, 0, 3), list.linspace(0, 1, 0), list.linspace(5, 9, 1), list.linspace(-1e308, 1e308, 3), list.linspace(1e308, -1e308, 5), list.linspace(-0.0, 1, 2))",
+         "[2.0, 2.0, 2.0] [1.0, 0.5, 0.0] [] [5.0] [-1e308, 0.0, 1e308] [1e308, 5e307, 0.0, -5e307, -1e308] [-0.0, 1.0]\n"),
+        ("print(list.range(0, 10, 0))", "ERR 1:12 list.range: step darf nicht 0 sein"),
+        ("print(list.range(0, 1, -0.0))", "ERR 1:12 list.range: step darf nicht 0 sein"),
+        ("print(list.range(0, math.inf))", "ERR 1:12 list.range: end muss endlich sein, nicht inf"),
+        ("print(list.range(math.nan, 1, 1))", "ERR 1:12 list.range: start muss endlich sein, nicht nan"),
+        ("print(list.range(\"a\"))", "ERR 1:12 list.range: end muss eine Zahl sein, nicht str"),
+        ("print(list.range(0, 3, \"1\"))", "ERR 1:12 list.range: step muss eine Zahl sein, nicht str"),
+        ("print([1].range(3))", "ERR 1:11 list.range: start muss eine Zahl sein, nicht list"),
+        ("print(list.linspace(0, 1, -1))", "ERR 1:12 list.linspace: n darf nicht negativ sein, nicht -1"),
+        ("print(list.linspace(0, 1, 2.5))", "ERR 1:12 list.linspace: n muss int sein, nicht float"),
+        ("print(list.linspace(0, -math.inf, 3))", "ERR 1:12 list.linspace: end muss endlich sein, nicht -inf"),
+        ("try { list.range(0, 1, 0) } catch e { print(\"caught:\", e) }", "caught: list.range: step darf nicht 0 sein\n"),
+    ]);
+    // fuel: the list (1 + 1 per 8 values), 1 per float
+    let base = fuel_of("let l = list.range(0)");
+    t.eq("fuel of 800 ints", fuel_of("let l = list.range(800)") - base, 100);
+    t.eq("fuel of 800 floats", fuel_of("let l = list.range(0, 800, 1.0)") - fuel_of("let l = list.range(0, 0, 1.0)"), 900);
+    t.eq("fuel of linspace 800", fuel_of("let l = list.linspace(0, 1, 800)") - fuel_of("let l = list.linspace(0, 1, 0)"), 900);
+    // the limits: heap at once (not catchable), fuel before the work
+    let lim = Limits { heap: 1 << 20, ..Limits::default() };
+    t.eq("range beyond the heap", kind("let l = list.range(100000)", lim), Some(ErrorKind::Heap));
+    t.eq("float range beyond the heap", kind("let l = list.range(0, 1, 1e-9)", lim), Some(ErrorKind::Heap));
+    t.eq("range far beyond the heap", kind("try { let l = list.range(int.min, int.max) } catch e { print(e) }", lim), Some(ErrorKind::Heap));
+    t.eq("linspace beyond the heap", kind("let l = list.linspace(0, 1, 100000)", lim), Some(ErrorKind::Heap));
+    t.eq("within the heap", kind("let l = list.range(30000)\nlet m = list.linspace(0, 1, 30000)", lim), None);
+    let lim = Limits { fuel: 50_000, heap: 1 << 30, ..Limits::default() };
+    t.eq("range stops before it builds", kind("let l = list.range(0, 1000000, 1.0)", lim), Some(ErrorKind::Fuel));
+    t.eq("linspace stops before it builds", kind("let l = list.linspace(0, 1, 1000000)", lim), Some(ErrorKind::Fuel));
+    t.eq("an int range of 300000 fits", kind("let l = list.range(300000)", lim), None);
+    // the values themselves: start + i * step for every i, the last one before end
+    let o = out("let l = list.range(0.1, 1000.3, 0.7)\nlet ok = true\nfor i, x in l { if x != 0.1 + i * 0.7 { ok = false } }\nprint(l.len(), ok, l[l.len() - 1] < 1000.3, 0.1 + l.len() * 0.7 >= 1000.3)");
+    t.eq("float range values", o.as_str(), "1429 true true true\n");
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed ^= *seed << 13;
     *seed ^= *seed >> 7;
@@ -356,6 +499,15 @@ fn apply(f: &str, x: f64, y: f64) -> f64 {
         "cos" => math::cos(x),
         "pow" => math::pow(x, y),
         "round" => math::round(x),
+        "tan" => math::tan(x),
+        "asin" => math::asin(x),
+        "acos" => math::acos(x),
+        "atan" => math::atan(x),
+        "atan2" => math::atan2(x, y),
+        "hypot" => num::hypot(&[x, y]),
+        "sin_deg" => math::sin_deg(x),
+        "cos_deg" => math::cos_deg(x),
+        "tan_deg" => math::tan_deg(x),
         _ => num::sqrt(x),
     }
 }
@@ -382,6 +534,30 @@ fn math_bits(t: &mut T) {
         }
     }
     t.eq("math sweep hash", format!("{:016x}", hash), String::from("f881eabf6fcbbf80"));
+    // (S1) the new functions: known bits, then a sweep of their own
+    for (f, x, y, want) in MATH_BITS_S1 {
+        let got = apply(f, f64::from_bits(x), f64::from_bits(y)).to_bits();
+        t.eq(&format!("{}({:016x}, {:016x})", f, x, y), got, want);
+    }
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut hash = 0xCBF2_9CE4_8422_2325u64;
+    for f in ["tan", "asin", "acos", "atan", "atan2", "hypot", "sin_deg", "cos_deg", "tan_deg"] {
+        for i in 0..4000 {
+            let r = next(&mut seed);
+            let x = match i % 4 {
+                0 => f64::from_bits(r),
+                1 => f64::from_bits((r & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 30 + (r >> 52) % 60) << 52)),
+                2 => num::div(num::from_i64((r % 2_000_000) as i64 - 1_000_000), 1000.0),
+                _ => f64::from_bits((r & 0x800F_FFFF_FFFF_FFFF) | ((1023 - 2 + (r >> 52) % 4) << 52)),
+            };
+            let y = match i % 3 {
+                0 => f64::from_bits(next(&mut seed)),
+                _ => num::div(num::from_i64((next(&mut seed) % 20_000) as i64 - 10_000), 100.0),
+            };
+            hash = (hash ^ apply(f, x, y).to_bits()).wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    t.eq("math sweep hash of S1", format!("{:016x}", hash), String::from("4995191ecdba3050"));
 }
 
 fn parsing(t: &mut T) {
@@ -723,7 +899,8 @@ fn names(t: &mut T) {
 /// one result of `fn` for the math file mode
 fn math_value(f: &str, x: f64, y: f64) -> Option<f64> {
     Some(match f {
-        "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "pow" | "round" | "sqrt" => apply(f, x, y),
+        "exp" | "log" | "log2" | "log10" | "sin" | "cos" | "pow" | "round" | "sqrt" | "tan" | "asin" | "acos" | "atan" | "atan2"
+        | "hypot" | "sin_deg" | "cos_deg" | "tan_deg" => apply(f, x, y),
         _ => return None,
     })
 }

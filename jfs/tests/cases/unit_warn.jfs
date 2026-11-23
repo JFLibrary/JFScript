@@ -1,0 +1,7 @@
+// unit_warn.jfs -- a warning in a test that fails: in its report, with what it printed (warnings.test)
+fn test_kurz() {
+  print("rechne")
+  let id = timer.every(0, fn() {})
+  timer.cancel(id)
+  assert(false, "mit Warnung")
+}

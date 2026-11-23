@@ -12,8 +12,10 @@
 // The functions are in strlib.rs, listlib.rs, jsonlib.rs and here (int, float, bytes, map,
 // math, and assert / assert_eq for tests: jfs --test).  Fuel, on top of the 1 of the call: 1 per new object (str, bytes, list, map), 1 per
 // 64 bytes of text read or written, 1 per 8 list values and 1 per 4 map entries copied or
-// visited, 1 per comparison of a sort, 2 for sqrt, 4 for exp log log2 log10 sin cos, 8 for
-// pow, plus what callbacks cost.  Long operations pay as they go (spend), so the fuel limit
+// visited, 1 per comparison of a sort, 2 for sqrt, 4 for exp log log2 log10 sin cos tan asin
+// acos atan atan2 sin_deg cos_deg tan_deg and hypot (plus 1 per 8 values), 8 for pow, 1 per
+// float a list.range or list.linspace makes, plus what callbacks cost.  Long operations pay
+// as they go (spend), so the fuel limit
 // of the invocation stops them in the middle.  Results are allocated through the VM, so the
 // heap limit holds for them, and a text whose size is known in advance is checked before it
 // is built.  Wrong arguments throw a catchable str ("str.split: sep muss str sein, nicht
@@ -65,6 +67,7 @@ table! {
         "remove" => listlib::remove, "slice" => listlib::slice, "reverse" => listlib::reverse,
         "sort" => listlib::sort, "map" => listlib::map, "filter" => listlib::filter, "reduce" => listlib::reduce,
         "contains" => listlib::contains, "index" => listlib::index, "join" => listlib::join,
+        "range" => listlib::range, "linspace" => listlib::linspace,
     }
     "map" {
         "len" => map_len, "keys" => map_keys, "values" => map_values, "entries" => map_entries,
@@ -79,7 +82,9 @@ table! {
         "floor" => math_floor, "ceil" => math_ceil, "round" => math_round, "trunc" => math_trunc,
         "sqrt" => math_sqrt, "pow" => math_pow, "exp" => math_exp, "log" => math_log, "log2" => math_log2,
         "log10" => math_log10, "sin" => math_sin, "cos" => math_cos, "is_nan" => math_is_nan,
-        "is_finite" => math_is_finite,
+        "is_finite" => math_is_finite, "tan" => math_tan, "asin" => math_asin, "acos" => math_acos,
+        "atan" => math_atan, "atan2" => math_atan2, "hypot" => math_hypot, "sin_deg" => math_sin_deg,
+        "cos_deg" => math_cos_deg, "tan_deg" => math_tan_deg,
     }
     "json" {
         "encode" => jsonlib::encode_fn, "decode" => jsonlib::decode_fn,
@@ -722,6 +727,61 @@ fn math_pow(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     let y = want_num("math.pow", a, 1, "y")?;
     spend(vm, 8)?;
     Ok(Value::Float(math::pow(x, y)))
+}
+
+fn math_tan(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.tan", 4, math::tan)
+}
+
+fn math_asin(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.asin", 4, math::asin)
+}
+
+fn math_acos(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.acos", 4, math::acos)
+}
+
+fn math_atan(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.atan", 4, math::atan)
+}
+
+/// atan2(y, x): the angle of the point (x, y)
+fn math_atan2(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    let y = want_num("math.atan2", a, 0, "y")?;
+    let x = want_num("math.atan2", a, 1, "x")?;
+    spend(vm, 4)?;
+    Ok(Value::Float(math::atan2(y, x)))
+}
+
+/// hypot(x, y, ..) or hypot(list): the length of the vector, correctly rounded
+fn math_hypot(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    const F: &str = "math.hypot";
+    let items: Vec<Value> = match a {
+        [Value::List(r)] => vm.heap.list(*r).clone(),
+        _ => a.to_vec(),
+    };
+    spend(vm, 4 + list_fuel(items.len()))?;
+    let mut xs = Vec::with_capacity(items.len());
+    for v in items {
+        match v {
+            Value::Int(i) => xs.push(num::from_i64(i)),
+            Value::Float(x) => xs.push(x),
+            v => return bad(F, "x", "eine Zahl", v),
+        }
+    }
+    Ok(Value::Float(num::hypot(&xs)))
+}
+
+fn math_sin_deg(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.sin_deg", 4, math::sin_deg)
+}
+
+fn math_cos_deg(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.cos_deg", 4, math::cos_deg)
+}
+
+fn math_tan_deg(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    unary(vm, a, "math.tan_deg", 4, math::tan_deg)
 }
 
 fn math_is_nan(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {

@@ -14,13 +14,17 @@
 //                        JSON or else as text, or a JSON object), env: the --env variables,
 //                        args: the arguments after the script, script: its name
 //   timer.after(ms, f) / timer.every(ms, f) -> id, timer.cancel(id) -> bool   every: 10 µs at
-//                        least; due timers run in the order of their time, then of their ids
+//                        least (a shorter period is a warning); due timers run in the order
+//                        of their time, then of their ids
 //   disk.get(key, fn(err, value)), disk.put(key, value, fn(err)), disk.delete(key, fn(err,
 //   had)), disk.scan(prefix, fn(err, items))   JSON values as in JFNetworker; the callbacks
 //                        run after the current code, before the next timer; --disk FILE
 //                        keeps them in a JSON object in FILE (written after every
 //                        invocation that changed them), else they live in memory
 //   net, dns, http, metrics   JFNetworker's: a catchable error
+//   warnings             (S1) what a native warns about (Cx::warn; here timer.every below
+//                        10 µs) goes to stderr as "FILE:LINE:COL: Warnung: ..." after the
+//                        slice's log lines; the exit code stays
 //   import(path)         a module from the file system (Host::load): a relative path is
 //                        relative to the importing file; only .jfs files (PERMISSIONS)
 //
@@ -99,6 +103,10 @@ pub struct Console {
     dirty: bool,
     /// log lines not yet written
     logs: String,
+    /// the script's name as given (for the file of a warning in the main script)
+    name: String,
+    /// Vm::warnings_dropped when the last ones were written
+    dropped: u64,
     /// the modules' sources by their path (the excerpts of errors, the debugger's listing)
     pub sources: BTreeMap<String, String>,
     /// --test: print and log go here instead of stdout and stderr
@@ -150,9 +158,11 @@ fn quote(s: &str) -> String {
 }
 
 impl Console {
-    fn new(o: &Opts) -> Console {
+    fn new(o: &Opts, name: &str) -> Console {
         let seed = o.seed.unwrap_or_else(plat::random_u64);
         Console {
+            name: String::from(name),
+            dropped: 0,
             virt: o.virtual_time,
             clock: 0,
             start: plat::time_us(),
@@ -224,6 +234,12 @@ impl Console {
             return Err(cx.error(&format!("{}: das zweite Argument muss eine Funktion sein", name)));
         }
         let period = if name == "timer.every" { Some(d.max(EVERY_MIN)) } else { None };
+        if period.is_some_and(|p| p != d) {
+            // (S1) a warning with the script's line; the slice ends so the order of stdout and
+            // stderr stays as with log
+            cx.warn(&format!("timer.every: {} ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs", cx.display(ms)));
+            cx.yield_now();
+        }
         let at = self.now().saturating_add(period.unwrap_or(d));
         self.next += 1;
         let id = self.next;
@@ -285,10 +301,23 @@ impl Console {
         Ok(Value::Nil)
     }
 
-    /// write what print and log produced: stdout first (--test: into the capture)
+    /// write what print and log produced: stdout first, then the log lines and the warnings
+    /// of natives ("FILE:LINE:COL: Warnung: ..."; --test: all into the capture)
     fn flush(&mut self, vm: &mut Vm) {
         let o = vm.take_output();
-        let logs = core::mem::take(&mut self.logs);
+        let mut logs = core::mem::take(&mut self.logs);
+        let warnings = vm.take_warnings();
+        if !warnings.is_empty() {
+            let main = vm.modules().first().cloned().unwrap_or_default();
+            for w in &warnings {
+                logs.push_str(&format!("{}:{}\n", shown(&w.file, &main, &self.name), w));
+            }
+        }
+        let dropped = vm.warnings_dropped();
+        if dropped > self.dropped {
+            logs.push_str(&format!("jfs: {} weitere Warnungen nicht gezeigt (mehr als {} auf einmal)\n", dropped - self.dropped, script::MAX_WARNINGS));
+            self.dropped = dropped;
+        }
         if let Some(c) = self.capture.as_mut() {
             c.push_str(&o);
             c.push_str(&logs);
@@ -595,7 +624,7 @@ fn run_loop(vm: &mut Vm, host: &mut Console, o: &Opts, until: Option<u64>, faile
 
 /// run a compiled script with its timers and callbacks -> the exit code
 pub fn run(prog: &Program, o: &Opts, name: &str, src: &str, debugger: Option<Debugger>) -> i32 {
-    let mut host = Console::new(o);
+    let mut host = Console::new(o, name);
     host.debugger = debugger;
     let mut vm = match setup(prog, o, name, &mut host) {
         Ok(vm) => vm,
@@ -644,7 +673,7 @@ pub struct TestFail {
 /// --test: one test function in a fresh VM (see the module comment); Ok(false) when `test` is
 /// no function after the top-level code
 pub fn run_test(prog: &Program, o: &Opts, name: &str, test: &str) -> Result<bool, TestFail> {
-    let mut host = Console::new(o);
+    let mut host = Console::new(o, name);
     host.virt = true;
     host.capture = Some(String::new());
     let fail = |vm: &Vm, host: &mut Console, e: Error| {

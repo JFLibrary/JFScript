@@ -1,0 +1,10 @@
+// warnmain.jfs -- a warning in a module names the module's file, line and column (warnings.test)
+let m = import("mod/warnmod.jfs")
+let n = 0
+let id = m.start(fn() {
+  n += 1
+  if n == 3 {
+    timer.cancel(id)
+    print("drei Runden")
+  }
+})

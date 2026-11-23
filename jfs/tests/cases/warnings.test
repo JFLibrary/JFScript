@@ -1,0 +1,39 @@
+# warnings of natives (Cx::warn; the runner's timer.every below 10 µs): on stderr as
+# FILE:LINE:COL: Warnung: ..., in order with stdout and the log lines; the exit code stays 0
+args: --virtual-time -e "print(\"vor\"); let id = timer.every(0.001, fn() {}); log(\"danach\"); timer.cancel(id)"
+--- stdout
+vor
+--- stderr
+-e:1:30: Warnung: timer.every: 0.001 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
+danach
+===
+# a warning in a module: the module's file
+args: --virtual-time {dir}/warnmain.jfs
+--- stdout
+drei Runden
+--- stderr
+{dir}/mod/warnmod.jfs:3:16: Warnung: timer.every: 0 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
+===
+# an error after a warning: both, the exit code of the error
+args: --virtual-time -e "timer.every(0, fn() {}); print(1 / 0)"
+exit: 1
+--- stderr
+-e:1:7: Warnung: timer.every: 0 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
+-e:1:34: Fehler: Division durch 0
+    timer.every(0, fn() {}); print(1 / 0)
+                                     ^
+  im Hauptprogramm (1:34)
+===
+# --test: a warning goes with what the test printed (shown when it fails)
+args: --test {dir}/unit_warn.jfs
+exit: 1
+--- stdout
+FEHLER  test_kurz ({dir}/unit_warn.jfs:6:3): Annahme verletzt: mit Warnung
+        | rechne
+        | {dir}/unit_warn.jfs:4:18: Warnung: timer.every: 0 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
+1 Test: 0 bestanden, 1 fehlgeschlagen
+===
+# no warning for 10 µs and more
+args: --virtual-time -e "let id = timer.every(0.01, fn() { print(now()); timer.cancel(id) })"
+--- stdout
+0.01

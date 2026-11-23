@@ -6,7 +6,8 @@
 //               function body starts outside of any loop), return outside a function, two
 //               variables over a range a..b
 //     warnings: a name that is neither declared nor in globals (with a suggestion for a
-//               typing error), a top-level let read by top-level code before it ran
+//               typing error), a top-level let read by top-level code before it ran, (S1) a
+//               division of two values that are certainly ints (intdiv.rs: it truncates)
 //   globals: the predeclared names (crate::GLOBALS for check())
 //   resolve_strict(&program, globals)   the same with unknown names as errors
 //               (crate::compile_with: the host says which names it has)
@@ -53,6 +54,8 @@ fn run(prog: &Program, globals: &[&str], strict: bool) -> Vec<Diagnostic> {
     for s in &prog.body {
         r.stmt(s);
     }
+    // (S1) a division of two ints truncates: the editor warns (intdiv.rs)
+    r.out.extend(crate::intdiv::warnings(prog));
     r.out
 }
 

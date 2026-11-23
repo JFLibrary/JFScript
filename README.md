@@ -24,7 +24,7 @@ for n in config.args { print(greet(n)) }
 | [`jfs/`](jfs/README.md) | the runner `jfs`: `.jfs` files on the command line, like `python file.py` |
 | [`scripttest/`](scripttest/src/main.rs) | the self-checks: lexer, parser, VM, standard library, language services, modules |
 | [`docs/LANGUAGE.md`](docs/LANGUAGE.md) | the language, its standard library, the host interface, modules, the debugger |
-| [`tools/`](tools) | `linux_test.py` (the tests on Linux from Windows), `script_math_check.py` (the math against Python's decimal module) |
+| [`tools/`](tools) | `linux_test.py` (the tests on Linux from Windows), `script_math_check.py` (the math against Python's decimal module, with `--java` against Java's StrictMath) |
 
 ## Use it in a program
 
