@@ -21,7 +21,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 
 | G7 | Verträglichkeit, Versionen, Ort | **Wie empfohlen:** Brüche nur mit einer Version der Sprache und einer automatischen Umstellung, so selten wie möglich (G7.1); `int / int` schneidet weiter ab, die Sprachdienste warnen (G7.2); Name und `.jfs` bleiben (G7.3); JFScript bleibt im eigenen Repository per git, die Bausteine von JFLib für Skripte bleiben sprachneutral, crates.io wird nach S2 oder für Dritte neu entschieden (G7.4). | 2026-11-23 |
 
-Die übrigen Fragen (G8 und G9) sind offen.
+| G8 | Werkzeuge für Anwender | **Wie empfohlen:** Debugger und Konsole als sprachneutrale Bausteine in JFLib neben `ui.code_editor`, die Anbindung von JFScript in einem kleinen Crate seines Repositorys (G8.1); ein gemeinsames Fenster „Skripte“, JFDiagrammer als erste App (G8.2); ein Objektkatalog aus den Beschreibungen des Hosts (G8.3); Makro-Rekorder später je App, die Objektmodelle von Anfang an so, dass jeder Befehl einen Aufruf hat (G8.4); JFNetworker kann wechseln, muss nicht (G8.5). | 2026-11-23 |
+
+Offen ist noch G9.
 
 ## Warum jetzt
 
@@ -301,8 +303,21 @@ Die Teilfragen:
 
 ### G9. Sprache der Meldungen
 
-Die Fehlermeldungen sind deutsch, die Schlüsselwörter englisch. Für eine Skriptsprache aller Apps, auch für Anwender in
-anderen Sprachen, sollten die Meldungen über die Übersetzungen der App kommen (wie die Texte von `lib/ui`).
+Heute: Schlüsselwörter und die Namen der Bibliothek englisch (`let`, `fn`, `str.split`), Meldungen des Compilers und der
+Laufzeit deutsch („Unbekannte Funktion …“, „Hier fehlt ein Doppelpunkt“), die Texte der Sprachdienste für die Bibliothek
+deutsch (`ls::library_doc`). Die JF-Apps sind mindestens zweisprachig (`locales/ui.tsv` mit `de` und `en`), JFDiagrammer
+plant fünf Sprachen der Oberfläche.
+
+- **G9.1 Meldungen:** Möglichkeiten: deutsch bleiben; nur englisch; in der Sprache der App. *Empfehlung: in der Sprache
+  der App.* JFScript bringt eine eigene Tabelle der Meldungen mit (zuerst `de` und `en`, in der Form der Übersetzungen
+  von JFLib, damit weitere Sprachen dazukommen), der Host sagt, welche Sprache gilt; ohne Angabe Deutsch wie heute, so
+  bleiben die Tests und JFNetworker unverändert.
+- **G9.2 Texte der Sprachdienste** (Hover, Vervollständigen, Objektkatalog): auf demselben Weg; die Beschreibungen des
+  Hosts bringt jede App in ihren Sprachen mit. *Empfehlung: ja.*
+- **G9.3 Namen in den Objektmodellen** (Funktionen, Eigenschaften, Ereignisse, Parameter): englisch wie die Sprache, die
+  Bibliothek, VBA und die ShapeSheet-Namen von Visio. Mit benannten Argumenten (Wunsch 4) werden auch die Namen der
+  Parameter Teil der Schnittstelle; `modeltool` hat heute deutsche (`m.bevel(breite, segmente, achse)`), die wären dann
+  umzustellen, bevor benannte Argumente kommen. Schlüsselwörter werden nie übersetzt. *Empfehlung: englisch.*
 
 ## Die Wünsche aus dem Modellieren, eingeordnet
 
@@ -341,13 +356,8 @@ die Prüfsumme von `modeltool` gleich, solange nicht ausdrücklich eine Version 
 
 ## Zu entscheiden
 
-1. **G1:** JFScript als die eine Skriptsprache aller JF-Apps (a), oder JavaScript über `narsil-jsvm` für die
-   Automatisierung der Apps (b)? WebAssembly für Erweiterungen später offenhalten (c)?
-2. **G2:** Gleitkomma in Hardware mit gleicher Bitgenauigkeit prüfen (b), oder Software bleibt?
-3. **G3:** dynamisch bleiben, optionale Typen später?
-4. **G4:** Host-Objekte als erste große Stufe, Operatoren nur für Host-Typen?
-5. **G5:** Skripte aus Dokumenten nur nach Zustimmung, Rechte je Skript über `plat::policy`?
-6. **G7:** Brüche nur mit Version und Umstellung? `int / int` bleibt mit einer Warnung? Bei git bleiben und die Bausteine
-   von JFLib neutral halten?
-7. **G8:** ein gemeinsamer Skript-Editor mit Debugger in JFLib?
-8. **Reihenfolge:** S1 sofort nach den Entscheidungen, oder erst nach S2?
+G1 bis G8 sind entschieden (Tabelle am Anfang). Offen:
+
+1. **G9:** Meldungen und Texte der Sprachdienste in der Sprache der App (zuerst `de` und `en`, ohne Angabe Deutsch)?
+   Namen in den Objektmodellen englisch, auch die Parameter von `modeltool`?
+2. **Reihenfolge:** S1 (was in jeder Richtung richtig ist) sofort, oder zusammen mit S2?
