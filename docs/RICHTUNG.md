@@ -9,8 +9,9 @@ eine einzelne App es in ihre Richtung ausbaut. Bis alle Grundfragen entschieden 
 | Nr. | Frage | Entscheidung des Nutzers | Datum |
 | --- | --- | --- | --- |
 | G1 | Eine Sprache für alle JF-Apps? | **a mit d:** JFScript wird die Skriptsprache aller JF-Apps (Simulation, Modelle, Automatisierung, Erweiterungen); neue Syntax folgt JavaScript, wo es keinen Grund gibt abzuweichen. WebAssembly für Erweiterungen (c) bleibt für später offen; JavaScript über `narsil-jsvm` (b) nicht. | 2026-11-23 |
+| G2 | Determinismus, Gleitkomma | **b:** Die Sprache bleibt deterministisch (Uhr, Zufall, Dateien nur über den Host). Gleitkomma in Hardware für `+ − × ÷` und die Wurzel mit NaN in einer Form wird geprüft und nur eingebaut, wenn Tests dieselben Bits auf allen Zielen zeigen (mit der Stufe für Tempo); keine zweite Betriebsart. | 2026-11-23 |
 
-Die übrigen Fragen (G2 bis G9) sind offen.
+Die übrigen Fragen (G3 bis G9) sind offen.
 
 ## Warum jetzt
 
@@ -144,8 +145,18 @@ Zufall, keine Dateien im Kern, nur über den Host.
   zur Laufzeit; helfen beim Vervollständigen, bei größeren Erweiterungen und einer KI.
 - **c) statisch typisiert.**
 
-**Empfehlung: a jetzt, b als spätere Stufe.** c würde die heutigen Skripte von JFNetworker brechen und die Sprache für
-kleine Skripte schwer machen.
+Für Apps kommt der größte Nutzen von Typen nicht aus den Skripten, sondern aus dem Objektmodell des Hosts: Weiß der
+Sprachdienst, dass `doc.page.shapes` Shapes liefert und ein Shape `text` und `cell(name)` hat, kann er vervollständigen
+und Tippfehler melden, ohne dass das Skript selbst etwas angibt (wie TypeScripts `.d.ts` für JavaScript-Bibliotheken
+oder die deklarierten Objekte von VBA). Das gehört zu den Beschreibungen des Hosts (G4, Wunsch 9) und braucht keine
+neue Syntax.
+
+Wenn später Typangaben im Skript kommen (b), dann in der Form von TypeScript (`fn area(r: float): float`, nach G1 d),
+zur Laufzeit ohne Wirkung und nur vom Compiler und den Sprachdiensten geprüft; die Funktionen des Hosts prüfen ihre
+Argumente ohnehin.
+
+**Empfehlung: a jetzt; Typen zuerst in den Beschreibungen des Hosts (mit G4), Angaben im Skript (b) als spätere Stufe.**
+c würde die heutigen Skripte von JFNetworker brechen und die Sprache für kleine Skripte schwer machen.
 
 ### G4. Objekte: Host-Objekte, eigene Typen, Operatoren, Ereignisse
 
