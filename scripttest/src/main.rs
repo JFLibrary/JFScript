@@ -18,6 +18,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 
+mod scripthostt;
 mod scriptlibt;
 mod scriptlst;
 mod scriptmodt;
@@ -59,12 +60,13 @@ fn run() -> i32 {
         scriptmodt::bench();
         return 0;
     }
-    let groups: [(&'static str, fn(&mut T)); 5] = [
+    let groups: [(&'static str, fn(&mut T)); 6] = [
         ("script", scriptt::run),
         ("scriptvm", scriptvmt::run),
         ("scriptlib", scriptlibt::run),
         ("scriptls", scriptlst::run),
         ("scriptmod", scriptmodt::run),
+        ("scripthost", scripthostt::run),
     ];
     let mut failed = 0;
     let mut total = 0;
