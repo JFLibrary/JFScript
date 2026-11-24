@@ -769,7 +769,37 @@ fn slices(t: &mut T) {
         t.check("slices: many runs", runs > 100);
         (vm.display(vm.global("out").unwrap()), vm.call_fuel(), h.meshes.len())
     };
-    t.eq("slices of one fuel give the same", sliced, whole);
+    t.eq("slices of one fuel give the same", sliced, whole.clone());
+    // with the debugger: pauses on the lines with host objects, then single steps, the same
+    let debugged = {
+        let mut h = TestHost::new();
+        let mut vm = vm_for(src, Limits::default()).unwrap();
+        vm.set_breakpoint("host.jfs", 5, None).unwrap();
+        let (mut pauses, mut steps) = (0, 0);
+        loop {
+            match vm.run(&mut h, u64::MAX) {
+                Status::Paused(_) => {
+                    pauses += 1;
+                    if pauses > 3 {
+                        vm.clear_breakpoints();
+                    }
+                    if steps < 40 {
+                        steps += 1;
+                        vm.step(script::Step::Into);
+                    }
+                }
+                Status::Yielded => {}
+                Status::Done(_) => break,
+                s => {
+                    t.check(&format!("debugger: {:?}", s), false);
+                    break;
+                }
+            }
+        }
+        t.check(&format!("debugger: it paused ({} pauses)", pauses), pauses > 3);
+        (vm.display(vm.global("out").unwrap()), vm.call_fuel(), h.meshes.len())
+    };
+    t.eq("paused and stepped gives the same", debugged, whole);
     // a clone in the middle runs on alike
     let mut h = TestHost::new();
     let mut vm = vm_for(src, Limits::default()).unwrap();
