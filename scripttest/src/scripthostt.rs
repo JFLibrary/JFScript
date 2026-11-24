@@ -895,6 +895,9 @@ fn services(t: &mut T) {
     let old = CompleteCx { host: &items, load: None };
     t.eq("CompleteCx: names", ls::complete("net.", 4, &old).items.iter().map(|i| i.label.clone()).collect::<Vec<_>>(), vec![String::from("listen")]);
     t.eq("CompleteCx: signature", ls::signature("net.listen(1, ", 14, &old).map(|s| s.active), Some(1));
+    // (the call shapes of JFNetworker's and editortest's code: a temporary default, a field)
+    t.check("CompleteCx::default()", ls::complete("pri", 3, &ls::CompleteCx::default()).items.iter().any(|i| i.label == "print"));
+    t.check("CompleteCx: definition, hover", ls::definition("let a = 1\na", 10, &old).is_some() && ls::hover("print", 1, &ls::CompleteCx::default()).is_some());
     let both = Context { api: Some(&a), host: &items, load: None };
     let c = ls::complete("", 0, &both);
     t.check("Context: both kinds of names", c.items.iter().any(|i| i.label == "net") && c.items.iter().any(|i| i.label == "vec"));
