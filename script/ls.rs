@@ -229,8 +229,11 @@ pub struct CompleteCx<'a> {
     /// the host's globals
     pub host: &'a [HostItem<'a>],
     /// the text of an imported file by the path written in import("…") (None: not there)
-    pub load: Option<&'a dyn Fn(&str) -> Option<String>>,
+    pub load: Option<Loader<'a>>,
 }
+
+/// the reader of imported files: the text by the path written in import("…"), None when not there
+pub type Loader<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// (S2) what the services know beyond the source, with the host's typed description: a
 /// CompleteCx plus an Api (both kinds of description may be given; the Api's names come first)
@@ -241,7 +244,7 @@ pub struct Context<'a> {
     /// host names in the form before S2
     pub host: &'a [HostItem<'a>],
     /// the text of an imported file by the path written in import("…") (None: not there)
-    pub load: Option<&'a dyn Fn(&str) -> Option<String>>,
+    pub load: Option<Loader<'a>>,
 }
 
 impl<'a> Context<'a> {
@@ -251,7 +254,7 @@ impl<'a> Context<'a> {
     }
 
     /// and the reader of imported files
-    pub fn with_loader(mut self, load: &'a dyn Fn(&str) -> Option<String>) -> Context<'a> {
+    pub fn with_loader(mut self, load: Loader<'a>) -> Context<'a> {
         self.load = Some(load);
         self
     }
@@ -1509,10 +1512,10 @@ fn typed_member_doc(api: &Api, k: Known, name: &str) -> Option<(String, String, 
 
 /// (signature, kind, doc) of member `name` after receiver token r
 fn member_doc(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, name: &str, cx: &Context, types: Option<&Types>) -> Option<(String, String, String)> {
-    if let (Some(t), Some(rr), Some(api)) = (types, r, cx.api) {
-        if let Some(k) = t.chain(src, toks, rr) {
-            return typed_member_doc(api, k, name);
-        }
+    if let (Some(t), Some(rr), Some(api)) = (types, r, cx.api)
+        && let Some(k) = t.chain(src, toks, rr)
+    {
+        return typed_member_doc(api, k, name);
     }
     let lib = String::from("Standardbibliothek");
     match recv_of(src, toks, idx, r) {

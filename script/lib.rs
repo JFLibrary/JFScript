@@ -43,6 +43,19 @@
 //                                Status::Paused(Pause), frames, locals, upvalues,
 //                                frame_globals, eval; Program::line_table / break_lines
 //   assert(c, msg), assert_eq(a, b, msg)   tests (stdlib.rs; the runner's jfs --test)
+//   (S2) the host interface in its second version (docs/HOST.md):
+//   host objects                 Value::Host: Cx::new_object(ty, id) (identity, Host::drop when
+//                                the collector frees it), Cx::new_value(ty, &data) (a value
+//                                type: == by data); obj.name, obj.name = v, obj.m(..), a + b,
+//                                -a, type(x), print go to Host::get / set / method / op /
+//                                to_str (vm.rs)
+//   events                       obj.on("event", f) / obj.off(..) after Host::listen; the VM
+//                                keeps the functions: Vm::listeners, Vm::emit (each listener an
+//                                invocation of its own), Cx::emit, remove_listeners
+//   api::Api                     a host's object model as data (api.rs): global names, types
+//                                with properties, methods, events, operators; the language
+//                                services use it (ls::Context, ls::check; lsapi.rs infers the
+//                                types), Api::markdown / catalogue make the object catalogue
 //
 // Files: Diagnostic::file, Error::file and TraceLine::file name the file of a position (the
 // name given to parse / compile_named / compile_with, or a module's path).

@@ -490,10 +490,14 @@ impl Vm {
     }
 
     /// the items of a list ("0", "1" ..) or the entries of a map (the key as text: a str as it
-    /// is, others as repr); nothing for other values
+    /// is, others as repr), (S2) the data of a host value type's object ("0", "1" ..); nothing
+    /// for other values
     pub fn children(&self, v: Value) -> Vec<(String, Value)> {
         if !self.valid(v) {
             return Vec::new();
+        }
+        if let Some(d) = self.data(v) {
+            return d.iter().enumerate().map(|(i, x)| (i.to_string(), *x)).collect();
         }
         match v {
             Value::List(r) => self.heap.list(r).iter().enumerate().map(|(i, x)| (i.to_string(), *x)).collect(),
@@ -664,7 +668,7 @@ impl Vm {
                 Value::Map(r) => self.heap.map(r).live as i64,
                 v => return Err(format!("len braucht str, bytes, list oder map, nicht {}", v.type_name())),
             }),
-            "type" => self.alloc_str(String::from(a.type_name())).map_err(text)?,
+            "type" => self.alloc_str(String::from(self.type_of(a))).map_err(text)?,
             "str" => match a {
                 Value::Str(_) => a,
                 _ => {
@@ -761,6 +765,8 @@ impl Vm {
                 let v = self.ev(fi, at, obj)?;
                 match v {
                     Value::Map(_) => self.map_get_str(v, &name.text).unwrap_or(Value::Nil),
+                    // (S2) a property asks the host: no calls here
+                    Value::Host(_) => return Err(format!("{}.{}: Eigenschaften des Hosts liest der Ausdruck nicht", self.type_of(v), name.text)),
                     _ => return Err(format!("{} hat kein Feld {}", v.type_name(), name.text)),
                 }
             }

@@ -419,10 +419,11 @@ impl Api {
         }
         let mut roots: Vec<String> = Vec::new();
         for g in &api.globals {
-            if let Some((root, _)) = g.name.split_once('.') {
-                if !api.globals.iter().any(|x| x.name == root) && !roots.iter().any(|r| r == root) {
-                    roots.push(String::from(root));
-                }
+            if let Some((root, _)) = g.name.split_once('.')
+                && !api.globals.iter().any(|x| x.name == root)
+                && !roots.iter().any(|r| r == root)
+            {
+                roots.push(String::from(root));
             }
         }
         for r in roots {
@@ -650,12 +651,12 @@ impl Api {
         }
         // dotted names without their namespace
         for g in &globals {
-            if let Some((root, _)) = g.name.split_once('.') {
-                if !globals.iter().any(|x| x.name == root) {
-                    match out.iter_mut().find(|e| e.name == root) {
-                        Some(e) => e.children.push(entry(g)),
-                        None => out.push(Entry { kind: EntryKind::Namespace, name: String::from(root), label: String::from(root), doc: String::new(), children: alloc::vec![entry(g)] }),
-                    }
+            if let Some((root, _)) = g.name.split_once('.')
+                && !globals.iter().any(|x| x.name == root)
+            {
+                match out.iter_mut().find(|e| e.name == root) {
+                    Some(e) => e.children.push(entry(g)),
+                    None => out.push(Entry { kind: EntryKind::Namespace, name: String::from(root), label: String::from(root), doc: String::new(), children: alloc::vec![entry(g)] }),
                 }
             }
         }

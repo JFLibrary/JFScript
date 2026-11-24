@@ -70,20 +70,20 @@ impl Types<'_> {
     }
 
     fn set(&mut self, sym: Option<usize>, ty: String) {
-        if let Some(i) = sym {
-            if !self.mixed[i] {
-                self.sym[i] = ty;
-            }
+        if let Some(i) = sym
+            && !self.mixed[i]
+        {
+            self.sym[i] = ty;
         }
     }
 
     /// an assignment of a value of type ty to the symbol: a different one makes it unknown
     fn assigned(&mut self, sym: Option<usize>, ty: &str) {
-        if let Some(i) = sym {
-            if self.sym[i] != ty {
-                self.mixed[i] = true;
-                self.sym[i] = String::new();
-            }
+        if let Some(i) = sym
+            && self.sym[i] != ty
+        {
+            self.mixed[i] = true;
+            self.sym[i] = String::new();
         }
     }
 
@@ -192,14 +192,14 @@ impl Types<'_> {
             ExprKind::Method(obj, name, args) => {
                 self.expr_walk(obj);
                 // obj.on("event", fn(e) { .. }): e is the event's object
-                if name.text == "on" || name.text == "off" {
-                    if let (Some(Expr { kind: ExprKind::Str(ev), .. }), Some(Expr { kind: ExprKind::Fn(f), .. })) = (args.first(), args.get(1)) {
-                        let ty = self.expr(obj);
-                        let et = self.api.get_type(&ty).and_then(|t| t.find_event(ev)).map(|x| x.ty.clone());
-                        if let (Some(et), Some(p)) = (et, f.params.first()) {
-                            let sym = self.decl(p.span.start);
-                            self.set(sym, et);
-                        }
+                if (name.text == "on" || name.text == "off")
+                    && let (Some(Expr { kind: ExprKind::Str(ev), .. }), Some(Expr { kind: ExprKind::Fn(f), .. })) = (args.first(), args.get(1))
+                {
+                    let ty = self.expr(obj);
+                    let et = self.api.get_type(&ty).and_then(|t| t.find_event(ev)).map(|x| x.ty.clone());
+                    if let (Some(et), Some(p)) = (et, f.params.first()) {
+                        let sym = self.decl(p.span.start);
+                        self.set(sym, et);
                     }
                 }
                 args.iter().for_each(|x| self.expr_walk(x));
@@ -582,15 +582,15 @@ impl Diags<'_, '_> {
                 if n == "on" || n == "off" {
                     if t.events.is_empty() {
                         self.warn(name, format!("{} hat keine Ereignisse", t.name));
-                    } else if let Some(Expr { kind: ExprKind::Str(ev), span, .. }) = args.first() {
-                        if t.find_event(ev).is_none() {
-                            let mut m = format!("{} hat kein Ereignis {}", t.name, ev);
-                            if let Some(c) = closest(ev, t.events.iter().map(|x| x.name.as_str())) {
-                                m.push_str(&format!(" – meinst du {}?", c));
-                            }
-                            let at = Name { text: format!("\"{}\"", ev), span: *span };
-                            self.warn(&at, m);
+                    } else if let Some(Expr { kind: ExprKind::Str(ev), span, .. }) = args.first()
+                        && t.find_event(ev).is_none()
+                    {
+                        let mut m = format!("{} hat kein Ereignis {}", t.name, ev);
+                        if let Some(c) = closest(ev, t.events.iter().map(|x| x.name.as_str())) {
+                            m.push_str(&format!(" – meinst du {}?", c));
                         }
+                        let at = Name { text: format!("\"{}\"", ev), span: *span };
+                        self.warn(&at, m);
                     }
                 } else if t.find_method(n).is_none() {
                     if t.find_prop(n).is_some() {

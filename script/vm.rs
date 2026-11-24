@@ -95,12 +95,15 @@
 // Host objects (S2): Value::Host refers to a heap object that holds the host's type (an index
 // into `types`, the names the host gave) and id, or a value type's data.  The VM keeps one
 // object per (type, id) in `objects`; the sweep takes a freed one out and queues it in
-// `dropped`, which goes to Host::drop before the next call of the host and at the end of
-// run().  obj.name, obj.name = v and the operators reach the host from the instructions'
-// error paths (Exc::Hook: the instruction found a host object), so code without host objects
-// runs the instructions as before; obj.m(..) and obj.on / obj.off branch in method().  The
-// functions of obj.on(ev, f) are in `listeners` with their object (both roots) in the order
-// they came; their bytes count toward the heap.
+// `dropped`, which goes to Host::drop before the next call of the host and when the
+// invocation ends (not after a slice: the same point however a run is split).  obj.name,
+// obj.name = v and the operators reach the host from the instructions' error paths: the
+// instruction returns Exc::Hook from exec like an error, run() and nested_run let the host do
+// its work (hooked) and call exec again, so code without host objects runs the instruction
+// loop as before (its cold paths are out of line: op_error, neg_error, field_error);
+// obj.m(..) and obj.on / obj.off branch in method().  The functions of obj.on(ev, f) are in
+// `listeners` with their object (both roots) in the order they came; their bytes count toward
+// the heap.
 //
 // Modules (module.rs): import(path) links a module's code into the VM's own (`code` starts as
 // the program's and grows with each module; `units` are the program and its modules with
@@ -345,8 +348,9 @@ pub trait Host {
 
     /// the collector freed the object of obj.ty and obj.id (obj.value is nil): no script holds
     /// it any more, a later Cx::new_object with the same id makes a new one.  Comes before the
-    /// next call of the host or at the end of run() (Vm::take_dropped takes them earlier);
-    /// value types' objects are not reported.
+    /// next call of the host (a native or a hook) or when the invocation ends, at the same
+    /// point however the run is split; collect() between runs leaves them for the next one
+    /// (Vm::take_dropped takes them at once).  Value types' objects are not reported.
     fn drop(&mut self, obj: Object) {
         let _ = obj;
     }
@@ -472,7 +476,8 @@ pub(crate) enum Exc {
     Msg(String),
     Throw(Value),
     Fatal(ErrorKind, String),
-    /// (S2) the instruction met a host object: exec asks the host (hook_op); never leaves exec
+    /// (S2) the instruction met a host object: exec's callers ask the host (Vm::hooked) and
+    /// call exec again; never leaves run() or Cx::call
     Hook,
 }
 
@@ -3263,7 +3268,7 @@ fn to_float(v: Value) -> f64 {
 }
 
 /// a binary operator or comparison that does not fit its operands: (S2) Exc::Hook when one is a
-/// host object (exec asks the host), else the error.  Out of line, as the other cold paths of
+/// host object (the host is asked: Vm::hooked), else the error.  Out of line, as the other cold paths of
 /// the instructions: the code exec inlines stays small (the VM's speed depends on it)
 #[cold]
 #[inline(never)]

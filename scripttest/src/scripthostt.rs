@@ -454,6 +454,10 @@ fn values(t: &mut T) {
     t.check("data of a mesh is none", vm.data(m).is_none());
     let v = vm.new_value("vec", &[Value::Float(1.0), Value::Int(2), Value::Nil]).unwrap();
     t.eq("data of a value", vm.data(v).map(|d| d.to_vec()), Some(vec![Value::Float(1.0), Value::Int(2), Value::Nil]));
+    // the debugger's views
+    t.eq("children of a value", vm.children(v).into_iter().map(|(k, x)| (k, vm.repr(x))).collect::<Vec<_>>(), vec![(String::from("0"), String::from("1.0")), (String::from("1"), String::from("2")), (String::from("2"), String::from("nil"))]);
+    t.eq("children of an object", vm.children(m).len(), 0);
+    t.eq("repr and preview", (vm.repr(v), vm.preview(m, 4)), (String::from("vec(1.0, 2, nil)"), String::from("<me…")));
     t.eq("a value's object has id 0", vm.object(v).map(|o| (o.ty, o.id)), Some(("vec", 0)));
     let w = vm.new_value("vec", &[Value::Int(1), Value::Float(2.0), Value::Nil]).unwrap();
     t.check("Vm::equal of values", vm.equal(v, w));
