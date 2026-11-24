@@ -7,7 +7,7 @@
 // They came from JFLib's coretest.  Console program; exit code 1 when a check fails.
 //
 //   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost
-//   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs)
+//   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs), what host objects cost (scripthostt.rs)
 //   cargo run -p scripttest -- --math FILE     answers for tools/script_math_check.py
 //   (cargo jflib test -p scripttest runs it through tests/all.uis; --script is ignored)
 #![no_std]
@@ -59,6 +59,7 @@ fn run() -> i32 {
     }
     if plat::arg_value("--bench").as_deref() == Some("vm") || plat::args().iter().any(|a| a == "--bench") {
         scriptmodt::bench();
+        scripthostt::bench();
         return 0;
     }
     let groups: [(&'static str, fn(&mut T)); 6] = [

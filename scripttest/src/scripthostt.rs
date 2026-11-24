@@ -404,6 +404,30 @@ fn eval_in(src: &str, h: &mut TestHost) -> String {
     finish(&mut vm, h)
 }
 
+/// (scripttest --bench vm) what host objects cost: microseconds per 100 000 rounds of a loop
+/// with a property set, a property read, a vec operator, a method that makes a mesh, against
+/// the same loop with a map
+pub fn bench() {
+    let progs: [(&str, &str); 5] = [
+        ("map field", "let m = {text: \"\"}\nfor i in 0..100000 { m.text = \"x\" }"),
+        ("set prop", "let b = elem(\"btn\")\nfor i in 0..100000 { b.text = \"x\" }"),
+        ("get prop", "let m = cube(1)\nlet s = 0\nfor i in 0..100000 { s += m.faces }"),
+        ("vec +", "let v = vec(0, 0, 0)\nlet d = vec(1, 2, 3)\nfor i in 0..100000 { v = v + d }"),
+        ("method", "let m = cube(1)\nfor i in 0..100000 { let n = m.same() }"),
+    ];
+    for (name, src) in progs {
+        let mut best = u64::MAX;
+        for _ in 0..5 {
+            let mut h = TestHost::new();
+            let mut vm = vm_for(src, Limits { fuel: u64::MAX, ..Limits::default() }).unwrap();
+            let t0 = plat::time_us();
+            let _ = finish(&mut vm, &mut h);
+            best = best.min(plat::time_us().saturating_sub(t0));
+        }
+        plat::write_stdout(format!("host {:<10} {:>8} us per 100 000 rounds\n", name, best).as_bytes());
+    }
+}
+
 pub fn run(t: &mut T) {
     values(t);
     errors(t);
