@@ -556,6 +556,23 @@ fn drops(t: &mut T) {
     t.check(&format!("drops during the run keep the host small (peak {})", h.peak), h.peak > 1000 && h.peak < 20_000);
     vm.collect();
     t.eq("drops during the run: all of them after a last collection", h.dropped.len() + vm.take_dropped().len(), 40_000);
+    // the host hears of drops at the same points however the run is split: reused ids, the
+    // order of the drops and what the script sees are the same
+    let churn = |slice: u64| {
+        let mut h = TestHost::new();
+        let mut vm = vm_for("let ids = []\nfor i in 0..12000 { let m = cube(1)\n if i % 1000 == 0 { ids.push(str(m)) } }\n", Limits::default()).unwrap();
+        loop {
+            match vm.run(&mut h, slice) {
+                Status::Yielded => {}
+                _ => break,
+            }
+        }
+        (vm.display(vm.global("ids").unwrap()), h.dropped.len(), h.dropped.iter().map(|d| d.1).sum::<u64>(), h.peak)
+    };
+    let one = churn(u64::MAX);
+    t.check(&format!("churn: the collector ran ({} drops)", one.1), one.1 > 5000);
+    t.eq("drops: slices of 997 fuel give the same", churn(997), one.clone());
+    t.eq("drops: slices of 1 fuel give the same", churn(1), one);
     // an object made again before the host heard of its drop: the drop is forgotten
     let mut vm = vm_for("", Limits::default()).unwrap();
     let mut h = TestHost::new();
