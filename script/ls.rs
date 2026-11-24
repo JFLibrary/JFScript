@@ -42,9 +42,22 @@
 //                                    them as children) and lets in source order
 //   CompleteCx { host, load }        the host's globals (HostItem: "net.listen", parameters,
 //                                    a short description) and the reader of imported files
+//   Context { api, host, load }      (S2) CompleteCx with the host's typed description
+//                                    (script::Api, api.rs); definition, complete, hover and
+//                                    signature take either (`&cx` of both, or `&api`)
+//   check(src, cx) -> Vec<Diagnostic>   (S2) the editor's diagnostics for a host: syntax, the
+//                                    names (unknown ones are errors, as compile_with makes
+//                                    them), and with an Api the members of known host types
 //   apply(src, &edits) -> String     the source with edits; is_name(s) a valid new name;
 //                                    library_doc(name) the parameters and description of a
 //                                    built-in or library name (lsdoc.rs)
+//
+// With an Api (S2, lsapi.rs): completion after a dot lists the members of the type the code
+// before it has (a host value such as `doc`, a host function's result, a property, a chain
+// such as `doc.page.shapes[0]`, a let of one of those, the item of a list<T> in a for, the
+// parameter of a function given to obj.on("event", ..)); hover shows a member's declaration
+// and a variable's type; signature help a method's parameters with their types; check warns
+// about members the type does not have.  Where the type is not known, everything is as before.
 //
 // Doc comments: the `///` lines right above a fn or let (no blank line between) belong to it;
 // their text without the slashes and one blank is the doc.  Positions: bytes into src (a
@@ -55,9 +68,12 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::api::{Api, GlobalKind};
 use crate::ast::*;
 use crate::lex::{self, Tok, TokKind};
+use crate::lsapi::{self, Known, Types};
 use crate::lsdoc;
+use crate::Diagnostic;
 
 /// what a symbol is
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -154,7 +170,7 @@ impl Index {
     }
 
     /// the use that starts at byte start
-    fn use_from(&self, start: u32) -> Option<&Use> {
+    pub(crate) fn use_from(&self, start: u32) -> Option<&Use> {
         let k = self.uses.partition_point(|u| u.span.start < start);
         self.uses.get(k).filter(|u| u.span.start == start)
     }
@@ -173,7 +189,7 @@ impl Index {
 
     /// the symbol of the name token at byte start: its use, or (no use: a statement that did
     /// not parse) by the visible ranges; a declaration's own name
-    fn sym_of(&self, name: &str, start: u32) -> Option<usize> {
+    pub(crate) fn sym_of(&self, name: &str, start: u32) -> Option<usize> {
         match self.use_from(start) {
             Some(u) => u.sym,
             None => self.symbols.iter().position(|s| s.span.start == start).or_else(|| self.resolve(name, start)),
@@ -214,6 +230,55 @@ pub struct CompleteCx<'a> {
     pub host: &'a [HostItem<'a>],
     /// the text of an imported file by the path written in import("…") (None: not there)
     pub load: Option<&'a dyn Fn(&str) -> Option<String>>,
+}
+
+/// (S2) what the services know beyond the source, with the host's typed description: a
+/// CompleteCx plus an Api (both kinds of description may be given; the Api's names come first)
+#[derive(Clone, Copy, Default)]
+pub struct Context<'a> {
+    /// the host's object model (api.rs)
+    pub api: Option<&'a Api>,
+    /// host names in the form before S2
+    pub host: &'a [HostItem<'a>],
+    /// the text of an imported file by the path written in import("…") (None: not there)
+    pub load: Option<&'a dyn Fn(&str) -> Option<String>>,
+}
+
+impl<'a> Context<'a> {
+    /// the services with this description
+    pub fn new(api: &'a Api) -> Context<'a> {
+        Context { api: Some(api), host: &[], load: None }
+    }
+
+    /// and the reader of imported files
+    pub fn with_loader(mut self, load: &'a dyn Fn(&str) -> Option<String>) -> Context<'a> {
+        self.load = Some(load);
+        self
+    }
+}
+
+impl<'a> From<&CompleteCx<'a>> for Context<'a> {
+    fn from(c: &CompleteCx<'a>) -> Context<'a> {
+        Context { api: None, host: c.host, load: c.load }
+    }
+}
+
+impl<'a> From<CompleteCx<'a>> for Context<'a> {
+    fn from(c: CompleteCx<'a>) -> Context<'a> {
+        Context { api: None, host: c.host, load: c.load }
+    }
+}
+
+impl<'a> From<&Context<'a>> for Context<'a> {
+    fn from(c: &Context<'a>) -> Context<'a> {
+        *c
+    }
+}
+
+impl<'a> From<&'a Api> for Context<'a> {
+    fn from(api: &'a Api) -> Context<'a> {
+        Context::new(api)
+    }
 }
 
 /// the kind of a completion item
@@ -764,7 +829,7 @@ fn kind_of(idx: &Index, s: &Symbol) -> String {
 // ---------------------------------------------------------------- definition, references, rename
 
 /// the members of an imported module: its top-level symbols (lets and fns) and its index
-fn module(cx: &CompleteCx, path: &str) -> Option<(Index, String)> {
+fn module(cx: &Context, path: &str) -> Option<(Index, String)> {
     let load = cx.load?;
     let text = load(path)?;
     Some((index(&text), text))
@@ -780,7 +845,9 @@ fn receiver(toks: &[Tok], k: usize) -> Option<usize> {
 }
 
 /// see the module comment
-pub fn definition(src: &str, pos: u32, cx: &CompleteCx) -> Option<Location> {
+pub fn definition<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Location> {
+    let cx: Context = cx.into();
+    let cx = &cx;
     let (toks, _) = lex::lex(src);
     let k = word_at(&toks, pos)?;
     let idx = index(src);
@@ -949,17 +1016,31 @@ fn lib_detail(d: &lsdoc::Doc, as_method: bool) -> String {
 }
 
 /// see the module comment
-pub fn complete(src: &str, pos: u32, cx: &CompleteCx) -> Completion {
+pub fn complete<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Completion {
+    let cx: Context = cx.into();
+    let cx = &cx;
     let pos = clamp_pos(src, pos);
     let (toks, _) = lex::lex(src);
     let Some((start, end, prev)) = word_place(src, &toks, pos) else { return Completion { start: pos, end: pos, items: Vec::new() } };
     let prefix = &src[start as usize..pos as usize];
     let (prog, _) = crate::parse_partial("", src);
     let idx = index_of(&prog, src);
+    let types = cx.api.map(|api| lsapi::infer(&prog, &idx, api));
     let mut c: Vec<Cand> = Vec::new();
     let member = prev.filter(|&p| toks[p].kind == TokKind::Dot);
     match member {
-        Some(d) => members(src, &toks, &idx, prev_sig(&toks, d), cx, &mut c),
+        Some(d) => {
+            let r = prev_sig(&toks, d);
+            // (S2) a receiver whose type the host's description tells
+            let known = match (&types, r) {
+                (Some(t), Some(r)) => t.chain(src, &toks, r),
+                _ => None,
+            };
+            match known {
+                Some(k) => typed_members(types.as_ref(), k, cx, &mut c),
+                None => members(src, &toks, &idx, r, cx, &mut c),
+            }
+        }
         None => {
             let mut bodies = Vec::new();
             walk_fns(&prog.body, &mut |f: &FnDef| bodies.push((f.body.span.start, f.body.span.end)));
@@ -1102,7 +1183,7 @@ fn walk_expr(e: &Expr, f: &mut dyn FnMut(&FnDef)) {
 /// the names at a word that is no member: symbols in scope, the host's, the library's,
 /// keywords
 #[allow(clippy::too_many_arguments)]
-fn names(src: &str, toks: &[Tok], idx: &Index, bodies: &[(u32, u32)], start: u32, prev: Option<usize>, cx: &CompleteCx, c: &mut Vec<Cand>) {
+fn names(src: &str, toks: &[Tok], idx: &Index, bodies: &[(u32, u32)], start: u32, prev: Option<usize>, cx: &Context, c: &mut Vec<Cand>) {
     let mut taken: Vec<String> = Vec::new();
     for i in visible(idx, bodies, start) {
         let s = &idx.symbols[i];
@@ -1116,6 +1197,22 @@ fn names(src: &str, toks: &[Tok], idx: &Index, bodies: &[(u32, u32)], start: u32
         let rank = if matches!(s.kind, SymKind::Global | SymKind::Fn) && s.parent.is_none() && s.scope.0 == 0 { 1 } else { 0 };
         taken.push(s.name.clone());
         c.push(Cand { item: Item { label: s.name.clone(), kind, detail: sig_of(s), doc: s.doc.clone() }, rank });
+    }
+    // (S2) the host's description: its global names and the namespaces of dotted ones
+    if let Some(api) = cx.api {
+        for g in &api.globals {
+            let root = g.name.split('.').next().unwrap_or(&g.name);
+            if taken.iter().any(|t| t == root) {
+                continue;
+            }
+            if root == g.name {
+                c.push(Cand { item: global_item(api, root, g), rank: 2 });
+                taken.push(String::from(root));
+            } else if api.global(root).is_none() {
+                c.push(Cand { item: Item { label: String::from(root), kind: ItemKind::Module, detail: String::from(root), doc: String::new() }, rank: 2 });
+                taken.push(String::from(root));
+            }
+        }
     }
     // the host: plain names and the namespaces of dotted ones
     for h in cx.host {
@@ -1200,22 +1297,86 @@ fn recv_of(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>) -> Recv {
     }
 }
 
-/// the members after a dot (r: the token before it)
-fn members(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, cx: &CompleteCx, c: &mut Vec<Cand>) {
-    let methods = |ty: &str, c: &mut Vec<Cand>| {
-        for d in lsdoc::methods(ty) {
-            let short = d.name.split_once('.').map_or(d.name, |x| x.1);
-            if let Some(x) = c.iter_mut().find(|x| x.item.label == short && x.item.kind == ItemKind::Method) {
-                // the same name on several types: their receivers in the detail
-                let more = format!(" · {}", lib_detail(d, true));
-                if !x.item.detail.contains(&more) {
-                    x.item.detail.push_str(&more);
-                }
-                continue;
+/// the library's methods of type ty as completion items (a name on several types once, with
+/// their receivers in the detail)
+fn lib_methods(ty: &str, c: &mut Vec<Cand>) {
+    for d in lsdoc::methods(ty) {
+        let short = d.name.split_once('.').map_or(d.name, |x| x.1);
+        if let Some(x) = c.iter_mut().find(|x| x.item.label == short && x.item.kind == ItemKind::Method) {
+            // the same name on several types: their receivers in the detail
+            let more = format!(" · {}", lib_detail(d, true));
+            if !x.item.detail.contains(&more) {
+                x.item.detail.push_str(&more);
             }
-            c.push(Cand { item: Item { label: String::from(short), kind: ItemKind::Method, detail: lib_detail(d, true), doc: String::from(d.text) }, rank: 3 });
+            continue;
+        }
+        c.push(Cand { item: Item { label: String::from(short), kind: ItemKind::Method, detail: lib_detail(d, true), doc: String::from(d.text) }, rank: 3 });
+    }
+}
+
+/// (S2) the completion item of a global of the host's description ("vec(x: float): vec")
+fn global_item(api: &Api, label: &str, g: &crate::api::Global) -> Item {
+    let (kind, detail) = match &g.kind {
+        GlobalKind::Func(s) => (ItemKind::Function, s.label(&g.name)),
+        GlobalKind::Namespace => (ItemKind::Module, g.name.clone()),
+        GlobalKind::Value(t) => {
+            let kind = if api.is_namespace(&g.name) { ItemKind::Module } else { ItemKind::Value };
+            (kind, if t.is_empty() { g.name.clone() } else { format!("{}: {}", g.name, t) })
         }
     };
+    Item { label: String::from(label), kind, detail, doc: g.doc.clone() }
+}
+
+/// (S2) the members of a receiver whose type the description tells: a host type's properties
+/// and methods (and on / off when it has events), a library type's methods, a namespace's names
+fn typed_members(types: Option<&Types>, k: Known, cx: &Context, c: &mut Vec<Cand>) {
+    let (Some(api), Some(_)) = (cx.api, types) else { return };
+    match k {
+        Known::Ns(ns) => {
+            let pre = format!("{}.", ns);
+            for g in api.globals.iter().filter(|g| g.name.starts_with(&pre)) {
+                let short = &g.name[pre.len()..];
+                match short.split_once('.') {
+                    // a namespace inside it
+                    Some((first, _)) => {
+                        if !c.iter().any(|x| x.item.label == first) {
+                            c.push(Cand { item: Item { label: String::from(first), kind: ItemKind::Module, detail: format!("{}{}", pre, first), doc: String::new() }, rank: 2 });
+                        }
+                    }
+                    None => c.push(Cand { item: global_item(api, short, g), rank: 2 }),
+                }
+            }
+            for h in cx.host.iter().filter(|h| h.name.starts_with(&pre) && !h.name[pre.len()..].contains('.')) {
+                let kind = if h.params.is_some() { ItemKind::Function } else { ItemKind::Value };
+                c.push(Cand { item: Item { label: String::from(&h.name[pre.len()..]), kind, detail: host_detail(h), doc: String::from(h.doc) }, rank: 2 });
+            }
+        }
+        Known::Ty(t) => {
+            let lib = crate::api::list_of(&t).map_or(t.as_str(), |_| "list");
+            if let Some(ty) = api.get_type(&t) {
+                for p in &ty.props {
+                    let ro = if p.readonly { " (nur lesbar)" } else { "" };
+                    c.push(Cand { item: Item { label: p.name.clone(), kind: ItemKind::Value, detail: format!("{}.{}{}", ty.name, p.label().trim_start_matches("readonly "), ro), doc: p.doc.clone() }, rank: 2 });
+                }
+                for m in &ty.methods {
+                    c.push(Cand { item: Item { label: m.name.clone(), kind: ItemKind::Method, detail: m.sig.label(&format!("{}.{}", ty.name, m.name)), doc: m.doc.clone() }, rank: 2 });
+                }
+                if !ty.events.is_empty() {
+                    let evs: Vec<&str> = ty.events.iter().map(|e| e.name.as_str()).collect();
+                    let doc = format!("Ereignisse: {}", evs.join(", "));
+                    c.push(Cand { item: Item { label: String::from("on"), kind: ItemKind::Method, detail: format!("{}.on(event: str, f: fn)", ty.name), doc: format!("Ruft f(e) bei jedem Ereignis event auf. {}", doc) }, rank: 3 });
+                    c.push(Cand { item: Item { label: String::from("off"), kind: ItemKind::Method, detail: format!("{}.off(event: str, f: fn)", ty.name), doc: format!("Nimmt f (ohne f: alle Funktionen) für event wieder weg. {}", doc) }, rank: 3 });
+                }
+            } else if matches!(lib, "str" | "list" | "map" | "bytes") {
+                lib_methods(lib, c);
+            }
+        }
+    }
+}
+
+/// the members after a dot (r: the token before it)
+fn members(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, cx: &Context, c: &mut Vec<Cand>) {
+    let methods = lib_methods;
     match recv_of(src, toks, idx, r) {
         Recv::Import(path) => {
             if let Some((mi, _)) = module(cx, &path) {
@@ -1266,7 +1427,9 @@ fn members(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, cx: &Complete
 // ---------------------------------------------------------------- hover and signature help
 
 /// see the module comment
-pub fn hover(src: &str, pos: u32, cx: &CompleteCx) -> Option<Hover> {
+pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hover> {
+    let cx: Context = cx.into();
+    let cx = &cx;
     let (toks, _) = lex::lex(src);
     let k = word_at(&toks, pos)?;
     let t = toks[k];
@@ -1276,15 +1439,27 @@ pub fn hover(src: &str, pos: u32, cx: &CompleteCx) -> Option<Hover> {
     let lines = Lines::new(src);
     let span = lines.span(src, t.start, t.end);
     let name = text_of(src, &t);
-    let idx = index(src);
+    let (prog, _) = crate::parse_partial("", src);
+    let idx = index_of(&prog, src);
+    let types = cx.api.map(|api| lsapi::infer(&prog, &idx, api));
     if prev_sig(&toks, k).is_some_and(|d| toks[d].kind == TokKind::Dot) {
         let r = receiver(&toks, k);
-        let (sig, kind, doc) = member_doc(src, &toks, &idx, r, name, cx)?;
+        let (sig, kind, doc) = member_doc(src, &toks, &idx, r, name, cx, types.as_ref())?;
         return Some(Hover { span, sig, kind, doc });
     }
     if let Some(s) = idx.sym_of(name, t.start) {
         let s2 = &idx.symbols[s];
-        return Some(Hover { span, sig: sig_of(s2), kind: kind_of(&idx, s2), doc: s2.doc.clone() });
+        let mut sig = sig_of(s2);
+        // (S2) the type the host's description tells
+        if let Some(ty) = types.as_ref().map(|t| t.sym[s].as_str()).filter(|t| !t.is_empty() && s2.kind != SymKind::Fn && s2.ty != "fn") {
+            sig = format!("{}: {}", sig, ty);
+        }
+        return Some(Hover { span, sig, kind: kind_of(&idx, s2), doc: s2.doc.clone() });
+    }
+    if let Some(g) = cx.api.and_then(|api| api.global(name).map(|g| (api, g))) {
+        let it = global_item(g.0, name, g.1);
+        let kind = if it.kind == ItemKind::Module { "Namensraum des Hosts" } else { "Name des Hosts" };
+        return Some(Hover { span, sig: it.detail, kind: String::from(kind), doc: it.doc });
     }
     if let Some(h) = cx.host.iter().find(|h| h.name == name) {
         return Some(Hover { span, sig: host_detail(h), kind: String::from("Name des Hosts"), doc: String::from(h.doc) });
@@ -1295,14 +1470,50 @@ pub fn hover(src: &str, pos: u32, cx: &CompleteCx) -> Option<Hover> {
     if lsdoc::MODULES.contains(&name) {
         return Some(Hover { span, sig: String::from(name), kind: String::from("Modul der Standardbibliothek"), doc: String::new() });
     }
-    if cx.host.iter().any(|h| h.name.split('.').next() == Some(name)) {
+    if cx.host.iter().any(|h| h.name.split('.').next() == Some(name)) || cx.api.is_some_and(|a| a.is_namespace(name)) {
         return Some(Hover { span, sig: String::from(name), kind: String::from("Name des Hosts"), doc: String::new() });
     }
     None
 }
 
+/// (S2) (declaration, kind, doc) of member `name` of a receiver whose type the description
+/// tells; None when it does not have one of that name
+fn typed_member_doc(api: &Api, k: Known, name: &str) -> Option<(String, String, String)> {
+    match k {
+        Known::Ns(ns) => {
+            let full = format!("{}.{}", ns, name);
+            let g = api.global(&full)?;
+            let it = global_item(api, name, g);
+            Some((it.detail, String::from("Name des Hosts"), it.doc))
+        }
+        Known::Ty(t) => {
+            let lib = crate::api::list_of(&t).map_or(t.as_str(), |_| "list");
+            let Some(ty) = api.get_type(&t) else {
+                return method_doc(lib, name).map(|(s, d)| (s, String::from("Standardbibliothek"), d));
+            };
+            if let Some(p) = ty.find_prop(name) {
+                let ro = if p.readonly { ", nur lesbar" } else { "" };
+                return Some((format!("{}.{}", ty.name, p.label().trim_start_matches("readonly ")), format!("Eigenschaft von {}{}", ty.name, ro), p.doc.clone()));
+            }
+            if let Some(m) = ty.find_method(name) {
+                return Some((m.sig.label(&format!("{}.{}", ty.name, m.name)), format!("Methode von {}", ty.name), m.doc.clone()));
+            }
+            if (name == "on" || name == "off") && !ty.events.is_empty() {
+                let evs: Vec<String> = ty.events.iter().map(|e| e.label()).collect();
+                return Some((format!("{}.{}(event: str, f: fn)", ty.name, name), String::from("Ereignisse"), evs.join("\n")));
+            }
+            None
+        }
+    }
+}
+
 /// (signature, kind, doc) of member `name` after receiver token r
-fn member_doc(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, name: &str, cx: &CompleteCx) -> Option<(String, String, String)> {
+fn member_doc(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, name: &str, cx: &Context, types: Option<&Types>) -> Option<(String, String, String)> {
+    if let (Some(t), Some(rr), Some(api)) = (types, r, cx.api) {
+        if let Some(k) = t.chain(src, toks, rr) {
+            return typed_member_doc(api, k, name);
+        }
+    }
     let lib = String::from("Standardbibliothek");
     match recv_of(src, toks, idx, r) {
         Recv::Import(path) => {
@@ -1334,7 +1545,9 @@ fn method_doc(ty: &str, name: &str) -> Option<(String, String)> {
 }
 
 /// see the module comment
-pub fn signature(src: &str, pos: u32, cx: &CompleteCx) -> Option<Signature> {
+pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Signature> {
+    let cx: Context = cx.into();
+    let cx = &cx;
     let pos = clamp_pos(src, pos);
     let (all, _) = lex::lex(src);
     if word_place(src, &all, pos).is_none() {
@@ -1365,31 +1578,34 @@ pub fn signature(src: &str, pos: u32, cx: &CompleteCx) -> Option<Signature> {
     let f = o.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Ident)?;
     let name = text_of(src, &toks[f]);
     let dot = f.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Dot);
+    let (prog, _) = crate::parse_partial("", src);
+    let idx = index_of(&prog, src);
     let (label, doc) = match dot {
         Some(d) => {
             // the receiver as the full list sees it (for its symbol)
-            let idx = index(src);
+            let types = cx.api.map(|api| lsapi::infer(&prog, &idx, api));
             let r = d.checked_sub(1).map(|j| all.partition_point(|t| t.start < toks[j].start)).filter(|&j| j < all.len());
-            let (sig, _, doc) = member_doc(src, &all, &idx, r, name, cx)?;
+            let (sig, _, doc) = member_doc(src, &all, &idx, r, name, cx, types.as_ref())?;
             (sig.split(" · ").next().unwrap_or("").to_string(), doc)
         }
-        None => {
-            let idx = index(src);
-            match idx.sym_of(name, toks[f].start) {
-                Some(s) => {
-                    let s = &idx.symbols[s];
-                    if s.kind != SymKind::Fn && s.ty != "fn" && s.kind != SymKind::Param {
-                        return None;
-                    }
-                    (format!("{}({})", s.name, s.params.join(", ")), s.doc.clone())
+        None => match idx.sym_of(name, toks[f].start) {
+            Some(s) => {
+                let s = &idx.symbols[s];
+                if s.kind != SymKind::Fn && s.ty != "fn" && s.kind != SymKind::Param {
+                    return None;
                 }
-                None => match (cx.host.iter().find(|h| h.name == name && h.params.is_some()), lsdoc::doc(name)) {
-                    (Some(h), _) => (host_detail(h), String::from(h.doc)),
-                    (None, Some(d)) if d.params.is_some() => (lib_detail(d, false), String::from(d.text)),
-                    _ => return None,
-                },
+                (format!("{}({})", s.name, s.params.join(", ")), s.doc.clone())
             }
-        }
+            None => match (cx.api.and_then(|a| a.global(name)), cx.host.iter().find(|h| h.name == name && h.params.is_some()), lsdoc::doc(name)) {
+                (Some(g), _, _) if matches!(g.kind, GlobalKind::Func(_)) => {
+                    let GlobalKind::Func(s) = &g.kind else { return None };
+                    (s.label(name), g.doc.clone())
+                }
+                (_, Some(h), _) => (host_detail(h), String::from(h.doc)),
+                (_, None, Some(d)) if d.params.is_some() => (lib_detail(d, false), String::from(d.text)),
+                _ => return None,
+            },
+        },
     };
     let params = param_ranges(&label);
     let variadic = label.contains("..");
@@ -1397,12 +1613,29 @@ pub fn signature(src: &str, pos: u32, cx: &CompleteCx) -> Option<Signature> {
     Some(Signature { label, params, active, doc })
 }
 
-/// the bytes of the parameters inside the parentheses of a label "f(a, b, ..)"
+/// the bytes of the parameters inside the parentheses of a label "f(a, b, ..)" (commas inside
+/// brackets and quotes of a default, "= vec(0, 0)", belong to their parameter)
 fn param_ranges(label: &str) -> Vec<(u32, u32)> {
     let (Some(a), Some(b)) = (label.find('('), label.rfind(')')) else { return Vec::new() };
+    let inner = &label[a + 1..b];
+    let mut parts: Vec<&str> = Vec::new();
+    let (mut depth, mut quote, mut from) = (0i32, false, 0usize);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '"' => quote = !quote,
+            '(' | '[' | '{' | '<' if !quote => depth += 1,
+            ')' | ']' | '}' | '>' if !quote => depth -= 1,
+            ',' if depth == 0 && !quote => {
+                parts.push(&inner[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[from..]);
     let mut v = Vec::new();
     let mut at = a + 1;
-    for part in label[a + 1..b].split(',') {
+    for part in parts {
         let lead = part.len() - part.trim_start().len();
         let s = at + lead;
         let e = s + part.trim().len();
@@ -1651,4 +1884,34 @@ fn nested_expr(e: &Expr, idx: &Index, out: &mut Vec<DocSymbol>) {
         }
         _ => {}
     }
+}
+
+// ---------------------------------------------------------------- (S2) diagnostics for a host
+
+/// see the module comment: syntax errors; with an Api or HostItems the names against theirs,
+/// the built-ins and the library (an unknown one is an error, as compile_with makes it), else
+/// against script::GLOBALS as script::check; with an Api the members of known host types
+/// (warnings: lsapi.rs); sorted by position
+pub fn check<'a>(src: &str, cx: impl Into<Context<'a>>) -> Vec<Diagnostic> {
+    let cx: Context = cx.into();
+    let (prog, mut d) = crate::parse_partial("", src);
+    if cx.api.is_none() && cx.host.is_empty() {
+        d.extend(crate::check::resolve(&prog, crate::GLOBALS));
+    } else {
+        let mut names: Vec<&str> = cx.api.map(|a| a.names()).unwrap_or_default();
+        for h in cx.host {
+            let root = h.name.split('.').next().unwrap_or(h.name);
+            if !names.contains(&root) {
+                names.push(root);
+            }
+        }
+        d.extend(crate::check::resolve_strict(&prog, &crate::known_names(&names)));
+    }
+    if let Some(api) = cx.api {
+        let idx = index_of(&prog, src);
+        let types = lsapi::infer(&prog, &idx, api);
+        d.extend(lsapi::diagnostics(&prog, &types, src));
+    }
+    d.sort_by_key(|x| (x.line, x.col));
+    d
 }

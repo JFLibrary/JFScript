@@ -80,9 +80,12 @@ mod strlib;
 mod listlib;
 mod jsonlib;
 // (SK6) language services for editors (ls.rs, the library's descriptions in lsdoc.rs) and the
-// formatter (fmt.rs)
+// formatter (fmt.rs); (S2) a host's object model as data (api.rs) and its types in the
+// services (lsapi.rs)
 pub mod ls;
 mod lsdoc;
+pub mod api;
+mod lsapi;
 pub mod fmt;
 mod module;
 pub mod debug;
@@ -100,6 +103,7 @@ pub use code::Program;
 pub use heap::{Ref, Value};
 pub use vm::{Cx, Error, ErrorKind, Fail, Handled, Host, Limits, Object, Operator, Pin, Position, Status, TraceLine, Vm, Warning, MAX_WARNINGS};
 pub use code::LineEntry;
+pub use api::Api;
 pub use debug::{Breakpoint, FrameInfo, Pause, PauseReason, Step};
 
 /// a message for the editor: position (1-based; columns count characters, end_col is
