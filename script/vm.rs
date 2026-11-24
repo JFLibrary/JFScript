@@ -734,23 +734,29 @@ impl Vm {
         let debugging = self.dbg.as_ref().is_some_and(|d| d.active);
         let st = loop {
             let r = if debugging { self.exec_debug(host, fuel) } else { self.exec(host, fuel) };
-            match r {
+            let e = match r {
                 // new code linked: exec again with it
-                Ok(Status::Yielded) if self.relink => {}
+                Ok(Status::Yielded) if self.relink => continue,
                 Ok(s) => break s,
-                Err(e) => {
-                    if let Err(err) = self.catch(e) {
-                        self.abort();
-                        break Status::Error(err);
-                    }
-                }
+                // (S2) a host object: the host does the instruction's work, then on
+                Err(Exc::Hook) => match self.hooked(host) {
+                    Ok(false) => continue,
+                    Ok(true) => break Status::Yielded,
+                    Err(e) => e,
+                },
+                Err(e) => e,
+            };
+            if let Err(err) = self.catch(e) {
+                self.abort();
+                break Status::Error(err);
             }
         };
         self.running = false;
         self.call_fuel += self.used;
         self.last = self.used;
-        // (S2) the host objects the collector freed in this run
-        if !self.dropped.is_empty() {
+        // (S2) the host objects the collector freed, when the invocation ends (not after a
+        // slice: the host must hear of them at the same point however the run is split)
+        if !self.dropped.is_empty() && matches!(st, Status::Done(_) | Status::Error(_)) {
             self.deliver(host);
         }
         match st {
@@ -1157,6 +1163,7 @@ impl Vm {
     }
 
     /// the type name the script sees (type(v)): the host's for its objects
+    #[inline(never)]
     pub fn type_of(&self, v: Value) -> &'static str {
         match v {
             Value::Host(r) if self.valid(v) => self.object_of(r).ty,
@@ -1271,6 +1278,7 @@ impl Vm {
     }
 
     /// what the host sees of the host object r
+    #[inline(never)]
     pub(crate) fn object_of(&self, r: Ref) -> Object {
         match &self.heap.objs[r.0 as usize] {
             Obj::Host(h) => Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Host(r) },
@@ -1280,6 +1288,7 @@ impl Vm {
     }
 
     /// type(x) of a host object: its type name as a str (kept for the next time)
+    #[inline(never)]
     fn type_str(&mut self, r: Ref) -> Result<Value, Exc> {
         let t = match &self.heap.objs[r.0 as usize] {
             Obj::Host(h) => h.ty,
@@ -1322,6 +1331,8 @@ impl Vm {
     }
 
     /// tell the host what the collector freed (Host::drop)
+    #[inline(never)]
+    #[cold]
     fn deliver(&mut self, host: &mut dyn Host) {
         for h in core::mem::take(&mut self.dropped) {
             host.drop(Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Nil });
@@ -1479,6 +1490,8 @@ impl Vm {
     }
 
     /// (S2) two objects of one value type with equal data
+    #[inline(never)]
+    #[cold]
     fn same_data(&self, x: Ref, y: Ref) -> bool {
         match (&self.heap.objs[x.0 as usize], &self.heap.objs[y.0 as usize]) {
             (Obj::HostValue(a), Obj::HostValue(b)) => {
@@ -1784,6 +1797,16 @@ impl Vm {
                     continue;
                 }
                 Ok(Status::Error(e)) => return Err(Fail::Fatal(e.msg)),
+                // (S2) a host object: the host does the instruction's work, then on (a yield it
+                // asks for waits until the native returns, as a callback's)
+                Err(Exc::Hook) => match self.hooked(host) {
+                    Ok(y) => {
+                        yielded |= y;
+                        res = self.exec(host, u64::MAX);
+                        continue;
+                    }
+                    Err(e) => e,
+                },
                 Err(e) => e,
             };
             match self.thrown(e) {
@@ -1872,6 +1895,7 @@ impl Vm {
         Ok(Called::Native)
     }
 
+    #[inline(never)]
     fn host_call(&mut self, host: &mut dyn Host, name: &str, args: &[Value], method: Option<(&str, &str)>) -> Result<Value, Exc> {
         if !self.dropped.is_empty() {
             self.deliver(host);
@@ -1915,6 +1939,7 @@ impl Vm {
     }
 
     /// obj.name(args) with obj and the argc arguments on the stack (name: constant k)
+    #[inline(never)]
     fn method(&mut self, code: &Code, host: &mut dyn Host, k: u32, argc: usize) -> Result<Called, Exc> {
         let opos = self.stack.len() - argc - 1;
         let obj = self.stack[opos];
@@ -2066,6 +2091,25 @@ impl Vm {
         let linked = self.code.clone();
         self.relink = false;
         self.exec_code(&linked, host, fuel)
+    }
+
+    /// (S2) exec returned Exc::Hook: the instruction before the current frame's pc met a host
+    /// object, the host does its work; then exec goes on (its callers call it again, so the
+    /// instruction loop stays as it was for code without host objects).  Ok(true): a hook
+    /// asked to yield (the run ends here, as after a native)
+    #[inline(never)]
+    #[cold]
+    pub(crate) fn hooked(&mut self, host: &mut dyn Host) -> Result<bool, Exc> {
+        let code = self.code.clone();
+        let Some(f) = self.frames.last() else { return internal() };
+        let Some(&op) = code.protos.get(f.proto as usize).and_then(|p| p.code.get(f.pc as usize - 1)) else { return internal() };
+        self.hook_op(&code, host, op)?;
+        if self.yield_req {
+            self.yield_req = false;
+            self.native_yield = true;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn exec_code(&mut self, code: &Code, host: &mut dyn Host, fuel: u64) -> Result<Status, Exc> {
@@ -2221,8 +2265,7 @@ impl Vm {
                                 self.stack[n] = Value::Float(num::neg(f));
                                 Ok(())
                             }
-                            Value::Host(_) => Err(Exc::Hook),
-                            v => msg(format!("Das Minus passt nicht zu {}", v.type_name())),
+                            v => Err(neg_error(v)),
                         }
                     }
                     Op::Not => {
@@ -2396,11 +2439,7 @@ impl Vm {
                 };
                 if let Err(e) = r {
                     self.frames[fi].pc = pc as u32;
-                    match e {
-                        // (S2) a host object: its host does the instruction's work
-                        Exc::Hook => self.hook_op(code, host, op)?,
-                        e => return Err(e),
-                    }
+                    return Err(e);
                 }
                 if self.yield_req {
                     self.yield_req = false;
@@ -2492,11 +2531,7 @@ impl Vm {
                 self.used += v.len() as u64 / 64;
                 Value::Bytes(self.alloc(Obj::Bytes(v.into_boxed_slice()))?)
             }
-            (Value::Host(_), _) | (_, Value::Host(_)) => return Err(Exc::Hook),
-            _ => {
-                let t = op_text(op);
-                return msg(format!("Der Operator {} passt nicht zu {} und {}", t, a.type_name(), b.type_name()));
-            }
+            _ => return Err(op_error(op, a, b)),
         };
         self.stack.truncate(n - 2);
         self.stack.push(v);
@@ -2516,11 +2551,7 @@ impl Vm {
                     (Value::Float(x), Value::Int(y)) => num::cmp_int(y, x).map(Ordering::reverse),
                     (Value::Float(x), Value::Float(y)) => num::cmp(x, y),
                     (Value::Str(x), Value::Str(y)) => Some(heap::text(&self.heap, x).cmp(heap::text(&self.heap, y))),
-                    (Value::Host(_), _) | (_, Value::Host(_)) => return Err(Exc::Hook),
-                    _ => {
-                        let t = op_text(op);
-                        return msg(format!("Der Vergleich {} passt nicht zu {} und {}", t, a.type_name(), b.type_name()));
-                    }
+                    _ => return Err(op_error(op, a, b)),
                 };
                 match (op, ord) {
                     (_, None) => false,
@@ -2583,8 +2614,7 @@ impl Vm {
                 self.stack[n] = v;
                 Ok(())
             }
-            Value::Host(_) => Err(Exc::Hook),
-            v => msg(format!("{} hat kein Feld {}", v.type_name(), heap::text(&self.heap, kr))),
+            v => Err(self.field_error(v, kr, false)),
         }
     }
 
@@ -2594,14 +2624,26 @@ impl Vm {
         let key = self.consts[k as usize];
         match obj {
             Value::Map(_) => self.set_key(obj, key, v)?,
-            Value::Host(_) => return Err(Exc::Hook),
             _ => {
                 let Value::Str(kr) = key else { return internal() };
-                return msg(format!("Nur Maps haben Felder, nicht {} (Feld {})", obj.type_name(), heap::text(&self.heap, kr)));
+                return Err(self.field_error(obj, kr, true));
             }
         }
         self.stack.truncate(n - 2);
         Ok(())
+    }
+
+    /// obj.k (set: obj.k = ..) of a value without fields: (S2) Exc::Hook for a host object (exec
+    /// asks the host), else the error (out of line: see op_error)
+    #[cold]
+    #[inline(never)]
+    fn field_error(&self, obj: Value, kr: Ref, set: bool) -> Exc {
+        let k = heap::text(&self.heap, kr);
+        match obj {
+            Value::Host(_) => Exc::Hook,
+            _ if set => Exc::Msg(format!("Nur Maps haben Felder, nicht {} (Feld {})", obj.type_name(), k)),
+            _ => Exc::Msg(format!("{} hat kein Feld {}", obj.type_name(), k)),
+        }
     }
 
     /// m[k] = v for a map m
@@ -3217,6 +3259,29 @@ fn to_float(v: Value) -> f64 {
         Value::Int(i) => num::from_i64(i),
         Value::Float(f) => f,
         _ => num::NAN,
+    }
+}
+
+/// a binary operator or comparison that does not fit its operands: (S2) Exc::Hook when one is a
+/// host object (exec asks the host), else the error.  Out of line, as the other cold paths of
+/// the instructions: the code exec inlines stays small (the VM's speed depends on it)
+#[cold]
+#[inline(never)]
+fn op_error(op: Op, a: Value, b: Value) -> Exc {
+    if matches!(a, Value::Host(_)) || matches!(b, Value::Host(_)) {
+        return Exc::Hook;
+    }
+    let what = if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge) { "Der Vergleich" } else { "Der Operator" };
+    Exc::Msg(format!("{} {} passt nicht zu {} und {}", what, op_text(op), a.type_name(), b.type_name()))
+}
+
+/// -v of a value without a minus: (S2) Exc::Hook for a host object, else the error
+#[cold]
+#[inline(never)]
+fn neg_error(v: Value) -> Exc {
+    match v {
+        Value::Host(_) => Exc::Hook,
+        v => Exc::Msg(format!("Das Minus passt nicht zu {}", v.type_name())),
     }
 }
 
