@@ -87,6 +87,7 @@ impl Enc<'_> {
             }
             Value::Bytes(_) => return err(String::from("json.encode: bytes lassen sich nicht als JSON darstellen – erst b.hex() oder b.text()")),
             Value::Func(_) | Value::Native(_) => return err(String::from("json.encode: Funktionen lassen sich nicht als JSON darstellen")),
+            Value::Host(_) => return err(format!("json.encode: {} (ein Objekt des Hosts) lässt sich nicht als JSON darstellen", vm.type_of(v))),
             Value::List(r) => {
                 self.enter(r)?;
                 let items = vm.heap.list(r);

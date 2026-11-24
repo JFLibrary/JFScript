@@ -164,7 +164,7 @@ pub(crate) fn join_list(vm: &mut Vm, l: Ref, sep: Option<Ref>) -> Result<Value, 
         }
         match vm.heap.list(l)[i] {
             Value::Str(r) => out.push_str(heap::text(&vm.heap, r)),
-            v => vm.write_value(&mut out, v, false, 0, &mut Vec::new()),
+            v => vm.write_value(&mut out, v, false, 0, &mut Vec::new(), None),
         }
         cap(vm, out.len() as u64)?;
     }
@@ -553,7 +553,7 @@ fn render(vm: &Vm, v: Value, sp: &Spec, spec: &str) -> Result<(bool, &'static st
             x.to_bits() >> 63 != 0 && !num::is_nan(x)
         }
         v => {
-            vm.write_value(&mut body, v, false, 0, &mut Vec::new());
+            vm.write_value(&mut body, v, false, 0, &mut Vec::new(), None);
             false
         }
     };
@@ -570,7 +570,7 @@ fn put(vm: &Vm, out: &mut String, v: Value, spec: &str) -> Result<(), Exc> {
     if spec.is_empty() {
         match v {
             Value::Str(r) => out.push_str(heap::text(&vm.heap, r)),
-            v => vm.write_value(out, v, false, 0, &mut Vec::new()),
+            v => vm.write_value(out, v, false, 0, &mut Vec::new(), None),
         }
         return Ok(());
     }

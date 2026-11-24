@@ -1,7 +1,11 @@
 // heap -- the values of the script VM and the arena they live in
 //
 //   Value       16 bytes: nil, bool, int, float, or a typed reference into the heap (str,
-//               bytes, list, map, fn) or to a native function by name
+//               bytes, list, map, fn, (S2) a host object) or to a native function by name
+//   host objects  (S2) Obj::Host: a type (index into the VM's table of host type names) and
+//               the host's id, one object per (type, id) while it lives (the VM keeps an index),
+//               no children; Obj::HostValue: a value type's object with its data (values the
+//               collector traces), a new one each time
 //   Heap        a Vec of objects addressed by index; free slots form a list; mark bits and the
 //               sweep for the VM's mark-and-sweep collector (the VM marks from its roots)
 //   Map         insertion ordered hash map (keys str, int, bool): entries in order plus an
@@ -38,13 +42,21 @@ pub enum Value {
     Func(Ref),
     /// a function of the host, by the index of its name in the VM's name table
     Native(u32),
+    /// (S2) an object of the host (Cx::new_object, Cx::new_value): the script cannot open it;
+    /// Vm::object tells its type and id
+    Host(Ref),
     /// a captured variable (inside the VM only; scripts and hosts never see one)
     #[doc(hidden)]
     Cell(Ref),
 }
 
+// (the VM's speed depends on these sizes; wasm32 and other 32-bit targets have smaller ones)
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<Value>() == 16 && core::mem::size_of::<Obj>() == 32);
+
 impl Value {
-    /// the type name scripts see: nil bool int float str bytes list map fn
+    /// the type name scripts see: nil bool int float str bytes list map fn; "object" for a host
+    /// object (the script sees its host's name for the type: Vm::type_of)
     pub fn type_name(self) -> &'static str {
         match self {
             Value::Nil => "nil",
@@ -56,6 +68,7 @@ impl Value {
             Value::List(_) => "list",
             Value::Map(_) => "map",
             Value::Func(_) | Value::Native(_) => "fn",
+            Value::Host(_) => "object",
             Value::Cell(_) => "cell",
         }
     }
@@ -65,9 +78,18 @@ impl Value {
         !matches!(self, Value::Nil | Value::Bool(false))
     }
 
+    /// (S2) an int or a float as a float (an int rounded as float(x) does); None for others
+    pub fn as_float(self) -> Option<f64> {
+        match self {
+            Value::Int(i) => Some(crate::num::from_i64(i)),
+            Value::Float(f) => Some(f),
+            _ => None,
+        }
+    }
+
     pub(crate) fn heap_ref(self) -> Option<Ref> {
         match self {
-            Value::Str(r) | Value::Bytes(r) | Value::List(r) | Value::Map(r) | Value::Func(r) | Value::Cell(r) => Some(r),
+            Value::Str(r) | Value::Bytes(r) | Value::List(r) | Value::Map(r) | Value::Func(r) | Value::Host(r) | Value::Cell(r) => Some(r),
             _ => None,
         }
     }
@@ -94,6 +116,20 @@ pub(crate) struct Closure {
     pub ups: Box<[Ref]>,
 }
 
+/// (S2) an object of the host: its type (index into the VM's table of type names) and id
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HostObj {
+    pub ty: u32,
+    pub id: u64,
+}
+
+/// (S2) an object of a host value type: its type and data (immutable)
+#[derive(Clone, Debug)]
+pub(crate) struct HostVal {
+    pub ty: u32,
+    pub data: Box<[Value]>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Obj {
     Free,
@@ -103,6 +139,8 @@ pub(crate) enum Obj {
     Map(Box<Map>),
     Func(Closure),
     Cell(Value),
+    Host(HostObj),
+    HostValue(HostVal),
 }
 
 /// FNV-1a over the bytes
@@ -269,6 +307,8 @@ pub(crate) fn size_of(o: &Obj) -> u64 {
         Obj::Map(m) => 48 + 40 * m.entries.len() as u64 + 4 * m.index.len() as u64,
         Obj::Func(f) => 32 + 4 * f.ups.len() as u64,
         Obj::Cell(_) => 32,
+        Obj::Host(_) => 32,
+        Obj::HostValue(h) => 32 + 16 * h.data.len() as u64,
     }
 }
 
@@ -408,7 +448,7 @@ impl Heap {
         let i = r.0 as usize;
         if !self.marks[i] {
             self.marks[i] = true;
-            if !matches!(self.objs[i], Obj::Str(_) | Obj::Bytes(_)) {
+            if !matches!(self.objs[i], Obj::Str(_) | Obj::Bytes(_) | Obj::Host(_)) {
                 gray.push(r.0);
             }
         }
@@ -429,6 +469,7 @@ impl Heap {
                 }
                 Obj::Func(f) => kids.extend(f.ups.iter().map(|&r| Value::Cell(r))),
                 Obj::Cell(v) => kids.push(*v),
+                Obj::HostValue(h) => kids.extend_from_slice(&h.data),
                 _ => {}
             }
             for k in kids.iter() {
@@ -438,14 +479,17 @@ impl Heap {
     }
 
     /// free the unmarked objects (except those below `keep`, the VM's permanent constants)
-    /// and clear the marks
-    pub fn sweep(&mut self, keep: u32) {
+    /// and clear the marks; (S2) the host objects it frees go to `gone`
+    pub fn sweep(&mut self, keep: u32, gone: &mut Vec<HostObj>) {
         for i in 0..self.objs.len() {
             if self.marks[i] {
                 self.marks[i] = false;
             } else if i as u32 >= keep && !matches!(self.objs[i], Obj::Free) {
                 self.bytes = self.bytes.saturating_sub(size_of(&self.objs[i]));
                 self.count -= 1;
+                if let Obj::Host(h) = self.objs[i] {
+                    gone.push(h);
+                }
                 self.objs[i] = Obj::Free;
                 self.free.push(i as u32);
             }

@@ -34,6 +34,19 @@
 //                                                          the script
 //   vm.take_warnings() / warnings() / warnings_dropped()   the warnings (Warning: file, line,
 //                                                          col, msg), oldest first
+//   (S2) host objects (G4.1 of docs/RICHTUNG.md, docs/HOST.md):
+//   cx.new_object(ty, id) / cx.new_value(ty, &data)        an object of the host: one per (ty,
+//                                                          id) while it lives, == by identity;
+//                                                          a value type's object with its data,
+//                                                          == by type and data
+//   cx.object(v) -> Option<Object> / cx.data(v)            its type and id / a value's data
+//   Host::get / set / method / op / listen / to_str / drop obj.name, obj.name = v, obj.m(..),
+//                                                          a + b, obj.on(..), print, the
+//                                                          collector freed it
+//   vm.listeners(obj, ev) / vm.emit(host, obj, ev, args)   the functions of obj.on(ev, f); each
+//                                                          as an invocation of its own
+//   cx.emit(..) / remove_listeners(obj) / take_dropped()   inside a native; when the host's
+//                                                          object is gone; the drops polled
 //
 // Fuel is virtual CPU time: one unit per instruction, more for instructions that copy (string
 // and list concatenation, literals, iterating a map), plus what natives charge.  run(host,
@@ -79,6 +92,16 @@
 // while the pin or the map still holds it.  Values the host passes in are checked (valid()): a
 // stale value of a freed object gives an error or None, not a crash.
 //
+// Host objects (S2): Value::Host refers to a heap object that holds the host's type (an index
+// into `types`, the names the host gave) and id, or a value type's data.  The VM keeps one
+// object per (type, id) in `objects`; the sweep takes a freed one out and queues it in
+// `dropped`, which goes to Host::drop before the next call of the host and at the end of
+// run().  obj.name, obj.name = v and the operators reach the host from the instructions'
+// error paths (Exc::Hook: the instruction found a host object), so code without host objects
+// runs the instructions as before; obj.m(..) and obj.on / obj.off branch in method().  The
+// functions of obj.on(ev, f) are in `listeners` with their object (both roots) in the order
+// they came; their bytes count toward the heap.
+//
 // Modules (module.rs): import(path) links a module's code into the VM's own (`code` starts as
 // the program's and grows with each module; `units` are the program and its modules with
 // their files and globals) and runs its top-level code as a frame of the importing invocation.
@@ -87,6 +110,7 @@
 // drives exec one instruction at a time (exec_debug) and checks between them where to stop.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -96,7 +120,7 @@ use core::cmp::Ordering;
 
 use crate::code::{Code, Const, Op, Program, Up};
 use crate::debug::{Dbg, Pause};
-use crate::heap::{self, Closure, Heap, Key, Map, Obj, Ref, StrObj, Value};
+use crate::heap::{self, Closure, Heap, HostObj, HostVal, Key, Map, Obj, Ref, StrObj, Value};
 use crate::module::{Unit, UnitState};
 use crate::{jsonlib, num, stdlib};
 
@@ -265,6 +289,148 @@ pub trait Host {
         let _ = (cx, path);
         Err(String::from("hier lassen sich keine Module laden"))
     }
+
+    // ---- (S2) host objects; all optional: a host without objects never gets these calls
+
+    /// `obj.name` on an object of the host (Cx::new_object, Cx::new_value): the property's
+    /// value; Err(Fail::Unknown) for a name it does not have ("mesh hat keine Eigenschaft x"),
+    /// Err(cx.error(..)) throws as a host function does.  Maps keep their fields; this is only
+    /// asked for host objects.
+    fn get(&mut self, cx: &mut Cx, obj: Object, name: &str) -> Result<Value, Fail> {
+        let _ = (cx, obj, name);
+        Err(Fail::Unknown)
+    }
+
+    /// `obj.name = value` (also `obj.name += value`: get, the operator, then set); a
+    /// read-only property throws (`Err(cx.error("shape.id ist nur lesbar"))`)
+    fn set(&mut self, cx: &mut Cx, obj: Object, name: &str, value: Value) -> Result<(), Fail> {
+        let _ = (cx, obj, name, value);
+        Err(Fail::Unknown)
+    }
+
+    /// `obj.name(args)` (args without obj).  The default asks Host::call with "type.name" and
+    /// obj as args[0], the way methods of the built-in types reach a host ("mesh.bevel").
+    /// `on` and `off` never get here: the VM keeps the listeners (Host::listen).
+    fn method(&mut self, cx: &mut Cx, obj: Object, name: &str, args: &[Value]) -> Result<Value, Fail> {
+        let mut all = Vec::with_capacity(args.len() + 1);
+        all.push(obj.value);
+        all.extend_from_slice(args);
+        self.call(cx, &format!("{}.{}", obj.ty, name), &all)
+    }
+
+    /// `a op b` where a or b (or both) is a host object, `-a` with b nil (Operator::Neg); a
+    /// comparison answers a bool.  Err(Fail::Unknown): "Der Operator + passt nicht zu vec und
+    /// str".  `==` and `!=` never get here: they compare identity, a value type's objects
+    /// their type and data.
+    fn op(&mut self, cx: &mut Cx, op: Operator, a: Value, b: Value) -> Result<Value, Fail> {
+        let _ = (cx, op, a, b);
+        Err(Fail::Unknown)
+    }
+
+    /// `obj.on(event, f)` (on: true) or `obj.off(event, f)` (false), before the VM adds or
+    /// removes f: Ok when obj has the event, Err(Fail::Unknown) when not ("element hat kein
+    /// Ereignis x"); a host may also refuse with an error of its own (too many listeners) or
+    /// start producing the event.  The VM keeps the functions (Vm::listeners, Vm::emit).
+    fn listen(&mut self, cx: &mut Cx, obj: Object, event: &str, on: bool) -> Result<(), Fail> {
+        let _ = (cx, obj, event, on);
+        Err(Fail::Unknown)
+    }
+
+    /// the text of a host object for print, str(x) and "${x}"; None: "<mesh 3>", a value type
+    /// "vec(1.0, 2.0, 3.0)" (what Vm::display shows without the host)
+    fn to_str(&self, vm: &Vm, obj: Object) -> Option<String> {
+        let _ = (vm, obj);
+        None
+    }
+
+    /// the collector freed the object of obj.ty and obj.id (obj.value is nil): no script holds
+    /// it any more, a later Cx::new_object with the same id makes a new one.  Comes before the
+    /// next call of the host or at the end of run() (Vm::take_dropped takes them earlier);
+    /// value types' objects are not reported.
+    fn drop(&mut self, obj: Object) {
+        let _ = obj;
+    }
+}
+
+/// (S2) an operator a host defines for its objects (Host::op)
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+pub enum Operator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    /// the unary minus (-a)
+    Neg,
+}
+
+impl Operator {
+    /// "+", "-", "*", "/", "%", "<", "<=", ">", ">=" ("-" for Neg too)
+    pub fn text(self) -> &'static str {
+        match self {
+            Operator::Add => "+",
+            Operator::Sub | Operator::Neg => "-",
+            Operator::Mul => "*",
+            Operator::Div => "/",
+            Operator::Rem => "%",
+            Operator::Lt => "<",
+            Operator::Le => "<=",
+            Operator::Gt => ">",
+            Operator::Ge => ">=",
+        }
+    }
+
+    /// the operator of a text ("+" is Add; "-" is Sub, "neg" Neg)
+    pub fn of(s: &str) -> Option<Operator> {
+        Some(match s {
+            "+" => Operator::Add,
+            "-" => Operator::Sub,
+            "*" => Operator::Mul,
+            "/" => Operator::Div,
+            "%" => Operator::Rem,
+            "<" => Operator::Lt,
+            "<=" => Operator::Le,
+            ">" => Operator::Gt,
+            ">=" => Operator::Ge,
+            "neg" => Operator::Neg,
+            _ => return None,
+        })
+    }
+}
+
+/// (S2) an object of the host as the host sees it: its type (the name given to new_object or
+/// new_value), its id (0 for a value type's object) and the value itself (nil in Host::drop)
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Object {
+    pub ty: &'static str,
+    pub id: u64,
+    pub value: Value,
+}
+
+/// (S2) what one listener did in Vm::emit: the fuel of its invocation and its error, if any
+#[derive(Clone, PartialEq, Debug)]
+pub struct Handled {
+    pub fuel: u64,
+    pub error: Option<Error>,
+}
+
+/// a function of obj.on(event, f) (S2)
+#[derive(Clone, Debug)]
+struct Listener {
+    obj: Ref,
+    event: Box<str>,
+    f: Value,
+}
+
+impl Listener {
+    /// the bytes a listener counts toward the heap
+    fn size(&self) -> u64 {
+        48 + self.event.len() as u64
+    }
 }
 
 /// no host functions
@@ -306,6 +472,8 @@ pub(crate) enum Exc {
     Msg(String),
     Throw(Value),
     Fatal(ErrorKind, String),
+    /// (S2) the instruction met a host object: exec asks the host (hook_op); never leaves exec
+    Hook,
 }
 
 pub(crate) fn msg<T>(s: String) -> Result<T, Exc> {
@@ -420,6 +588,16 @@ pub struct Vm {
     /// (S1) what natives warned about (Cx::warn), until the host takes it
     warnings: Vec<Warning>,
     warnings_dropped: u64,
+    /// (S2) the host's type names (HostObj::ty indexes them) and their str for type(x) (made
+    /// on demand, roots)
+    types: Vec<&'static str>,
+    tstrs: Vec<Value>,
+    /// (S2) the live host object of each (type, id)
+    objects: BTreeMap<(u32, u64), Ref>,
+    /// (S2) host objects the collector freed, for Host::drop
+    dropped: Vec<HostObj>,
+    /// (S2) the functions of obj.on(event, f) in the order they came
+    listeners: Vec<Listener>,
 }
 
 const WRITE_CAP: usize = 4 << 20; // bytes of one value text (shared nodes print once per use)
@@ -481,6 +659,11 @@ impl Vm {
             relink: false,
             warnings: Vec::new(),
             warnings_dropped: 0,
+            types: Vec::new(),
+            tstrs: Vec::new(),
+            objects: BTreeMap::new(),
+            dropped: Vec::new(),
+            listeners: Vec::new(),
         }
     }
 
@@ -566,6 +749,10 @@ impl Vm {
         self.running = false;
         self.call_fuel += self.used;
         self.last = self.used;
+        // (S2) the host objects the collector freed in this run
+        if !self.dropped.is_empty() {
+            self.deliver(host);
+        }
         match st {
             Status::Done(v) => {
                 self.result = v;
@@ -681,6 +868,7 @@ impl Vm {
                         | (Value::List(_), Some(Obj::List(_)))
                         | (Value::Map(_), Some(Obj::Map(_)))
                         | (Value::Func(_), Some(Obj::Func(_)))
+                        | (Value::Host(_), Some(Obj::Host(_) | Obj::HostValue(_)))
                 ),
             },
         }
@@ -879,7 +1067,7 @@ impl Vm {
             return String::from("<ungültig>");
         }
         let mut s = String::new();
-        self.write_value(&mut s, v, false, 0, &mut Vec::new());
+        self.write_value(&mut s, v, false, 0, &mut Vec::new(), None);
         s
     }
 
@@ -914,6 +1102,366 @@ impl Vm {
         r.map_err(plain)
     }
 
+    /// display() with the host's text for its objects (Host::to_str), as print shows a value
+    pub fn display_with(&self, v: Value, host: &dyn Host) -> String {
+        if !self.valid(v) {
+            return String::from("<ungültig>");
+        }
+        let mut s = String::new();
+        self.write_value(&mut s, v, false, 0, &mut Vec::new(), Some(host));
+        s
+    }
+
+    // ---- (S2) host objects
+
+    /// the object of the host for (ty, id): the same value while the script holds it (== is
+    /// identity), a new one after the collector freed it (Host::drop told the host).  Valid
+    /// until the next run unless the script keeps it or it is pinned, like new_str.
+    pub fn new_object(&mut self, ty: &'static str, id: u64) -> Result<Value, Error> {
+        self.object_value(ty, id).map_err(plain)
+    }
+
+    /// a new object of the host's value type ty with its data (copied; the script cannot change
+    /// it): == compares the type and the data, print shows "ty(data..)" unless Host::to_str
+    /// says otherwise; Host::drop is not told when it goes
+    pub fn new_value(&mut self, ty: &'static str, data: &[Value]) -> Result<Value, Error> {
+        if !data.iter().all(|v| self.valid(*v)) {
+            return Err(invalid());
+        }
+        self.value_object(ty, data).map_err(plain)
+    }
+
+    /// the type, id and value of a host object (None for other values)
+    pub fn object(&self, v: Value) -> Option<Object> {
+        match v {
+            Value::Host(r) if self.valid(v) => Some(self.object_of(r)),
+            _ => None,
+        }
+    }
+
+    /// the data of a value type's object (None for other values)
+    pub fn data(&self, v: Value) -> Option<&[Value]> {
+        match v {
+            Value::Host(r) if self.valid(v) => match &self.heap.objs[r.0 as usize] {
+                Obj::HostValue(h) => Some(&h.data),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// the live object of (ty, id), if the VM has one (no new one)
+    pub fn find_object(&self, ty: &str, id: u64) -> Option<Value> {
+        let t = self.types.iter().position(|x| *x == ty)? as u32;
+        self.objects.get(&(t, id)).map(|r| Value::Host(*r))
+    }
+
+    /// the type name the script sees (type(v)): the host's for its objects
+    pub fn type_of(&self, v: Value) -> &'static str {
+        match v {
+            Value::Host(r) if self.valid(v) => self.object_of(r).ty,
+            _ => v.type_name(),
+        }
+    }
+
+    /// the host objects the collector freed and Host::drop has not been told of yet, oldest
+    /// first; they are not reported again (for a host that wants them now: after collect(), say)
+    pub fn take_dropped(&mut self) -> Vec<Object> {
+        let d = core::mem::take(&mut self.dropped);
+        d.into_iter().map(|h| Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Nil }).collect()
+    }
+
+    /// the functions of obj.on(event, f) on this object, in the order they came (a copy)
+    pub fn listeners(&self, obj: Value, event: &str) -> Vec<Value> {
+        match obj {
+            Value::Host(r) if self.valid(obj) => self.listeners_of(r, event),
+            _ => Vec::new(),
+        }
+    }
+
+    /// whether any object has a listener for event (a cheap look before an event is made)
+    pub fn has_listeners(&self, event: &str) -> bool {
+        self.listeners.iter().any(|l| &*l.event == event)
+    }
+
+    /// the listeners of the VM (all objects, all events)
+    pub fn listener_count(&self) -> usize {
+        self.listeners.len()
+    }
+
+    /// forget every listener of obj, for an object the host deleted (a shape removed from its
+    /// page): the functions and the object may then be collected; the number removed
+    pub fn remove_listeners(&mut self, obj: Value) -> usize {
+        let Value::Host(r) = obj else { return 0 };
+        if !self.valid(obj) {
+            return 0;
+        }
+        let before = self.listeners.len();
+        let mut freed = 0;
+        self.listeners.retain(|l| {
+            let keep = l.obj != r;
+            if !keep {
+                freed += l.size();
+            }
+            keep
+        });
+        self.heap.bytes = self.heap.bytes.saturating_sub(freed);
+        before - self.listeners.len()
+    }
+
+    /// call the listeners of `event` on obj with args (the event object, say), each as an
+    /// invocation of its own (fuel and limits as for call_value) run to its end, in the order
+    /// they came; one an earlier listener removed does not run.  An error ends only its
+    /// listener (Handled::error), the next one runs.  Only while the VM is idle; a pause of the
+    /// debugger does not stop it (a host with a debugger runs listeners() through call_value
+    /// itself).  Bubbling is the host's: it calls emit for the object, then for its parent ..
+    /// while its event object does not say stop.
+    pub fn emit(&mut self, host: &mut dyn Host, obj: Value, event: &str, args: &[Value]) -> Result<Vec<Handled>, Error> {
+        if self.busy() {
+            return Err(usage(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
+        }
+        let Value::Host(r) = obj else { return Err(usage(format!("emit braucht ein Objekt des Hosts, nicht {}", obj.type_name()))) };
+        if !self.valid(obj) || !args.iter().all(|a| self.valid(*a)) {
+            return Err(invalid());
+        }
+        let fs = self.listeners_of(r, event);
+        let mut out = Vec::with_capacity(fs.len());
+        if fs.is_empty() {
+            return Ok(out);
+        }
+        // the arguments and the object stay alive between the listeners' runs
+        let pins: Vec<Pin> = args.iter().chain(core::iter::once(&obj)).map(|a| self.pin(*a)).collect();
+        for f in fs {
+            if !self.listeners.iter().any(|l| l.obj == r && &*l.event == event && self.same(l.f, f)) {
+                continue;
+            }
+            let now: Vec<Value> = pins[..args.len()].iter().map(|p| self.pinned(*p)).collect();
+            if let Err(e) = self.call_value(f, &now) {
+                out.push(Handled { fuel: 0, error: Some(e) });
+                continue;
+            }
+            let error = loop {
+                match self.run(host, u64::MAX) {
+                    Status::Done(_) => break None,
+                    Status::Error(e) => break Some(e),
+                    Status::Yielded | Status::Paused(_) => {}
+                }
+            };
+            out.push(Handled { fuel: self.call_fuel, error });
+        }
+        for p in pins {
+            self.unpin(p);
+        }
+        Ok(out)
+    }
+
+    /// the functions of event on object r
+    fn listeners_of(&self, r: Ref, event: &str) -> Vec<Value> {
+        self.listeners.iter().filter(|l| l.obj == r && &*l.event == event).map(|l| l.f).collect()
+    }
+
+    /// the index of a type name (a new one at its first use)
+    fn type_index(&mut self, ty: &'static str) -> u32 {
+        if let Some(i) = self.types.iter().position(|x| *x == ty) {
+            return i as u32;
+        }
+        self.types.push(ty);
+        self.tstrs.push(Value::Nil);
+        self.types.len() as u32 - 1
+    }
+
+    /// what the host sees of the host object r
+    pub(crate) fn object_of(&self, r: Ref) -> Object {
+        match &self.heap.objs[r.0 as usize] {
+            Obj::Host(h) => Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Host(r) },
+            Obj::HostValue(h) => Object { ty: self.types[h.ty as usize], id: 0, value: Value::Host(r) },
+            _ => Object { ty: "?", id: 0, value: Value::Host(r) },
+        }
+    }
+
+    /// type(x) of a host object: its type name as a str (kept for the next time)
+    fn type_str(&mut self, r: Ref) -> Result<Value, Exc> {
+        let t = match &self.heap.objs[r.0 as usize] {
+            Obj::Host(h) => h.ty,
+            Obj::HostValue(h) => h.ty,
+            _ => return internal(),
+        } as usize;
+        if self.tstrs[t] == Value::Nil {
+            let v = self.alloc_str(String::from(self.types[t]))?;
+            self.tstrs[t] = v;
+        }
+        Ok(self.tstrs[t])
+    }
+
+    /// new_object: the live object of (ty, id) or a new one
+    pub(crate) fn object_value(&mut self, ty: &'static str, id: u64) -> Result<Value, Exc> {
+        let t = self.type_index(ty);
+        if let Some(&r) = self.objects.get(&(t, id)) {
+            // (the script may no longer hold it: rooted like a new object until the native
+            // returns or the next run)
+            if self.in_native || !self.running {
+                self.nroots.push(r);
+            }
+            return Ok(Value::Host(r));
+        }
+        let r = self.alloc(Obj::Host(HostObj { ty: t, id }))?;
+        self.objects.insert((t, id), r);
+        // a drop of the earlier object of (ty, id) the host has not been told of: the object is
+        // back, so the host never hears of the gap
+        if !self.dropped.is_empty() {
+            self.dropped.retain(|h| (h.ty, h.id) != (t, id));
+        }
+        Ok(Value::Host(r))
+    }
+
+    /// new_value without the checks
+    pub(crate) fn value_object(&mut self, ty: &'static str, data: &[Value]) -> Result<Value, Exc> {
+        let t = self.type_index(ty);
+        let r = self.alloc(Obj::HostValue(HostVal { ty: t, data: data.into() }))?;
+        Ok(Value::Host(r))
+    }
+
+    /// tell the host what the collector freed (Host::drop)
+    fn deliver(&mut self, host: &mut dyn Host) {
+        for h in core::mem::take(&mut self.dropped) {
+            host.drop(Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Nil });
+        }
+    }
+
+    /// a hook of the host (get, set, method, op, listen) like a native: what it allocates stays
+    /// until it returns, its value is checked; Err(Fail::Unknown) throws unknown()
+    fn hook(&mut self, host: &mut dyn Host, what: &str, f: impl FnOnce(&mut dyn Host, &mut Cx) -> Result<Value, Fail>, unknown: impl FnOnce() -> String) -> Result<Value, Exc> {
+        if !self.dropped.is_empty() {
+            self.deliver(host);
+        }
+        let (mark, was) = (self.nroots.len(), self.in_native);
+        self.in_native = true;
+        self.fatal_kind = None;
+        let r = f(host, &mut Cx { vm: self });
+        self.in_native = was;
+        self.nroots.truncate(mark);
+        if !matches!(r, Err(Fail::Throw(_) | Fail::Fatal(_))) {
+            self.escaped = None;
+        }
+        match r {
+            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(Exc::Fatal(ErrorKind::Host, format!("{} gab einen ungültigen Wert zurück", what))),
+            Ok(v) => Ok(v),
+            Err(Fail::Unknown) => msg(unknown()),
+            Err(Fail::Throw(v)) => Err(Exc::Throw(v)),
+            Err(Fail::Fatal(m)) => Err(Exc::Fatal(self.fatal_kind.take().unwrap_or(ErrorKind::Host), m)),
+        }
+    }
+
+    /// an instruction that met a host object (Exc::Hook): its work through the host, with the
+    /// operands still on the stack
+    #[inline(never)]
+    #[cold]
+    fn hook_op(&mut self, code: &Code, host: &mut dyn Host, op: Op) -> Result<(), Exc> {
+        let n = self.stack.len();
+        let name = |k: u32| match &code.consts[k as usize] {
+            Const::Str(s) => Ok(s.as_str()),
+            _ => internal(),
+        };
+        match op {
+            Op::GetField(_) | Op::GetHostField(_) => {
+                let k = match op {
+                    Op::GetField(k) => k,
+                    Op::GetHostField(h) => match code.hosts[h as usize].dotted {
+                        Some((_, k)) => k,
+                        None => return internal(),
+                    },
+                    _ => return internal(),
+                };
+                let name = name(k)?;
+                let Value::Host(r) = self.stack[n - 1] else { return internal() };
+                let obj = self.object_of(r);
+                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                self.stack[n - 1] = v;
+            }
+            Op::SetField(k) => {
+                let name = name(k)?;
+                let (Value::Host(r), v) = (self.stack[n - 2], self.stack[n - 1]) else { return internal() };
+                let obj = self.object_of(r);
+                self.hook(host, name, |h, cx| h.set(cx, obj, name, v).map(|()| Value::Nil), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                self.stack.truncate(n - 2);
+            }
+            Op::Neg => {
+                let a = self.stack[n - 1];
+                let t = self.type_of(a);
+                let v = self.hook(host, "-", |h, cx| h.op(cx, Operator::Neg, a, Value::Nil), || format!("Das Minus passt nicht zu {}", t))?;
+                self.stack[n - 1] = v;
+            }
+            _ => {
+                let (a, b) = (self.stack[n - 2], self.stack[n - 1]);
+                let o = match op {
+                    Op::Add => Operator::Add,
+                    Op::Sub => Operator::Sub,
+                    Op::Mul => Operator::Mul,
+                    Op::Div => Operator::Div,
+                    Op::Rem => Operator::Rem,
+                    Op::Lt => Operator::Lt,
+                    Op::Le => Operator::Le,
+                    Op::Gt => Operator::Gt,
+                    Op::Ge => Operator::Ge,
+                    _ => return internal(),
+                };
+                let what = if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge) { "Der Vergleich" } else { "Der Operator" };
+                let (ta, tb) = (self.type_of(a), self.type_of(b));
+                let v = self.hook(host, o.text(), |h, cx| h.op(cx, o, a, b), || format!("{} {} passt nicht zu {} und {}", what, o.text(), ta, tb))?;
+                let v = if what == "Der Vergleich" { Value::Bool(v.truthy()) } else { v };
+                self.stack.truncate(n - 2);
+                self.stack.push(v);
+            }
+        }
+        Ok(())
+    }
+
+    /// obj.name(args) on the host object r: on / off here, the rest Host::method
+    #[inline(never)]
+    fn host_method(&mut self, host: &mut dyn Host, r: Ref, name: &str, args: &[Value]) -> Result<Value, Exc> {
+        let obj = self.object_of(r);
+        match name {
+            "on" | "off" => self.listen(host, obj, name == "on", args),
+            _ => self.hook(host, name, |h, cx| h.method(cx, obj, name, args), || format!("{} hat keine Methode {}", obj.ty, name)),
+        }
+    }
+
+    /// obj.on(event, f) / obj.off(event, f) (off without f: every function of the event)
+    fn listen(&mut self, host: &mut dyn Host, obj: Object, on: bool, args: &[Value]) -> Result<Value, Exc> {
+        let w = if on { "on" } else { "off" };
+        let (ev, f) = (args.first().copied().unwrap_or(Value::Nil), args.get(1).copied().unwrap_or(Value::Nil));
+        let Value::Str(er) = ev else { return msg(format!("{}.{}: das Ereignis muss str sein, nicht {}", obj.ty, w, self.type_of(ev))) };
+        if !(matches!(f, Value::Func(_)) || (!on && f == Value::Nil)) {
+            return msg(format!("{}.{}: hier muss eine Funktion stehen, nicht {}", obj.ty, w, self.type_of(f)));
+        }
+        let event = String::from(heap::text(&self.heap, er));
+        self.hook(host, w, |h, cx| h.listen(cx, obj, &event, on).map(|()| Value::Nil), || format!("{} hat kein Ereignis {}", obj.ty, event))?;
+        let Value::Host(r) = obj.value else { return internal() };
+        if on {
+            if self.listeners.iter().any(|l| l.obj == r && *l.event == *event && self.same(l.f, f)) {
+                return Ok(Value::Nil);
+            }
+            let l = Listener { obj: r, event: event.into_boxed_str(), f };
+            self.reserve(l.size())?;
+            self.heap.bytes += l.size();
+            self.listeners.push(l);
+        } else {
+            let mut freed = 0;
+            let all = f == Value::Nil;
+            let mut keep = core::mem::take(&mut self.listeners);
+            keep.retain(|l| {
+                let hit = l.obj == r && *l.event == *event && (all || self.same(l.f, f));
+                if hit {
+                    freed += l.size();
+                }
+                !hit
+            });
+            self.listeners = keep;
+            self.heap.bytes = self.heap.bytes.saturating_sub(freed);
+        }
+        Ok(Value::Nil)
+    }
+
     pub(crate) fn same(&self, a: Value, b: Value) -> bool {
         match (a, b) {
             (Value::Nil, Value::Nil) => true,
@@ -925,6 +1473,17 @@ impl Vm {
             (Value::Bytes(x), Value::Bytes(y)) => x == y || self.heap.bytes_of(x) == self.heap.bytes_of(y),
             (Value::List(x), Value::List(y)) | (Value::Map(x), Value::Map(y)) | (Value::Func(x), Value::Func(y)) => x == y,
             (Value::Native(x), Value::Native(y)) => x == y,
+            (Value::Host(x), Value::Host(y)) => x == y || self.same_data(x, y),
+            _ => false,
+        }
+    }
+
+    /// (S2) two objects of one value type with equal data
+    fn same_data(&self, x: Ref, y: Ref) -> bool {
+        match (&self.heap.objs[x.0 as usize], &self.heap.objs[y.0 as usize]) {
+            (Obj::HostValue(a), Obj::HostValue(b)) => {
+                a.ty == b.ty && a.data.len() == b.data.len() && a.data.iter().zip(b.data.iter()).all(|(p, q)| self.same(*p, *q))
+            }
             _ => false,
         }
     }
@@ -954,8 +1513,21 @@ impl Vm {
                 self.heap.mark_ref(c, &mut gray);
             }
         }
+        // (S2) the type names' strs, the listeners with their objects
+        for v in &self.tstrs {
+            self.heap.mark(*v, &mut gray);
+        }
+        for l in &self.listeners {
+            self.heap.mark_ref(l.obj, &mut gray);
+            self.heap.mark(l.f, &mut gray);
+        }
         self.heap.trace(&mut gray);
-        self.heap.sweep(self.permanent);
+        let mut gone = Vec::new();
+        self.heap.sweep(self.permanent, &mut gone);
+        for h in gone {
+            self.objects.remove(&(h.ty, h.id));
+            self.dropped.push(h);
+        }
         self.next_gc = (self.heap.bytes * 2).max(MIN_GC).min(self.lim.heap);
         self.gcs += 1;
     }
@@ -1110,6 +1682,7 @@ impl Vm {
             Exc::Fatal(kind, m) => Err((kind, m)),
             Exc::Throw(v) => Ok(v),
             Exc::Msg(m) => self.alloc_str(m.clone()).map_err(|_| (ErrorKind::Uncaught, m)),
+            Exc::Hook => Err((ErrorKind::Internal, String::from("Interner Fehler der Skript-VM"))),
         }
     }
 
@@ -1191,7 +1764,7 @@ impl Vm {
                 Ok(_) => self.exec(host, u64::MAX),
                 Err(e) => Err(e),
             },
-            v => msg(format!("{} ist keine Funktion", v.type_name())),
+            v => msg(format!("{} ist keine Funktion", self.type_of(v))),
         };
         let mut yielded = false;
         loop {
@@ -1268,7 +1841,7 @@ impl Vm {
         match self.stack[fpos] {
             Value::Func(r) => self.push_frame(code, r, fpos, argc),
             Value::Native(i) => self.call_native(host, i, fpos + 1, fpos),
-            v => msg(format!("{} ist keine Funktion", v.type_name())),
+            v => msg(format!("{} ist keine Funktion", self.type_of(v))),
         }
     }
 
@@ -1288,7 +1861,7 @@ impl Vm {
                 self.scratch = args;
                 return r.map(|pushed| if pushed { Called::NewCode } else { Called::Native });
             }
-            Some(b) => self.builtin(b, &args),
+            Some(b) => self.builtin(host, b, &args),
             None => self.host_call(host, &name, &args, None),
         };
         args.clear();
@@ -1300,6 +1873,9 @@ impl Vm {
     }
 
     fn host_call(&mut self, host: &mut dyn Host, name: &str, args: &[Value], method: Option<(&str, &str)>) -> Result<Value, Exc> {
+        if !self.dropped.is_empty() {
+            self.deliver(host);
+        }
         let (mark, was) = (self.nroots.len(), self.in_native);
         self.in_native = true;
         self.fatal_kind = None;
@@ -1345,7 +1921,7 @@ impl Vm {
         let Const::Str(name) = &code.consts[k as usize] else { return internal() };
         if let Some(f) = self.map_get_str(obj, name) {
             if !matches!(f, Value::Func(_) | Value::Native(_)) {
-                return msg(format!("Das Feld {} ist keine Funktion, sondern {}", name, f.type_name()));
+                return msg(format!("Das Feld {} ist keine Funktion, sondern {}", name, self.type_of(f)));
             }
             self.stack[opos] = f;
             return self.call_at(code, host, opos, argc);
@@ -1365,6 +1941,15 @@ impl Vm {
                 Obj::List(v) => v.pop(),
                 _ => None,
             }).unwrap_or(Value::Nil),
+            (Value::Host(r), _) => {
+                let mut args = core::mem::take(&mut self.scratch);
+                args.clear();
+                args.extend_from_slice(&self.stack[opos + 1..]);
+                let v = self.host_method(host, r, name, &args);
+                args.clear();
+                self.scratch = args;
+                v?
+            }
             _ => {
                 let t = obj.type_name();
                 let mut args = core::mem::take(&mut self.scratch);
@@ -1389,7 +1974,7 @@ impl Vm {
     // (builtin, arith, compare, concat and get_index have one caller each, exec or
     // call_native, and LLVM inlines them there: a second caller -- debug.rs's evaluator at
     // first -- cost the VM about 10 % of its speed, inline(always) about 5 %)
-    fn builtin(&mut self, b: Builtin, args: &[Value]) -> Result<Value, Exc> {
+    fn builtin(&mut self, host: &mut dyn Host, b: Builtin, args: &[Value]) -> Result<Value, Exc> {
         let a = args.first().copied().unwrap_or(Value::Nil);
         match b {
             Builtin::Print => {
@@ -1398,7 +1983,7 @@ impl Vm {
                     if i > 0 {
                         s.push(' ');
                     }
-                    self.write_value(&mut s, *v, false, 0, &mut Vec::new());
+                    self.write_value(&mut s, *v, false, 0, &mut Vec::new(), Some(&*host));
                 }
                 s.push('\n');
                 self.used += s.len() as u64 / 64;
@@ -1419,16 +2004,20 @@ impl Vm {
                 Value::Bytes(r) => self.heap.bytes_of(r).len() as i64,
                 Value::List(r) => self.heap.list(r).len() as i64,
                 Value::Map(r) => self.heap.map(r).live as i64,
-                v => return msg(format!("len braucht str, bytes, list oder map, nicht {}", v.type_name())),
+                v => return msg(format!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
             })),
-            Builtin::Type => {
-                let t = a.type_name();
-                Ok(TYPES.iter().position(|x| *x == t).map_or(Value::Nil, |i| self.tnames[i]))
-            }
+            Builtin::Type => match a {
+                Value::Host(r) => self.type_str(r),
+                _ => {
+                    let t = a.type_name();
+                    Ok(TYPES.iter().position(|x| *x == t).map_or(Value::Nil, |i| self.tnames[i]))
+                }
+            },
             Builtin::Str => match a {
                 Value::Str(_) => Ok(a),
                 _ => {
-                    let s = self.display(a);
+                    let mut s = String::new();
+                    self.write_value(&mut s, a, false, 0, &mut Vec::new(), Some(&*host));
                     self.used += s.len() as u64 / 64;
                     self.alloc_str(s)
                 }
@@ -1632,6 +2221,7 @@ impl Vm {
                                 self.stack[n] = Value::Float(num::neg(f));
                                 Ok(())
                             }
+                            Value::Host(_) => Err(Exc::Hook),
                             v => msg(format!("Das Minus passt nicht zu {}", v.type_name())),
                         }
                     }
@@ -1664,7 +2254,7 @@ impl Vm {
                         }
                         Ok(())
                     }
-                    Op::Concat(n) => self.concat(n as usize),
+                    Op::Concat(n) => self.concat(host, n as usize),
                     Op::MakeList(n) => {
                         let start = self.stack.len() - n as usize;
                         let items = self.stack[start..].to_vec();
@@ -1806,7 +2396,11 @@ impl Vm {
                 };
                 if let Err(e) = r {
                     self.frames[fi].pc = pc as u32;
-                    return Err(e);
+                    match e {
+                        // (S2) a host object: its host does the instruction's work
+                        Exc::Hook => self.hook_op(code, host, op)?,
+                        e => return Err(e),
+                    }
                 }
                 if self.yield_req {
                     self.yield_req = false;
@@ -1898,6 +2492,7 @@ impl Vm {
                 self.used += v.len() as u64 / 64;
                 Value::Bytes(self.alloc(Obj::Bytes(v.into_boxed_slice()))?)
             }
+            (Value::Host(_), _) | (_, Value::Host(_)) => return Err(Exc::Hook),
             _ => {
                 let t = op_text(op);
                 return msg(format!("Der Operator {} passt nicht zu {} und {}", t, a.type_name(), b.type_name()));
@@ -1921,6 +2516,7 @@ impl Vm {
                     (Value::Float(x), Value::Int(y)) => num::cmp_int(y, x).map(Ordering::reverse),
                     (Value::Float(x), Value::Float(y)) => num::cmp(x, y),
                     (Value::Str(x), Value::Str(y)) => Some(heap::text(&self.heap, x).cmp(heap::text(&self.heap, y))),
+                    (Value::Host(_), _) | (_, Value::Host(_)) => return Err(Exc::Hook),
                     _ => {
                         let t = op_text(op);
                         return msg(format!("Der Vergleich {} passt nicht zu {} und {}", t, a.type_name(), b.type_name()));
@@ -1940,13 +2536,13 @@ impl Vm {
         Ok(())
     }
 
-    fn concat(&mut self, n: usize) -> Result<(), Exc> {
+    fn concat(&mut self, host: &mut dyn Host, n: usize) -> Result<(), Exc> {
         let start = self.stack.len() - n;
         let mut s = String::new();
         for i in start..self.stack.len() {
             match self.stack[i] {
                 Value::Str(r) => s.push_str(heap::text(&self.heap, r)),
-                v => self.write_value(&mut s, v, false, 0, &mut Vec::new()),
+                v => self.write_value(&mut s, v, false, 0, &mut Vec::new(), Some(&*host)),
             }
             // (the limit holds while the text is built, not only when it is stored)
             crate::stdlib::cap(self, s.len() as u64)?;
@@ -1987,6 +2583,7 @@ impl Vm {
                 self.stack[n] = v;
                 Ok(())
             }
+            Value::Host(_) => Err(Exc::Hook),
             v => msg(format!("{} hat kein Feld {}", v.type_name(), heap::text(&self.heap, kr))),
         }
     }
@@ -1997,6 +2594,7 @@ impl Vm {
         let key = self.consts[k as usize];
         match obj {
             Value::Map(_) => self.set_key(obj, key, v)?,
+            Value::Host(_) => return Err(Exc::Hook),
             _ => {
                 let Value::Str(kr) = key else { return internal() };
                 return msg(format!("Nur Maps haben Felder, nicht {} (Feld {})", obj.type_name(), heap::text(&self.heap, kr)));
@@ -2058,9 +2656,9 @@ impl Vm {
                 }
             }
             (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => {
-                return msg(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), i.type_name()));
+                return msg(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i)));
             }
-            _ => return msg(format!("{} lässt sich nicht indizieren", obj.type_name())),
+            _ => return msg(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
         };
         self.stack.truncate(n - 2);
         self.stack.push(v);
@@ -2082,10 +2680,10 @@ impl Vm {
                     _ => return msg(format!("Index {} liegt außerhalb der Liste (Länge {})", i, len)),
                 }
             }
-            (Value::List(_), i) => return msg(format!("Ein Index von list muss int sein, nicht {}", i.type_name())),
+            (Value::List(_), i) => return msg(format!("Ein Index von list muss int sein, nicht {}", self.type_of(i))),
             (Value::Map(_), k) => self.set_key(obj, k, v)?,
             (Value::Str(_) | Value::Bytes(_), _) => return msg(format!("{} lässt sich nicht ändern", obj.type_name())),
-            _ => return msg(format!("{} lässt sich nicht indizieren", obj.type_name())),
+            _ => return msg(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
         }
         self.stack.truncate(n - 3);
         Ok(())
@@ -2102,7 +2700,7 @@ impl Vm {
                 let l = self.alloc(Obj::List(keys))?;
                 self.stack[at + 1] = Value::List(l);
             }
-            v => return msg(format!("for braucht list, map, str oder bytes, nicht {}", v.type_name())),
+            v => return msg(format!("for braucht list, map, str oder bytes, nicht {}", self.type_of(v))),
         }
         if !matches!(self.stack[at], Value::Map(_)) {
             self.stack[at + 1] = Value::Int(0);
@@ -2173,7 +2771,9 @@ impl Vm {
 
     // ---- text of values
 
-    pub(crate) fn write_value(&self, o: &mut String, v: Value, quoted: bool, depth: u32, seen: &mut Vec<Ref>) {
+    /// v as text (quoted: strings in quotes, as inside a list); host: asked for the text of its
+    /// objects (Host::to_str), else the default ("<mesh 3>", "vec(1.0, 2.0)")
+    pub(crate) fn write_value(&self, o: &mut String, v: Value, quoted: bool, depth: u32, seen: &mut Vec<Ref>, host: Option<&dyn Host>) {
         match v {
             Value::Nil => o.push_str("nil"),
             Value::Bool(b) => o.push_str(if b { "true" } else { "false" }),
@@ -2212,7 +2812,7 @@ impl Vm {
                     if i > 0 {
                         o.push_str(", ");
                     }
-                    self.write_value(o, *x, true, depth + 1, seen);
+                    self.write_value(o, *x, true, depth + 1, seen, host);
                 }
                 o.push(']');
                 seen.pop();
@@ -2234,13 +2834,42 @@ impl Vm {
                     }
                     match e.key {
                         Value::Str(k) if is_name(heap::text(&self.heap, k)) => o.push_str(heap::text(&self.heap, k)),
-                        k => self.write_value(o, k, true, depth + 1, seen),
+                        k => self.write_value(o, k, true, depth + 1, seen, host),
                     }
                     o.push_str(": ");
-                    self.write_value(o, e.val, true, depth + 1, seen);
+                    self.write_value(o, e.val, true, depth + 1, seen, host);
                 }
                 o.push('}');
                 seen.pop();
+            }
+            Value::Host(r) => {
+                let obj = self.object_of(r);
+                if let Some(t) = host.and_then(|h| h.to_str(self, obj)) {
+                    o.push_str(&t);
+                    return;
+                }
+                match &self.heap.objs[r.0 as usize] {
+                    Obj::HostValue(hv) => {
+                        o.push_str(obj.ty);
+                        if depth >= 32 {
+                            o.push_str("(…)");
+                            return;
+                        }
+                        o.push('(');
+                        for (i, x) in hv.data.iter().enumerate() {
+                            if i > 0 {
+                                o.push_str(", ");
+                            }
+                            self.write_value(o, *x, true, depth + 1, seen, host);
+                        }
+                        o.push(')');
+                    }
+                    _ => {
+                        o.push('<');
+                        o.push_str(obj.ty);
+                        o.push_str(&format!(" {}>", obj.id));
+                    }
+                }
             }
             Value::Func(r) => {
                 let p = &self.code.protos[self.heap.closure(r).proto as usize];
@@ -2445,6 +3074,10 @@ impl Cx<'_> {
                 self.vm.fatal_kind = Some(kind);
                 Fail::Fatal(m)
             }
+            Exc::Hook => {
+                self.vm.fatal_kind = Some(ErrorKind::Internal);
+                Fail::Fatal(String::from("Interner Fehler der Skript-VM"))
+            }
         }
     }
 
@@ -2496,6 +3129,66 @@ impl Cx<'_> {
     pub fn unpin(&mut self, p: Pin) {
         self.vm.unpin(p)
     }
+
+    // ---- (S2) host objects
+
+    /// the value as print() shows it, with the host's text for its objects (pass the host
+    /// itself: `cx.display_with(v, self)`)
+    pub fn display_with(&self, v: Value, host: &dyn Host) -> String {
+        self.vm.display_with(v, host)
+    }
+
+    /// the object of the host for (ty, id), the same one while the script holds it (see
+    /// Vm::new_object); alive until the native returns, like a new str
+    pub fn new_object(&mut self, ty: &'static str, id: u64) -> Result<Value, Fail> {
+        let r = self.vm.object_value(ty, id);
+        r.map_err(|e| self.fail(e))
+    }
+
+    /// a new object of the host's value type ty with this data (see Vm::new_value)
+    pub fn new_value(&mut self, ty: &'static str, data: &[Value]) -> Result<Value, Fail> {
+        let r = self.vm.new_value(ty, data);
+        self.lift(r)
+    }
+
+    /// the type, id and value of a host object (None for other values)
+    pub fn object(&self, v: Value) -> Option<Object> {
+        self.vm.object(v)
+    }
+
+    /// the data of a value type's object (None for other values)
+    pub fn data(&self, v: Value) -> Option<&[Value]> {
+        self.vm.data(v)
+    }
+
+    /// the type name the script sees (type(v)): the host's for its objects
+    pub fn type_of(&self, v: Value) -> &'static str {
+        self.vm.type_of(v)
+    }
+
+    /// the functions of obj.on(event, f) on this object, in the order they came
+    pub fn listeners(&self, obj: Value, event: &str) -> Vec<Value> {
+        self.vm.listeners(obj, event)
+    }
+
+    /// forget every listener of obj (see Vm::remove_listeners)
+    pub fn remove_listeners(&mut self, obj: Value) -> usize {
+        self.vm.remove_listeners(obj)
+    }
+
+    /// call the listeners of `event` on obj with args inside this native, each to its end
+    /// through call() (the fuel of this invocation; el.click() of a script, say); one an
+    /// earlier listener removed does not run; an exception of one ends it and is returned
+    pub fn emit(&mut self, host: &mut dyn Host, obj: Value, event: &str, args: &[Value]) -> Result<(), Fail> {
+        let Value::Host(r) = obj else { return Ok(()) };
+        for f in self.vm.listeners(obj, event) {
+            if !self.vm.listeners.iter().any(|l| l.obj == r && &*l.event == event && self.vm.same(l.f, f)) {
+                continue;
+            }
+            self.vm.nested(host, f, args)?;
+        }
+        Ok(())
+    }
 }
 
 fn usage(msg: String) -> Error {
@@ -2511,6 +3204,7 @@ fn plain(e: Exc) -> Error {
         Exc::Msg(m) => Error { kind: ErrorKind::Uncaught, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
         Exc::Throw(_) => usage(String::from("Ausnahme")),
         Exc::Fatal(kind, m) => Error { kind, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
+        Exc::Hook => Error { kind: ErrorKind::Internal, msg: String::from("Interner Fehler der Skript-VM"), file: String::new(), line: 0, col: 0, trace: Vec::new() },
     }
 }
 

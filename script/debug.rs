@@ -188,7 +188,7 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
 fn text(e: Exc) -> String {
     match e {
         Exc::Msg(m) | Exc::Fatal(_, m) => m,
-        Exc::Throw(_) => String::from("Ausnahme"),
+        Exc::Throw(_) | Exc::Hook => String::from("Ausnahme"),
     }
 }
 
@@ -474,7 +474,7 @@ impl Vm {
             return String::from("<ungültig>");
         }
         let mut s = String::new();
-        self.write_value(&mut s, v, true, 0, &mut Vec::new());
+        self.write_value(&mut s, v, true, 0, &mut Vec::new(), None);
         s
     }
 
@@ -711,7 +711,7 @@ impl Vm {
                     let v = self.ev(fi, at, x)?;
                     match v {
                         Value::Str(_) => s.push_str(self.str(v).unwrap_or("")),
-                        _ => self.write_value(&mut s, v, false, 0, &mut Vec::new()),
+                        _ => self.write_value(&mut s, v, false, 0, &mut Vec::new(), None),
                     }
                     stdlib::cap(self, s.len() as u64).map_err(text)?;
                 }

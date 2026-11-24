@@ -345,7 +345,7 @@ impl Vm {
         let u = match self.link(&prog, String::from(name), &places, true) {
             Ok(u) => u,
             Err(Exc::Msg(m)) | Err(Exc::Fatal(_, m)) => return Err(refuse(m)),
-            Err(Exc::Throw(_)) => return Err(refuse(String::from("lässt sich nicht binden"))),
+            Err(Exc::Throw(_) | Exc::Hook) => return Err(refuse(String::from("lässt sich nicht binden"))),
         };
         self.stack.clear();
         self.stack.push(Value::Nil);

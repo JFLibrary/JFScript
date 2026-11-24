@@ -98,7 +98,7 @@ pub use lex::{TokClass, TokKind};
 pub use parse::MAX_DEPTH;
 pub use code::Program;
 pub use heap::{Ref, Value};
-pub use vm::{Cx, Error, ErrorKind, Fail, Host, Limits, Pin, Position, Status, TraceLine, Vm, Warning, MAX_WARNINGS};
+pub use vm::{Cx, Error, ErrorKind, Fail, Handled, Host, Limits, Object, Operator, Pin, Position, Status, TraceLine, Vm, Warning, MAX_WARNINGS};
 pub use code::LineEntry;
 pub use debug::{Breakpoint, FrameInfo, Pause, PauseReason, Step};
 
@@ -258,7 +258,7 @@ pub fn compile_with(name: &str, src: &str, globals: &[&str]) -> Result<Program, 
 }
 
 /// the names compile_with knows: the built-ins, the standard library, the host's
-fn known_names<'a>(globals: &[&'a str]) -> Vec<&'a str> {
+pub(crate) fn known_names<'a>(globals: &[&'a str]) -> Vec<&'a str> {
     let mut known: Vec<&'a str> = Vec::with_capacity(globals.len() + 16);
     for n in library() {
         let root = n.split('.').next().unwrap_or(n);
