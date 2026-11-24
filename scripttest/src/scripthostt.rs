@@ -686,6 +686,7 @@ fn events(t: &mut T) {
         ("try { elem(\"btn\").on(\"hover\", fn(e) {}) } catch e { return e }", "element hat kein Ereignis hover"),
         ("return elem(\"btn\").on(\"click\", 3)", "ERR 2:20 element.on: hier muss eine Funktion stehen, nicht int"),
         ("return elem(\"btn\").on(1, fn() {})", "ERR 2:20 element.on: das Ereignis muss str sein, nicht int"),
+        ("return elem(\"btn\").on(\"click\", print)", "ERR 2:20 element.on: hier muss eine Funktion des Skripts stehen, etwa fn(e) { .. }"),
         ("return cube(1).on(\"x\", fn() {})", "ERR 2:16 mesh hat kein Ereignis x"),
         ("return elem(\"btn\").on(\"full\", fn() {})", "ERR 2:20 zu viele Ereignis-Funktionen"),
         ("return vec(1, 2, 3).off(\"x\")", "ERR 2:21 vec hat kein Ereignis x"),

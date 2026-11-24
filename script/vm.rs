@@ -1447,6 +1447,9 @@ impl Vm {
         let w = if on { "on" } else { "off" };
         let (ev, f) = (args.first().copied().unwrap_or(Value::Nil), args.get(1).copied().unwrap_or(Value::Nil));
         let Value::Str(er) = ev else { return msg(format!("{}.{}: das Ereignis muss str sein, nicht {}", obj.ty, w, self.type_of(ev))) };
+        if let Value::Native(_) = f {
+            return msg(format!("{}.{}: hier muss eine Funktion des Skripts stehen, etwa fn(e) {{ .. }}", obj.ty, w));
+        }
         if !(matches!(f, Value::Func(_)) || (!on && f == Value::Nil)) {
             return msg(format!("{}.{}: hier muss eine Funktion stehen, nicht {}", obj.ty, w, self.type_of(f)));
         }
