@@ -1241,8 +1241,9 @@ impl Vm {
         if fs.is_empty() {
             return Ok(out);
         }
-        // the arguments and the object stay alive between the listeners' runs
-        let pins: Vec<Pin> = args.iter().chain(core::iter::once(&obj)).map(|a| self.pin(*a)).collect();
+        // the arguments, the object and the listeners (one may take another away) stay alive
+        // between the listeners' runs
+        let pins: Vec<Pin> = args.iter().chain(core::iter::once(&obj)).chain(fs.iter()).map(|a| self.pin(*a)).collect();
         for f in fs {
             if !self.listeners.iter().any(|l| l.obj == r && &*l.event == event && self.same(l.f, f)) {
                 continue;
@@ -3231,7 +3232,12 @@ impl Cx<'_> {
     /// earlier listener removed does not run; an exception of one ends it and is returned
     pub fn emit(&mut self, host: &mut dyn Host, obj: Value, event: &str, args: &[Value]) -> Result<(), Fail> {
         let Value::Host(r) = obj else { return Ok(()) };
-        for f in self.vm.listeners(obj, event) {
+        let fs = self.vm.listeners(obj, event);
+        // (alive until the native returns: one listener may take another away)
+        for f in &fs {
+            self.keep(*f);
+        }
+        for f in fs {
             if !self.vm.listeners.iter().any(|l| l.obj == r && &*l.event == event && self.vm.same(l.f, f)) {
                 continue;
             }
