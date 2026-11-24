@@ -2,10 +2,11 @@
 // trips and edge cases of the lexer, parser and diagnostics (scriptt.rs), the compiler and VM with
 // fuel, the heap and its collector (scriptvmt.rs), the standard library and its math
 // (scriptlibt.rs), the language services and the formatter (scriptlst.rs), modules, the debug
-// interface and the test functions (scriptmodt.rs).  They came from JFLib's coretest.
-// Console program; exit code 1 when a check fails.
+// interface and the test functions (scriptmodt.rs), (S2) the host interface's second version:
+// host objects, properties, operators, events, descriptions and the catalogue (scripthostt.rs).
+// They came from JFLib's coretest.  Console program; exit code 1 when a check fails.
 //
-//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod
+//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost
 //   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs)
 //   cargo run -p scripttest -- --math FILE     answers for tools/script_math_check.py
 //   (cargo jflib test -p scripttest runs it through tests/all.uis; --script is ignored)

@@ -85,6 +85,11 @@ impl Host for MyHost {
   first, the object as the first argument). `vm.set_global("config", map)` gives a host name a
   value, which then wins: `config.port`, or `math.sqrt(2.0)` when `math` is a map holding
   `vm.native("math.sqrt")`.
+* (S2) Objects of the host: `cx.new_object("mesh", id)` / `cx.new_value("vec", &data)` make
+  them, `Host::get`, `set`, `method`, `op`, `listen`, `to_str` and `drop` answer for them (all
+  with defaults), `vm.emit(host, obj, "click", &[e])` runs the listeners of `obj.on(..)`, and
+  `script::Api` describes them for the editor and the object catalogue: [HOST.md](HOST.md), and
+  below (Host objects) as a script sees them.
 * Natives: `cx.spend(n)?` adds fuel for the work done and ends the invocation once
   `Limits::fuel` is used up (call it as a long job goes; `cx.charge(n)` only adds),
   `cx.yield_now()` ends the run after the call (`Status::Yielded`, the next `run` continues),
@@ -134,7 +139,8 @@ impl Host for MyHost {
   is i64 with wrapping `+ - *`, `/` and `%` truncate and throw on 0 (`7 / 2` is `3`; the editor
   warns where both sides are certainly ints, below); an `int` meeting a `float`
   becomes a `float`; `==` compares numbers exactly across types, `str` and `bytes` by content,
-  lists, maps and functions by identity; maps keep insertion order, keys are `str`, `int` or
+  lists, maps and functions by identity, (S2) host objects by identity and a host value type's
+  objects by their data (below: Host objects); maps keep insertion order, keys are `str`, `int` or
   `bool`, a missing key reads `nil`; `for k, v in map` visits the keys present at its start;
   missing arguments are `nil`, extra ones are dropped; closures capture variables (a loop
   variable afresh each round).
@@ -151,7 +157,7 @@ variable (`let list = []`). `script::library()` lists every name for editors.
 
 | Module | Functions and constants |
 |---|---|
-| built in | `print(..)`, `len(x)`, `type(x)` (`"nil" "bool" "int" "float" "str" "bytes" "list" "map" "fn"`), `str(x)`, `int(x)` (truncates floats, parses `"42"`, `"0x1F"`, `"-0b11"`, throws otherwise), `float(x)` |
+| built in | `print(..)`, `len(x)`, `type(x)` (`"nil" "bool" "int" "float" "str" "bytes" "list" "map" "fn"`, or the host's name of a host object's type), `str(x)`, `int(x)` (truncates floats, parses `"42"`, `"0x1F"`, `"-0b11"`, throws otherwise), `float(x)` |
 | `str` | `s.len()` `s.slice(start, end)` `s.split(sep, n)` `sep.join(list)` `s.trim(chars)` `s.trim_start(chars)` `s.trim_end(chars)` `s.find(sub, from)` `s.find_last(sub)` `s.contains(sub)` `s.starts_with(p)` `s.ends_with(p)` `s.count(sub)` `s.replace(from, to, n)` `s.upper()` `s.lower()` `s.repeat(n)` `s.chars()` `s.bytes()` `s.code(i)` `str.from_code(n, ..)` `s.format(args..)` `s.hash()` |
 | `list` | `l.len()` `l.push(x, ..)` `l.pop()` `l.insert(i, x)` `l.remove(i)` `l.slice(start, end)` `l.reverse()` `l.sort(cmp)` `l.map(f)` `l.filter(f)` `l.reduce(f, init)` `l.contains(x)` `l.index(x)` `l.join(sep)`; `list.range(start, end, step)` `list.range(end)` `list.linspace(start, end, n)` |
 | `map` | `m.len()` `m.keys()` `m.values()` `m.entries()` `m.has(k)` `m.get(k, default)` `m.delete(k)` `m.merge(other, ..)` |
@@ -294,6 +300,52 @@ host's `set_global` could still change a top-level variable unseen). Exact divis
 `int(n / 3)` says the truncation is meant and is not warned about; `compile` ignores the warning
 like every other.
 
+## Host objects
+
+(S2) An app gives scripts objects of its own: a shape, a page, a mesh, an element of a page, a
+vector. How a host makes them is in [HOST.md](HOST.md); a script uses them like JavaScript
+objects:
+
+```js
+let m = cube(1)                       // a mesh of the host
+let b = m.bevel(0.1, 2)               // a method gives a new one
+print(type(m), m.faces, b.faces)      // mesh 6 30
+shape.text = "Hallo"                  // a property: read and set through the host
+shape.text += "!"                     // get, +, set
+let v = vec(1, 2, 3) * 2 + vec(0, 1, 0)   // operators of the host's value type
+print(v, v.x, -v == vec(-2, -5, -6))  // vec(2.0, 5.0, 6.0) 2.0 true
+
+btn.on("click", fn(e) {               // events: e is an object of the host
+  print(e.type, e.target.name)
+  e.stop()                            // whether it goes on up to the page is the host's
+})
+btn.off("click")                      // all functions of the event; off("click", f) one
+```
+
+* What an object has is the host's: `obj.name` reads a property, `obj.name = v` (and `+=` ..) sets
+  it, `obj.m(..)` calls a method. A name it does not have throws a catchable error with the
+  type's name ("mesh hat keine Eigenschaft color"), a read-only property the host's own ("shape.id
+  ist nur lesbar"); errors of the host carry the line and column of the property or the call.
+* `type(x)` is the host's name for the type; `print`, `str(x)` and `"${x}"` show the host's text
+  (`mesh(6 Flächen)`), else `<mesh 3>` or, for a value type, `vec(1.0, 2.0, 3.0)`. Host objects
+  are truthy; they cannot be map keys, indexed, iterated with `for` or written as JSON (methods of
+  the host give lists where it makes sense).
+* `==` of two objects compares identity (the host gives the same object for the same thing:
+  `doc.find("a") == doc.find("a")`); objects of a value type (a vector, a point, a color) compare
+  their type and data, so `vec(1, 2) == vec(1, 2)` and `[v].contains(w)` work. A value type's
+  object never changes: `v += w` makes a new one, other variables keep the old.
+* Operators (`+ - * / %`, `< <= > >=`, unary `-`) on host objects are the host's, also with the
+  object on the right (`2 * v`); one it does not have throws "Der Operator + passt nicht zu vec
+  und str". Maps and other script values have no operators of their own (G4.3).
+* Events: `obj.on("type", f)` adds `f` (the same function twice is one listener; an event the
+  object does not have throws "element hat kein Ereignis x"), `obj.off("type", f)` removes it,
+  `obj.off("type")` all of the event. The host calls them when the event happens, each as a call
+  of its own with fresh fuel and the limits: a listener that throws or runs too long ends alone,
+  the next one runs. Whether an event goes up (shape, page, document) and what its object offers
+  (`e.stop()`) is the host's.
+* The editor knows the host's objects from its description (`script::Api`): completion after a
+  dot, hover, signature help and warnings for members a known type does not have (below).
+
 **The runner `jfs`** ([`apps/jfs`](../jfs/README.md)) runs scripts on the command line:
 
 ```sh
@@ -348,6 +400,14 @@ let outline = ls::symbols(src);                          // fns (nested ones as 
 let tidy = script::fmt::format(src)?;                    // or the syntax errors
 ```
 
+* (S2) A host with a description (`script::Api`, [HOST.md](HOST.md#descriptions)) passes
+  `ls::Context::new(&api)` instead of a `CompleteCx` (the functions take either): completion
+  after a dot then lists the members of the host type the code before it has (a host value, a
+  function's or method's result, a property, a chain, a `let` of one, a `for` over a `list<T>`,
+  the parameter of a listener), hover shows declarations with types (`mesh.bevel(width: float,
+  segments: int = 1): mesh`, `let m: mesh`), signature help the typed parameters, and
+  `ls::check(src, &cx)` warns about members the type does not have. Where the type is not known,
+  everything is as without a description.
 * The index (`ls::index`) follows the scope rules of `ast.rs`: top-level `let` and `fn` are the
   script's globals (visible in every function, in top-level code after the `let` ran), a block's
   `fn`s in the whole block, a `let` from the next statement on, parameters around the body, `for`
