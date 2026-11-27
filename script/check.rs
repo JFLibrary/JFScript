@@ -19,10 +19,11 @@
 // characters and swapped neighbours as one each (prnt -> print, pirnt -> print, wran -> warn),
 // a difference only in case not at all; it may be at most 1 for names of 3 to 5 characters, 2
 // for 6 to 8, 3 for longer ones, and from 2 on the first character must be the same (normal is
-// no typo of format).  Names of 1 or 2 characters get none, except a member that lacks a letter
-// (vec.ad -> vec.add, geom.bx -> geom.box).  Among several the smallest distance wins, then the
-// longest common start, then the first.  A member is compared without its namespace: geom.move
-// is no typo of geom.cone (move -> cone is 2 changes in 4 characters).
+// no typo of format).  Names of 1 or 2 characters get one only for a difference in case or as a
+// member that lacks a letter (vec.ad -> vec.add, geom.bx -> geom.box).  Among several the
+// smallest distance wins, then the longest common start, then the first.  A member is compared
+// without its namespace: geom.move is no typo of geom.cone (move -> cone is 2 changes in 4
+// characters).
 
 use alloc::format;
 use alloc::string::String;

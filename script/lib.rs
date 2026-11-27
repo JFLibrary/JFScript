@@ -293,7 +293,7 @@ pub fn compile_with(name: &str, src: &str, globals: &[&str]) -> Result<Program, 
 }
 
 /// (S3) what compile_api gives: the program and the warnings of the same parse
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Compiled {
     pub program: Program,
     /// the warnings ls::check(src, &api) gives (the file named), by position
