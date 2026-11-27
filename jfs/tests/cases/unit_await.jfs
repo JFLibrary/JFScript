@@ -1,0 +1,14 @@
+// unit_await.jfs -- (S3) tests that wait: the test ends with its last await, a failure after
+// the wait names its line
+fn test_wait() {
+  let t0 = now()
+  let v = await timer.sleep(50, "ok")
+  assert_eq(v, "ok", "Wert")
+  assert_eq(now() - t0, 50.0, "Zeit")
+}
+
+fn test_wait_fails() {
+  print("vorher")
+  await timer.sleep(10)
+  assert(false, "nach dem Warten")
+}

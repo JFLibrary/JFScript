@@ -16,6 +16,10 @@
 //   timer.after(ms, f) / timer.every(ms, f) -> id, timer.cancel(id) -> bool   every: 10 µs at
 //                        least (a shorter period is a warning); due timers run in the order
 //                        of their time, then of their ids
+//   timer.sleep(ms, value)   (S3) a promise that is resolved with value (nil without it) when
+//                        the clock reaches now() + ms, like a timer.after of that moment:
+//                        `await timer.sleep(100)`; with --virtual-time exact and without
+//                        waiting
 //   disk.get(key, fn(err, value)), disk.put(key, value, fn(err)), disk.delete(key, fn(err,
 //   had)), disk.scan(prefix, fn(err, items))   JSON values as in JFNetworker; the callbacks
 //                        run after the current code, before the next timer; --disk FILE
@@ -31,7 +35,11 @@
 // The program ends when no timer and no callback is left (or the clock passes --until): exit
 // code 0; an uncaught error or a limit ends it at once with the message, file, line and
 // column and the calls on stderr: 1 (a call in another file than the error's names its file).
-// Limits::fuel holds per invocation (the top-level code, each callback), as in JFNetworker.
+// Limits::fuel holds per invocation (the top-level code, each callback), as in JFNetworker; an
+// invocation that waits in await is still one (its fuel counts on after the wait).
+// (S3) await: an invocation that waits for a promise lets the loop go on (timers, disk
+// callbacks, other invocations); once the promise is settled it goes on before anything else,
+// in the order the promises were settled (Vm::wake).
 //
 //   run(prog, opts, name, src)        a script with its event loop -> the exit code
 //   run_test(prog, opts, name, test)  --test: a fresh VM, the top-level code, the function
@@ -64,17 +72,25 @@ const SLICE: u64 = 100_000;
 
 /// the functions a script may also read as values (`let f = log`)
 const FUNCS: &[&str] = &[
-    "log", "log.debug", "log.info", "log.warn", "log.error", "now", "rand", "timer.after", "timer.every", "timer.cancel", "disk.get", "disk.put",
-    "disk.delete", "disk.scan",
+    "log", "log.debug", "log.info", "log.warn", "log.error", "now", "rand", "timer.after", "timer.every", "timer.cancel", "timer.sleep", "disk.get",
+    "disk.put", "disk.delete", "disk.scan",
 ];
 
 /// the names of JFNetworker's hosts that the runner does not have
 const ELSEWHERE: &[&str] = &["net", "dns", "http", "metrics"];
 
 struct Tmr {
-    pin: Pin,
+    fire: Fire,
     period: Option<Ns>,
     at: Ns,
+}
+
+/// what a timer does when it is due
+enum Fire {
+    /// call the function (timer.after, timer.every)
+    Call(Pin),
+    /// (S3) resolve the promise with the value (timer.sleep)
+    Resolve(u64, Pin),
 }
 
 /// what a disk access answers its callback
@@ -244,20 +260,39 @@ impl Console {
         self.next += 1;
         let id = self.next;
         let pin = cx.pin(f);
-        self.timers.insert(id, Tmr { pin, period, at });
+        self.timers.insert(id, Tmr { fire: Fire::Call(pin), period, at });
         self.due.insert((at, id));
         Ok(Value::Int(id as i64))
     }
 
+    /// (S3) timer.sleep(ms, value): a promise the timer of that moment resolves
+    fn sleep(&mut self, cx: &mut Cx, ms: Value, v: Value) -> Result<Value, Fail> {
+        let Some(d) = ms_of(ms) else {
+            return Err(cx.error("timer.sleep: die Zeit muss eine Zahl ab 0 sein (Millisekunden)"));
+        };
+        let p = cx.promise()?;
+        let at = self.now().saturating_add(d);
+        self.next += 1;
+        let id = self.next;
+        let pin = cx.pin(v);
+        self.timers.insert(id, Tmr { fire: Fire::Resolve(p.id, pin), period: None, at });
+        self.due.insert((at, id));
+        Ok(p.value)
+    }
+
     fn cancel(&mut self, cx: &mut Cx, v: Value) -> Result<Value, Fail> {
         let Value::Int(id) = v else { return Ok(Value::Bool(false)) };
+        // (a sleep's timer is not the script's to cancel: its id never reached it)
+        if !matches!(self.timers.get(&(id as u64)), Some(Tmr { fire: Fire::Call(_), .. })) {
+            return Ok(Value::Bool(false));
+        }
         match self.timers.remove(&(id as u64)) {
-            Some(t) => {
-                self.due.remove(&(t.at, id as u64));
-                cx.unpin(t.pin);
+            Some(Tmr { fire: Fire::Call(pin), at, .. }) => {
+                self.due.remove(&(at, id as u64));
+                cx.unpin(pin);
                 Ok(Value::Bool(true))
             }
-            None => Ok(Value::Bool(false)),
+            _ => Ok(Value::Bool(false)),
         }
     }
 
@@ -385,6 +420,7 @@ impl Host for Console {
             "rand" => self.rand(cx, args),
             "timer.after" | "timer.every" => self.timer(cx, name, a(0), a(1)),
             "timer.cancel" => self.cancel(cx, a(0)),
+            "timer.sleep" => self.sleep(cx, a(0), a(1)),
             "disk.get" | "disk.put" | "disk.delete" | "disk.scan" => self.disk(cx, name, args),
             _ if ELSEWHERE.contains(&name.split('.').next().unwrap_or(name)) => {
                 Err(cx.error(&format!("{} gibt es nur in JFNetworker, nicht im Runner jfs", name)))
@@ -571,6 +607,13 @@ fn run_loop(vm: &mut Vm, host: &mut Console, o: &Opts, until: Option<u64>, faile
         if host.quit || failed.is_some() {
             return Ok(());
         }
+        // (S3) an invocation whose promise was settled goes on first
+        if vm.wake().is_some() {
+            if let Err(e) = drive(vm, host) {
+                *failed = Some(e);
+            }
+            continue;
+        }
         let (f, args) = if let Some((pin, res)) = host.ready.pop_front() {
             let f = vm.pinned(pin);
             // (pinned while the arguments are made: that can collect)
@@ -592,7 +635,17 @@ fn run_loop(vm: &mut Vm, host: &mut Console, o: &Opts, until: Option<u64>, faile
             host.due.remove(&(at, id));
             let now = host.now();
             let Some(t) = host.timers.get_mut(&id) else { continue };
-            let f = vm.pinned(t.pin);
+            let f = match t.fire {
+                Fire::Call(pin) => vm.pinned(pin),
+                // (S3) timer.sleep: the promise is resolved, its invocations go on above
+                Fire::Resolve(p, pin) => {
+                    let v = vm.pinned(pin);
+                    vm.resolve(p, v);
+                    vm.unpin(pin);
+                    host.timers.remove(&id);
+                    continue;
+                }
+            };
             match t.period {
                 Some(p) => {
                     // a clock that fell behind skips the missed rounds
@@ -603,8 +656,8 @@ fn run_loop(vm: &mut Vm, host: &mut Console, o: &Opts, until: Option<u64>, faile
                     host.due.insert((t.at, id));
                 }
                 None => {
-                    if let Some(t) = host.timers.remove(&id) {
-                        vm.unpin(t.pin);
+                    if let Some(Tmr { fire: Fire::Call(pin), .. }) = host.timers.remove(&id) {
+                        vm.unpin(pin);
                     }
                 }
             }

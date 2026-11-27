@@ -1,0 +1,38 @@
+// await.jfs -- (S3) await with timer.sleep on the virtual clock: the program waits, timers and
+// other callbacks run meanwhile, the code goes on with the value
+print("start", now())
+
+fn fetch(name, ms) {
+  let v = await timer.sleep(ms, "${name} nach ${ms} ms")
+  return v.upper()
+}
+
+timer.after(5, fn() { print("timer at", now()) })
+timer.after(12, fn() {
+  // a callback that waits is an invocation of its own: the others go on meanwhile
+  print("callback waits at", now())
+  let v = await timer.sleep(10, 42)
+  print("callback goes on at", now(), "with", v)
+})
+
+let a = fetch("a", 10)
+print("a:", a, "at", now())
+
+// two operations at once: both started, then awaited
+let p = timer.sleep(20, "erste")
+let q = timer.sleep(5, "zweite")
+print(type(p), p)
+print(await q, "at", now())
+print(await p, "at", now(), p)
+
+// values that are no promise, and settled ones
+print(await 7, await nil, await p)
+
+// a callback of list.map runs to its end: it cannot wait for something still pending
+try {
+  [1, 2].map(fn(x) { return await timer.sleep(1) })
+} catch e {
+  print("map:", e)
+}
+print([1, 2].map(fn(x) { return await x * 10 }))
+print("end at", now())
