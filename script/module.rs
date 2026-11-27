@@ -9,7 +9,9 @@
 //   norm_path(from, path)            `path` resolved against the file `from` and normalised
 //
 // A module runs once per VM.  The first import of a path compiles the file the way the
-// program was compiled (compile_named, or compile_with with the same host names), links its
+// program was compiled (compile_named, compile_with with the same host names, or (S3)
+// compile_api with the same description: its warnings go to the VM's, Vm::take_warnings, named
+// by the module's path; so do a further script's of add_script), links its
 // code behind the VM's own -- functions, constants and globals get the places after the ones
 // there, host names are shared by name (so config holds for every module) -- and runs its
 // top-level code as a frame of the importing invocation: with its fuel, limits, heap and
@@ -53,7 +55,7 @@ use alloc::vec::Vec;
 
 use crate::code::{Code, Const, HostName, Op};
 use crate::heap::{self, Obj, Value};
-use crate::vm::{builtin_of, msg, Cx, ErrorKind, Exc, Frame, Host, TraceLine, Vm};
+use crate::vm::{builtin_of, msg, Cx, ErrorKind, Exc, Frame, Host, TraceLine, Vm, Warning, MAX_WARNINGS};
 use crate::{Diagnostic, Program};
 
 /// modules per VM at most (the program included)
@@ -159,7 +161,7 @@ impl Vm {
     pub(crate) fn import(&mut self, host: &mut dyn Host, args: &[Value], to: usize) -> Result<bool, Exc> {
         let a = args.first().copied().unwrap_or(Value::Nil);
         let Value::Str(r) = a else {
-            return msg(format!("import braucht den Pfad einer Datei (str), nicht {}", a.type_name()));
+            return msg(format!("import braucht den Pfad einer Datei (str), nicht {}", self.type_of(a)));
         };
         let want = String::from(heap::text(&self.heap, r));
         let here = self.frames.last().map_or(0, |f| self.code.protos[f.proto as usize].unit) as usize;
@@ -196,15 +198,11 @@ impl Vm {
             Err(why) => return msg(format!("Modul {}: {}", path, why)),
         };
         self.used += src.len() as u64 / 64;
-        let prog = match &self.code.strict {
-            Some(g) => {
-                let g: Vec<&str> = g.iter().map(|s| s.as_str()).collect();
-                crate::compile_with(&path, &src, &g)
+        let prog = match crate::compile_module(&path, &src, self.code.strict.as_ref()) {
+            Ok((p, warnings)) => {
+                self.compile_warnings(warnings);
+                p
             }
-            None => crate::compile_named(&path, &src),
-        };
-        let prog = match prog {
-            Ok(p) => p,
             Err(d) => return self.module_error(&path, &d),
         };
         let u = self.link(&prog, path, &[], false)?;
@@ -231,6 +229,18 @@ impl Vm {
         let mut parts: Vec<&str> = tops[i..].iter().map(|&x| name(x)).collect();
         parts.push(name(u));
         Some(parts.join(" \u{2192} "))
+    }
+
+    /// (S3) the warnings of compiling a module or script (compile_api) to the VM's own, for
+    /// Vm::take_warnings (at most MAX_WARNINGS kept, as Cx::warn's)
+    fn compile_warnings(&mut self, d: Vec<Diagnostic>) {
+        for x in d {
+            if self.warnings.len() >= MAX_WARNINGS {
+                self.warnings_dropped += 1;
+                continue;
+            }
+            self.warnings.push(Warning { file: x.file, line: x.line, col: x.col, msg: x.msg });
+        }
     }
 
     /// a module that does not compile: a str with its position (catchable); uncaught, the
@@ -341,12 +351,13 @@ impl Vm {
                 }
             }
         }
-        let prog = crate::compile_shared(name, src, self.code.strict.as_deref(), &names)?;
+        let (prog, warnings) = crate::compile_shared(name, src, self.code.strict.as_ref(), &names)?;
         let u = match self.link(&prog, String::from(name), &places, true) {
             Ok(u) => u,
             Err(Exc::Msg(m)) | Err(Exc::Fatal(_, m)) => return Err(refuse(m)),
             Err(Exc::Throw(_) | Exc::Hook) => return Err(refuse(String::from("lässt sich nicht binden"))),
         };
+        self.compile_warnings(warnings);
         self.stack.clear();
         self.stack.push(Value::Nil);
         self.frames.push(Frame { proto: self.units[u].pbase, closure: None, base: 1, pc: 0 });

@@ -52,15 +52,15 @@ fn afford(vm: &Vm, fuel: u64) -> Result<(), Exc> {
 }
 
 pub(crate) fn len(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.len", a, 0, "s")?;
+    let r = want_str(vm, "str.len", a, 0, "s")?;
     Ok(Value::Int(vm.heap.str(r).chars as i64))
 }
 
 pub(crate) fn slice(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.slice";
-    let r = want_str(F, a, 0, "s")?;
+    let r = want_str(vm, F, a, 0, "s")?;
     let o = vm.heap.str(r);
-    let (s, e) = span(F, a, 1, o.chars as usize)?;
+    let (s, e) = span(vm, F, a, 1, o.chars as usize)?;
     if s == 0 && e == o.chars as usize {
         return Ok(a[0]);
     }
@@ -111,13 +111,13 @@ fn letters(s: &str, n: usize) -> Vec<(usize, usize)> {
 
 pub(crate) fn split(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.split";
-    let r = want_str(F, a, 0, "s")?;
+    let r = want_str(vm, F, a, 0, "s")?;
     let sep = match arg(a, 1) {
         Value::Nil => None,
         Value::Str(x) => Some(x),
-        v => return bad(F, "sep", "str", v),
+        v => return bad(vm, F, "sep", "str", v),
     };
-    let n = match opt_int(F, a, 2, "n")? {
+    let n = match opt_int(vm, F, a, 2, "n")? {
         None => usize::MAX,
         Some(k) if k >= 1 => k as usize,
         Some(k) => return err(format!("{}: n muss mindestens 1 sein, nicht {}", F, k)),
@@ -174,18 +174,18 @@ pub(crate) fn join_list(vm: &mut Vm, l: Ref, sep: Option<Ref>) -> Result<Value, 
 
 /// sep.join(list)
 pub(crate) fn join(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let sep = want_str("str.join", a, 0, "sep")?;
-    let l = want_list("str.join", a, 1, "list")?;
+    let sep = want_str(vm, "str.join", a, 0, "sep")?;
+    let l = want_list(vm, "str.join", a, 1, "list")?;
     join_list(vm, l, Some(sep))
 }
 
 /// trim at the start and / or the end: white space, or the characters of `chars`
 fn trim_with(vm: &mut Vm, a: &[Value], f: &str, start: bool, end: bool) -> Result<Value, Exc> {
-    let r = want_str(f, a, 0, "s")?;
+    let r = want_str(vm, f, a, 0, "s")?;
     let set: Option<Vec<char>> = match arg(a, 1) {
         Value::Nil => None,
         Value::Str(c) => Some(heap::text(&vm.heap, c).chars().collect()),
-        v => return bad(f, "chars", "str", v),
+        v => return bad(vm, f, "chars", "str", v),
     };
     let s = heap::text(&vm.heap, r);
     let cut = |c: char| match &set {
@@ -220,9 +220,9 @@ pub(crate) fn trim_end(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Val
 /// the character index of the first match at or after from, or nil
 pub(crate) fn find(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.find";
-    let r = want_str(F, a, 0, "s")?;
-    let p = want_str(F, a, 1, "sub")?;
-    let from = opt_int(F, a, 2, "from")?.unwrap_or(0);
+    let r = want_str(vm, F, a, 0, "s")?;
+    let p = want_str(vm, F, a, 1, "sub")?;
+    let from = opt_int(vm, F, a, 2, "from")?.unwrap_or(0);
     let o = vm.heap.str(r);
     let n = o.chars as i64;
     let from = (if from < 0 { (n + from).max(0) } else { from.min(n) }) as usize;
@@ -238,8 +238,8 @@ pub(crate) fn find(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, 
 
 /// the character index of the last match, or nil
 pub(crate) fn find_last(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.find_last", a, 0, "s")?;
-    let p = want_str("str.find_last", a, 1, "sub")?;
+    let r = want_str(vm, "str.find_last", a, 0, "s")?;
+    let p = want_str(vm, "str.find_last", a, 1, "sub")?;
     let o = vm.heap.str(r);
     let res = match o.s.rfind(heap::text(&vm.heap, p)) {
         Some(b) => Value::Int(char_at(o, b) as i64),
@@ -252,8 +252,8 @@ pub(crate) fn find_last(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
 
 /// a test of s against a second str (contains, starts_with, ends_with)
 fn test(vm: &mut Vm, a: &[Value], f: &str, p: &str, op: fn(&str, &str) -> bool) -> Result<Value, Exc> {
-    let r = want_str(f, a, 0, "s")?;
-    let q = want_str(f, a, 1, p)?;
+    let r = want_str(vm, f, a, 0, "s")?;
+    let q = want_str(vm, f, a, 1, p)?;
     let s = heap::text(&vm.heap, r);
     let yes = op(s, heap::text(&vm.heap, q));
     let fuel = text_fuel(s.len());
@@ -275,8 +275,8 @@ pub(crate) fn ends_with(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
 
 /// the matches of sub that do not overlap ("" matches between all characters)
 pub(crate) fn count(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.count", a, 0, "s")?;
-    let p = want_str("str.count", a, 1, "sub")?;
+    let r = want_str(vm, "str.count", a, 0, "s")?;
+    let p = want_str(vm, "str.count", a, 1, "sub")?;
     let s = heap::text(&vm.heap, r);
     let k = s.matches(heap::text(&vm.heap, p)).count();
     let fuel = text_fuel(s.len());
@@ -287,10 +287,10 @@ pub(crate) fn count(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 /// every match of from (or the first n) replaced by to
 pub(crate) fn replace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.replace";
-    let r = want_str(F, a, 0, "s")?;
-    let fr = want_str(F, a, 1, "from")?;
-    let to = want_str(F, a, 2, "to")?;
-    let limit = match opt_int(F, a, 3, "n")? {
+    let r = want_str(vm, F, a, 0, "s")?;
+    let fr = want_str(vm, F, a, 1, "from")?;
+    let to = want_str(vm, F, a, 2, "to")?;
+    let limit = match opt_int(vm, F, a, 3, "n")? {
         None => usize::MAX,
         Some(k) if k >= 0 => k as usize,
         Some(k) => return err(format!("{}: n muss mindestens 0 sein, nicht {}", F, k)),
@@ -313,7 +313,7 @@ pub(crate) fn replace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Valu
 
 /// upper or lower case (full Unicode mapping: "ß".upper() is "SS")
 fn case(vm: &mut Vm, a: &[Value], f: &str, upper: bool) -> Result<Value, Exc> {
-    let r = want_str(f, a, 0, "s")?;
+    let r = want_str(vm, f, a, 0, "s")?;
     let s = heap::text(&vm.heap, r);
     let fuel = text_fuel(2 * s.len());
     afford(vm, fuel)?;
@@ -338,8 +338,8 @@ pub(crate) fn lower(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 /// s n times
 pub(crate) fn repeat(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.repeat";
-    let r = want_str(F, a, 0, "s")?;
-    let k = want_int(F, a, 1, "n")?;
+    let r = want_str(vm, F, a, 0, "s")?;
+    let k = want_int(vm, F, a, 1, "n")?;
     if k < 0 {
         return err(format!("{}: n muss mindestens 0 sein, nicht {}", F, k));
     }
@@ -358,7 +358,7 @@ pub(crate) fn repeat(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
 
 /// a list of one-character strings
 pub(crate) fn chars(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.chars", a, 0, "s")?;
+    let r = want_str(vm, "str.chars", a, 0, "s")?;
     // every character becomes a string of 33 bytes of heap: check before the buffers are built
     cap(vm, (vm.heap.str(r).chars as u64).saturating_mul(33))?;
     let cs: Vec<char> = heap::text(&vm.heap, r).chars().collect();
@@ -373,7 +373,7 @@ pub(crate) fn chars(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 
 /// the UTF-8 bytes
 pub(crate) fn bytes(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.bytes", a, 0, "s")?;
+    let r = want_str(vm, "str.bytes", a, 0, "s")?;
     let b = heap::text(&vm.heap, r).as_bytes().to_vec();
     new_bytes(vm, b)
 }
@@ -381,8 +381,8 @@ pub(crate) fn bytes(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 /// the code point of character i (default 0)
 pub(crate) fn code(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.code";
-    let r = want_str(F, a, 0, "s")?;
-    let i = opt_int(F, a, 1, "i")?.unwrap_or(0);
+    let r = want_str(vm, F, a, 0, "s")?;
+    let i = opt_int(vm, F, a, 1, "i")?.unwrap_or(0);
     let o = vm.heap.str(r);
     let (c, n, scan) = (heap::char_at(o, i), o.chars, if ascii(o) { 0 } else { i.max(0) as u64 });
     spend(vm, scan / 64)?;
@@ -402,7 +402,7 @@ pub(crate) fn from_code(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
                 Some(c) => s.push(c),
                 None => return err(format!("{}: {} ist kein gültiges Zeichen", F, i)),
             },
-            v => return bad(F, "n", "int", v),
+            v => return bad(vm, F, "n", "int", v),
         }
     }
     spend(vm, list_fuel(a.len()))?;
@@ -411,7 +411,7 @@ pub(crate) fn from_code(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
 
 /// FNV-1a (32 bits) of the UTF-8 bytes, as an int from 0 to 2^32 - 1
 pub(crate) fn hash(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("str.hash", a, 0, "s")?;
+    let r = want_str(vm, "str.hash", a, 0, "s")?;
     Ok(Value::Int(vm.heap.str(r).hash as i64))
 }
 
@@ -489,7 +489,7 @@ impl Spec {
 fn render(vm: &Vm, v: Value, sp: &Spec, spec: &str) -> Result<(bool, &'static str, String), Exc> {
     let numeric = matches!(v, Value::Int(_) | Value::Float(_));
     if let Some(t @ ('x' | 'X' | 'b' | 'o' | 'd')) = sp.ty {
-        let Value::Int(i) = v else { return err(format!("str.format: {{:{}}} braucht int, nicht {}", spec, v.type_name())) };
+        let Value::Int(i) = v else { return err(format!("str.format: {{:{}}} braucht int, nicht {}", spec, vm.type_of(v))) };
         let m = i.unsigned_abs();
         let body = match t {
             'x' => format!("{:x}", m),
@@ -535,7 +535,7 @@ fn render(vm: &Vm, v: Value, sp: &Spec, spec: &str) -> Result<(bool, &'static st
                 };
                 Ok((x.to_bits() >> 63 != 0 && !num::is_nan(x), "", body))
             }
-            v => err(format!("str.format: {{:{}}} braucht eine Zahl, nicht {}", spec, v.type_name())),
+            v => err(format!("str.format: {{:{}}} braucht eine Zahl, nicht {}", spec, vm.type_of(v))),
         };
     }
     let mut body = String::new();
@@ -605,7 +605,7 @@ fn put(vm: &Vm, out: &mut String, v: Value, spec: &str) -> Result<(), Exc> {
 /// fmt with its placeholders filled in (see the module comment)
 pub(crate) fn format(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "str.format";
-    let r = want_str(F, a, 0, "fmt")?;
+    let r = want_str(vm, F, a, 0, "fmt")?;
     let args = &a[1..];
     let mut out = String::new();
     let fmt = heap::text(&vm.heap, r);
@@ -644,7 +644,7 @@ pub(crate) fn format(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
                             None => return err(format!("{}: Die Map hat kein Feld {}", F, field)),
                         },
                         v => {
-                            let t = v.map_or("nichts", |v| v.type_name());
+                            let t = v.map_or("nichts", |v| vm.type_of(*v));
                             return err(format!("{}: Für {{{}}} muss das erste Argument eine Map sein, nicht {}", F, field, t));
                         }
                     }

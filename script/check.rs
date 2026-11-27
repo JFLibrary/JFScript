@@ -10,12 +10,25 @@
 //               division of two values that are certainly ints (intdiv.rs: it truncates)
 //   globals: the predeclared names (crate::GLOBALS for check())
 //   resolve_strict(&program, globals)   the same with unknown names as errors
-//               (crate::compile_with: the host says which names it has)
+//               (crate::compile_with: the host says which names it has); (S3) with the
+//               removed names of a host's description: "box wurde entfernt – nimm geom.box"
+//
+// Suggestions (S3): suggest(name, candidates) is the one rule for "meinst du x?", here and for
+// the members of host types and namespaces (lsapi.rs).  A candidate is suggested only when it
+// is really close to what was typed: the distance counts inserted, deleted and changed
+// characters and swapped neighbours as one each (prnt -> print, pirnt -> print, wran -> warn),
+// a difference only in case not at all; it may be at most 1 for names of 3 to 5 characters, 2
+// for 6 to 8, 3 for longer ones, and from 2 on the first character must be the same (normal is
+// no typo of format).  Names of 1 or 2 characters get none, except a member that lacks a letter
+// (vec.ad -> vec.add, geom.bx -> geom.box).  Among several the smallest distance wins, then the
+// longest common start, then the first.  A member is compared without its namespace: geom.move
+// is no typo of geom.cone (move -> cone is 2 changes in 4 characters).
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::api::Removed;
 use crate::ast::*;
 use crate::Diagnostic;
 
@@ -23,6 +36,8 @@ struct Resolver<'a> {
     globals: &'a [&'a str],
     /// an unknown name is an error (resolve_strict)
     strict: bool,
+    /// (S3) names that are gone, with what to take instead
+    removed: &'a [Removed],
     /// top-level lets and fns: name, the byte from which top-level code may read it, line
     top: Vec<(&'a str, u32, u32)>,
     /// the block scopes inside the top level, innermost last
@@ -34,16 +49,16 @@ struct Resolver<'a> {
 
 /// see the module comment
 pub fn resolve(prog: &Program, globals: &[&str]) -> Vec<Diagnostic> {
-    run(prog, globals, false)
+    run(prog, globals, false, &[])
 }
 
-/// resolve() with unknown names as errors
-pub(crate) fn resolve_strict(prog: &Program, globals: &[&str]) -> Vec<Diagnostic> {
-    run(prog, globals, true)
+/// resolve() with unknown names as errors; removed: names that are gone (a host's description)
+pub(crate) fn resolve_strict(prog: &Program, globals: &[&str], removed: &[Removed]) -> Vec<Diagnostic> {
+    run(prog, globals, true, removed)
 }
 
-fn run(prog: &Program, globals: &[&str], strict: bool) -> Vec<Diagnostic> {
-    let mut r = Resolver { globals, strict, top: Vec::new(), scopes: Vec::new(), fns: 0, loops: 0, out: Vec::new() };
+fn run(prog: &Program, globals: &[&str], strict: bool, removed: &[Removed]) -> Vec<Diagnostic> {
+    let mut r = Resolver { globals, strict, removed, top: Vec::new(), scopes: Vec::new(), fns: 0, loops: 0, out: Vec::new() };
     for s in &prog.body {
         match &s.kind {
             StmtKind::Let { name, .. } => r.declare_top(name, s.span.end),
@@ -59,20 +74,84 @@ fn run(prog: &Program, globals: &[&str], strict: bool) -> Vec<Diagnostic> {
     r.out
 }
 
-/// edit distance of two names (characters)
+/// the edit distance of two names in characters: an inserted, deleted or changed character or
+/// two swapped neighbours count one each (optimal string alignment)
 pub(crate) fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diag = row[0];
-        row[0] = i + 1;
-        for j in 0..b.len() {
-            let up = row[j + 1];
-            row[j + 1] = if ca == b[j] { diag } else { 1 + diag.min(up).min(row[j]) };
-            diag = up;
+    let w = b.len() + 1;
+    // three rows: i - 2, i - 1, i
+    let mut d: Vec<usize> = alloc::vec![0; 3 * w];
+    for (j, x) in d[..w].iter_mut().enumerate() {
+        *x = j;
+    }
+    for i in 1..=a.len() {
+        let (cur, prev, pp) = ((i % 3) * w, ((i - 1) % 3) * w, ((i + 1) % 3) * w);
+        d[cur] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[prev + j] + 1).min(d[cur + j - 1] + 1).min(d[prev + j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[pp + j - 2] + 1);
+            }
+            d[cur + j] = v;
         }
     }
-    row[b.len()]
+    d[(a.len() % 3) * w + b.len()]
+}
+
+/// the most a candidate may differ from a name of n characters to be suggested (see the module
+/// comment)
+fn bound(n: usize) -> usize {
+    match n {
+        0..=2 => 0,
+        3..=5 => 1,
+        6..=8 => 2,
+        _ => 3,
+    }
+}
+
+/// (S3) the candidate that is really close to a misspelt name (see the module comment), or none
+pub(crate) fn suggest<'a>(name: &str, cands: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    pick(name, cands, false)
+}
+
+/// suggest() for a member of a namespace or type (name and candidates without the namespace):
+/// also a name of 2 characters that lacks a letter
+pub(crate) fn suggest_member<'a>(name: &str, cands: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    pick(name, cands, true)
+}
+
+fn pick<'a>(name: &str, cands: impl IntoIterator<Item = &'a str>, member: bool) -> Option<&'a str> {
+    let low = name.to_lowercase();
+    let n = low.chars().count();
+    let first = low.chars().next()?;
+    let max = bound(n);
+    // (distance, -common start, the candidate)
+    let mut best: Option<(usize, usize, &str)> = None;
+    for c in cands {
+        if c == name || c.is_empty() {
+            continue;
+        }
+        let cl = c.to_lowercase();
+        let d = if cl == low {
+            0
+        } else if n <= 2 {
+            // a short member that lacks a letter: ad -> add, bx -> box
+            if member && n == 2 && cl.chars().count() == 3 && distance(&low, &cl) == 1 { 1 } else { continue }
+        } else {
+            let d = distance(&low, &cl);
+            if d > max || (d >= 2 && !cl.starts_with(first)) {
+                continue;
+            }
+            d
+        };
+        let common = low.chars().zip(cl.chars()).take_while(|(x, y)| x == y).count();
+        if best.is_none_or(|(bd, bc, _)| (d, usize::MAX - common) < (bd, usize::MAX - bc)) {
+            best = Some((d, common, c));
+        }
+    }
+    best.map(|b| b.2)
 }
 
 impl<'a> Resolver<'a> {
@@ -109,24 +188,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// the closest visible or global name to a misspelt one (none for names of 1 or 2
-    /// characters)
+    /// the visible or global name a misspelt one is really close to (suggest)
     fn similar(&self, name: &str) -> Option<String> {
-        let max = match name.chars().count() {
-            0..=2 => return None,
-            3..=4 => 1,
-            _ => 2,
-        };
-        let mut best: Option<(usize, &str)> = None;
         let scoped = self.scopes.iter().flatten().map(|n| n.text.as_str());
         let top = self.top.iter().map(|d| d.0);
-        for c in scoped.chain(top).chain(self.globals.iter().copied()) {
-            let d = distance(name, c);
-            if d <= max && best.is_none_or(|(b, _)| d < b) {
-                best = Some((d, c));
-            }
-        }
-        best.map(|(_, c)| String::from(c))
+        suggest(name, scoped.chain(top).chain(self.globals.iter().copied())).map(String::from)
     }
 
     /// a name that is read (assign: written)
@@ -142,6 +208,11 @@ impl<'a> Resolver<'a> {
             return;
         }
         if self.globals.contains(&name) {
+            return;
+        }
+        if let Some(r) = self.removed.iter().find(|r| r.name == name) {
+            let msg = r.message(name);
+            self.report(sp, name.chars().count(), self.strict, msg);
             return;
         }
         let mut msg = format!("Unbekannter Name {}", name);

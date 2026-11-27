@@ -56,6 +56,23 @@
 //                                with properties, methods, events, operators; the language
 //                                services use it (ls::Context, ls::check; lsapi.rs infers the
 //                                types), Api::markdown / catalogue make the object catalogue
+//   (S3) the gaps the first S2 host (JFLib's modeltool) found:
+//   compile_api(name, src, &api) -> Result<Compiled, errors>   compile_with(api.names()) and the
+//                                warnings of ls::check(src, &api) from the same parse
+//                                (Compiled { program, warnings }); the modules it imports and
+//                                the scripts of Vm::add_script get the same checks, their
+//                                warnings come through Vm::take_warnings with their files
+//   signatures                   optional parameters (`name?: T`), forms (overloads: one name
+//                                declared several times), unions (`number | vec`), the type
+//                                number; api::bind(&forms, &args) -> Binding: which form fits a
+//                                call and which parameter each argument fills (also by name,
+//                                for the named arguments of S3); signature help shows the forms,
+//                                Api::check_calls lets ls::check count arguments against them
+//   messages                     a host object's type by the host's name ("str.split: sep muss
+//                                str sein, nicht mesh"), as type(x) gives it
+//   suggestions                  "meinst du x?" only for really close names (check::suggest);
+//                                Api / Type::removed("geom.move", "m.translate") names what to
+//                                take instead of a removed name
 //
 // Files: Diagnostic::file, Error::file and TraceLine::file name the file of a position (the
 // name given to parse / compile_named / compile_with, or a module's path).
@@ -270,8 +287,44 @@ pub fn compile_named(name: &str, src: &str) -> Result<Program, Vec<Diagnostic>> 
 pub fn compile_with(name: &str, src: &str, globals: &[&str]) -> Result<Program, Vec<Diagnostic>> {
     let known = known_names(globals);
     let (prog, mut d) = parse::parse_program(name, src);
-    d.extend(check::resolve_strict(&prog, &known));
-    finish(&prog, src, d, Some(globals.iter().map(|g| String::from(*g)).collect()), &[])
+    d.extend(check::resolve_strict(&prog, &known, &[]));
+    let strict = code::Strict { names: globals.iter().map(|g| String::from(*g)).collect(), api: None };
+    finish(&prog, src, d, Some(strict), &[])
+}
+
+/// (S3) what compile_api gives: the program and the warnings of the same parse
+#[derive(Clone)]
+pub struct Compiled {
+    pub program: Program,
+    /// the warnings ls::check(src, &api) gives (the file named), by position
+    pub warnings: Vec<Diagnostic>,
+}
+
+/// (S3) compile_with(name, src, &api.names()) and the warnings of the language services in one
+/// parse: Ok with the program and the warnings ls::check(src, &api) gives -- members a known
+/// host type does not have, removed names, a division of two ints, a top-level let read before
+/// it ran, with Api::check_calls calls whose arguments fit no form --, each with the file;
+/// Err: the errors, as compile_with gives them (unknown names are errors; removed ones say what
+/// to take instead).  The modules the program imports (Host::load) and the scripts of
+/// Vm::add_script are compiled the same way, and their warnings, named by their files, come
+/// with the VM's own through Vm::take_warnings
+pub fn compile_api(name: &str, src: &str, api: &Api) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_api_in(name, src, api, None)
+}
+
+/// compile_api; shared: the description as the program has it (a module's: no copy)
+fn compile_api_in(name: &str, src: &str, api: &Api, shared: Option<&Arc<Api>>) -> Result<Compiled, Vec<Diagnostic>> {
+    let (prog, mut d) = parse::parse_program(name, src);
+    d.extend(lsapi::check_names(&prog, api, &[]));
+    if !d.iter().any(|x| x.error) {
+        d.extend(lsapi::check_members(&prog, src, api));
+    }
+    d.sort_by_key(|x| (x.line, x.col));
+    let warnings = named(name, d.iter().filter(|x| !x.error).cloned().collect());
+    let api = shared.cloned().unwrap_or_else(|| Arc::new(api.clone()));
+    let strict = code::Strict { names: api.names().into_iter().map(String::from).collect(), api: Some(api) };
+    let program = finish(&prog, src, d, Some(strict), &[])?;
+    Ok(Compiled { program, warnings })
 }
 
 /// the names compile_with knows: the built-ins, the standard library, the host's
@@ -287,17 +340,38 @@ pub(crate) fn known_names<'a>(globals: &[&'a str]) -> Vec<&'a str> {
     known
 }
 
+/// a module the VM imports, compiled the way its program was (compile_named, compile_with with
+/// the same names, compile_api with the same description) -> the program and (compile_api) its
+/// warnings
+pub(crate) fn compile_module(path: &str, src: &str, strict: Option<&code::Strict>) -> Result<(Program, Vec<Diagnostic>), Vec<Diagnostic>> {
+    match strict {
+        Some(code::Strict { api: Some(api), .. }) => compile_api_in(path, src, api, Some(api)).map(|c| (c.program, c.warnings)),
+        Some(s) => {
+            let g: Vec<&str> = s.names.iter().map(|s| s.as_str()).collect();
+            compile_with(path, src, &g).map(|p| (p, Vec::new()))
+        }
+        None => compile_named(path, src).map(|p| (p, Vec::new())),
+    }
+}
+
 /// a further script of a VM (Vm::add_script), compiled the way its program was (strict: the host's
-/// names of compile_with); `shared` are the top-level names of the scripts before it
-pub(crate) fn compile_shared(name: &str, src: &str, strict: Option<&[String]>, shared: &[String]) -> Result<Program, Vec<Diagnostic>> {
+/// names of compile_with, the description of compile_api); `shared` are the top-level names of
+/// the scripts before it -> the program and (compile_api) its warnings
+pub(crate) fn compile_shared(name: &str, src: &str, strict: Option<&code::Strict>, shared: &[String]) -> Result<(Program, Vec<Diagnostic>), Vec<Diagnostic>> {
     let (prog, mut d) = parse::parse_program(name, src);
     let names: Vec<&str> = shared.iter().map(|s| s.as_str()).collect();
     match strict {
-        Some(g) => {
-            let g: Vec<&str> = g.iter().map(|s| s.as_str()).collect();
+        Some(code::Strict { api: Some(api), .. }) => {
+            d.extend(lsapi::check_names(&prog, api, &names));
+            if !d.iter().any(|x| x.error) {
+                d.extend(lsapi::check_members(&prog, src, api));
+            }
+        }
+        Some(s) => {
+            let g: Vec<&str> = s.names.iter().map(|s| s.as_str()).collect();
             let mut known = known_names(&g);
             known.extend_from_slice(&names);
-            d.extend(check::resolve_strict(&prog, &known));
+            d.extend(check::resolve_strict(&prog, &known, &[]));
         }
         None => {
             let mut known = names;
@@ -305,12 +379,20 @@ pub(crate) fn compile_shared(name: &str, src: &str, strict: Option<&[String]>, s
             d.extend(check::resolve(&prog, &known));
         }
     }
-    finish(&prog, src, d, strict.map(|g| g.to_vec()), shared)
+    let warnings = match strict {
+        Some(code::Strict { api: Some(_), .. }) => {
+            d.sort_by_key(|x| (x.line, x.col));
+            named(name, d.iter().filter(|x| !x.error).cloned().collect())
+        }
+        _ => Vec::new(),
+    };
+    finish(&prog, src, d, strict.cloned(), shared).map(|p| (p, warnings))
 }
 
 /// the program, or the errors among the diagnostics of parsing and resolving (with the file);
-/// strict: the host's names of compile_with, for the modules the program imports
-fn finish(prog: &ast::Program, src: &str, mut d: Vec<Diagnostic>, strict: Option<Vec<String>>, shared: &[String]) -> Result<Program, Vec<Diagnostic>> {
+/// strict: the host's names of compile_with (and the description of compile_api), for the
+/// modules the program imports
+fn finish(prog: &ast::Program, src: &str, mut d: Vec<Diagnostic>, strict: Option<code::Strict>, shared: &[String]) -> Result<Program, Vec<Diagnostic>> {
     d.retain(|x| x.error);
     if !d.is_empty() {
         d.sort_by_key(|x| (x.line, x.col));

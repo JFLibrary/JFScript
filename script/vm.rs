@@ -225,7 +225,8 @@ pub struct Position {
 }
 
 /// (S1) a warning a native gave with Cx::warn: the script's call that reached it and the
-/// host's text; the script goes on
+/// host's text; the script goes on.  (S3) Also a warning of the language services on a module
+/// or script the VM compiled for a program of compile_api: its file, line and column
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Warning {
     pub file: String,
@@ -590,9 +591,10 @@ pub struct Vm {
     /// a frame of code the running exec does not hold yet was pushed (import, a function of
     /// a module linked in a callback): exec returned Yielded for it, its caller calls it again
     pub(crate) relink: bool,
-    /// (S1) what natives warned about (Cx::warn), until the host takes it
-    warnings: Vec<Warning>,
-    warnings_dropped: u64,
+    /// (S1) what natives warned about (Cx::warn), (S3) the warnings of the modules and scripts
+    /// compiled for a compile_api program (module.rs), until the host takes them
+    pub(crate) warnings: Vec<Warning>,
+    pub(crate) warnings_dropped: u64,
     /// (S2) the host's type names (HostObj::ty indexes them) and their str for type(x) (made
     /// on demand, roots)
     types: Vec<&'static str>,
@@ -693,7 +695,7 @@ impl Vm {
             return Err(usage(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
         }
         let Value::Func(r) = f else {
-            return Err(usage(format!("{} ist keine Funktion", f.type_name())));
+            return Err(usage(format!("{} ist keine Funktion", self.type_of(f))));
         };
         if !self.valid(f) || !args.iter().all(|a| self.valid(*a)) {
             return Err(invalid());
@@ -1660,8 +1662,10 @@ impl Vm {
         &self.warnings
     }
 
-    /// the warnings natives gave since the last take_warnings, emptying the list; at most
-    /// MAX_WARNINGS are kept in between, later ones only counted (warnings_dropped)
+    /// the warnings natives gave since the last take_warnings, (S3) with those of the modules
+    /// and scripts compiled for a program of compile_api in the order they came, emptying the
+    /// list; at most MAX_WARNINGS are kept in between, later ones only counted
+    /// (warnings_dropped)
     pub fn take_warnings(&mut self) -> Vec<Warning> {
         core::mem::take(&mut self.warnings)
     }
@@ -2070,7 +2074,7 @@ impl Vm {
                         None => msg(format!("int(…): \"{}\" ist keine ganze Zahl", s)),
                     }
                 }
-                v => msg(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", v.type_name())),
+                v => msg(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             Builtin::Float => match a {
                 Value::Float(_) => Ok(a),
@@ -2082,7 +2086,7 @@ impl Vm {
                         Err(_) => msg(format!("float(…): \"{}\" ist keine Zahl", s)),
                     }
                 }
-                v => msg(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", v.type_name())),
+                v => msg(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             // call_native runs these with the host
             Builtin::Lib(_) | Builtin::Import => internal(),
@@ -2431,7 +2435,7 @@ impl Vm {
                         let at = base + b as usize;
                         match (self.stack[at], self.stack[at + 1]) {
                             (Value::Int(_), Value::Int(_)) => Ok(()),
-                            (Value::Int(_), v) | (v, _) => msg(format!("Ein Bereich a..b braucht ganze Zahlen, nicht {}", v.type_name())),
+                            (Value::Int(_), v) | (v, _) => msg(format!("Ein Bereich a..b braucht ganze Zahlen, nicht {}", self.type_of(v))),
                         }
                     }
                     Op::RangeNext(b, t) => {
@@ -2599,7 +2603,7 @@ impl Vm {
         let mut m = Map::default();
         for i in 0..n {
             let (k, v) = (self.stack[start + 2 * i], self.stack[start + 2 * i + 1]);
-            let Some(key) = self.heap.key(k) else { return key_error(k) };
+            let Some(key) = self.heap.key(k) else { return key_error(self.type_of(k)) };
             match m.find(&self.heap.objs, key) {
                 Some(p) => m.entries[p].val = v,
                 None => m.push(k, key.hash(), v),
@@ -2659,7 +2663,7 @@ impl Vm {
     pub(crate) fn set_key(&mut self, m: Value, k: Value, v: Value) -> Result<(), Exc> {
         let Value::Map(r) = m else { return msg(format!("{} ist keine Map", m.type_name())) };
         if self.heap.key(k).is_none() {
-            return key_error(k);
+            return key_error(self.type_of(k));
         }
         self.reserve(48)?;
         self.heap.map_set(r, k, v);
@@ -2681,7 +2685,7 @@ impl Vm {
                 }
             }
             (Value::Map(m), k) => {
-                let Some(key) = self.heap.key(k) else { return key_error(k) };
+                let Some(key) = self.heap.key(k) else { return key_error(self.type_of(k)) };
                 self.heap.map_find(m, key).map_or(Value::Nil, |i| self.heap.map(m).entries[i].val)
             }
             (Value::Str(s), Value::Int(i)) => {
@@ -3264,8 +3268,8 @@ fn plain(e: Exc) -> Error {
     }
 }
 
-fn key_error<T>(k: Value) -> Result<T, Exc> {
-    msg(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", k.type_name()))
+fn key_error<T>(ty: &str) -> Result<T, Exc> {
+    msg(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", ty))
 }
 
 fn to_float(v: Value) -> f64 {

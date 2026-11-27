@@ -34,7 +34,9 @@
 //                                    comment, or the description of a library or host name
 //   signature(src, pos, &cx) -> Option<Signature>   inside the parentheses of a call: the
 //                                    function's label, the parameters' ranges in it, the one
-//                                    at pos (commas counted)
+//                                    at pos (commas counted); (S3) every form (overload) of a
+//                                    host function or method, the one shown the first with room
+//                                    for the arguments typed so far whose known types fit
 //   folding(src) -> Vec<Fold>        blocks, /* */ comments and runs of // lines, lists, maps
 //                                    and calls over several lines: the first line stays, the
 //                                    rest up to `end` folds (a closing line of its own stays)
@@ -47,7 +49,10 @@
 //                                    signature take either (`&cx` of both, or `&api`)
 //   check(src, cx) -> Vec<Diagnostic>   (S2) the editor's diagnostics for a host: syntax, the
 //                                    names (unknown ones are errors, as compile_with makes
-//                                    them), and with an Api the members of known host types
+//                                    them), and with an Api the members of known host types,
+//                                    (S3) removed names and, with Api::check_calls, calls
+//                                    whose number of arguments fits none of their forms; its
+//                                    warnings are what script::compile_api gives
 //   apply(src, &edits) -> String     the source with edits; is_name(s) a valid new name;
 //                                    library_doc(name) the parameters and description of a
 //                                    built-in or library name (lsdoc.rs)
@@ -68,7 +73,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::api::{Api, GlobalKind};
+use crate::api::{Api, GlobalKind, Sig};
 use crate::ast::*;
 use crate::lex::{self, Tok, TokKind};
 use crate::lsapi::{self, Known, Types};
@@ -342,7 +347,8 @@ impl Hover {
     }
 }
 
-/// signature help inside a call
+/// signature help inside a call: the form the arguments typed so far fit (label, params, active,
+/// doc), and (S3) every form of the function
 #[derive(Clone, Debug, PartialEq)]
 pub struct Signature {
     /// "greet(name, greeting)", "s.split(sep, n)"
@@ -350,6 +356,23 @@ pub struct Signature {
     /// the bytes of each parameter in label
     pub params: Vec<(u32, u32)>,
     /// the parameter at the position (params.len(): none of them)
+    pub active: usize,
+    pub doc: String,
+    /// (S3) the forms (overloads) in the host's order; one for most functions
+    pub forms: Vec<Form>,
+    /// which of them the fields above are: the first with room for the argument at the position
+    /// whose finished arguments fit where their types are known, else the first with room
+    pub form: usize,
+}
+
+/// (S3) a form of a function in signature help
+#[derive(Clone, Debug, PartialEq)]
+pub struct Form {
+    /// "vec(x: float, y: float, z: float): vec"
+    pub label: String,
+    /// the bytes of each parameter in label
+    pub params: Vec<(u32, u32)>,
+    /// the parameter at the position in this form (params.len(): none of them)
     pub active: usize,
     pub doc: String,
 }
@@ -1355,8 +1378,9 @@ fn typed_members(types: Option<&Types>, k: Known, cx: &Context, c: &mut Vec<Cand
             }
         }
         Known::Ty(t) => {
-            let lib = crate::api::list_of(&t).map_or(t.as_str(), |_| "list");
-            if let Some(ty) = api.get_type(&t) {
+            let t = crate::api::member_type(&t);
+            let lib = crate::api::list_of(t).map_or(t, |_| "list");
+            if let Some(ty) = api.get_type(t) {
                 for p in &ty.props {
                     let ro = if p.readonly { " (nur lesbar)" } else { "" };
                     c.push(Cand { item: Item { label: p.name.clone(), kind: ItemKind::Value, detail: format!("{}.{}{}", ty.name, p.label().trim_start_matches("readonly "), ro), doc: p.doc.clone() }, rank: 2 });
@@ -1462,6 +1486,12 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
     if let Some(g) = cx.api.and_then(|api| api.global(name).map(|g| (api, g))) {
         let it = global_item(g.0, name, g.1);
         let kind = if it.kind == ItemKind::Module { "Namensraum des Hosts" } else { "Name des Hosts" };
+        // (S3) a function with several forms: each on a line of its own
+        let forms = global_forms(g.0, name);
+        if forms.len() > 1 {
+            let (sig, doc) = forms_text(&forms);
+            return Some(Hover { span, sig, kind: String::from(kind), doc });
+        }
         return Some(Hover { span, sig: it.detail, kind: String::from(kind), doc: it.doc });
     }
     if let Some(h) = cx.host.iter().find(|h| h.name == name) {
@@ -1479,27 +1509,73 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
     None
 }
 
+/// (S3) a form of a host function or method: its label ("vec(x: float): vec"), description and
+/// signature
+type FormOf<'a> = (String, String, &'a Sig);
+
+/// (S3) the forms of a global function of the description, in their order
+fn global_forms<'a>(api: &'a Api, name: &str) -> Vec<FormOf<'a>> {
+    api.funcs(name)
+        .into_iter()
+        .filter_map(|g| match &g.kind {
+            GlobalKind::Func(s) => Some((s.label(name), g.doc.clone(), s)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// (S3) the forms of member `name` of a receiver whose type the description tells: a namespace's
+/// function, a host type's method (none: it has no such function or method)
+fn typed_forms<'a>(api: &'a Api, k: &Known, name: &str) -> Vec<FormOf<'a>> {
+    match k {
+        Known::Ns(ns) => global_forms(api, &format!("{}.{}", ns, name)),
+        Known::Ty(t) => match api.get_type(crate::api::member_type(t)) {
+            Some(ty) => ty.find_methods(name).into_iter().map(|m| (m.sig.label(&format!("{}.{}", ty.name, m.name)), m.doc.clone(), &m.sig)).collect(),
+            None => Vec::new(),
+        },
+    }
+}
+
+/// the forms for a hover: their labels on lines of their own, their descriptions (each once)
+fn forms_text(forms: &[FormOf]) -> (String, String) {
+    let sigs: Vec<&str> = forms.iter().map(|f| f.0.as_str()).collect();
+    let mut docs: Vec<&str> = Vec::new();
+    for f in forms {
+        if !f.1.is_empty() && !docs.contains(&f.1.as_str()) {
+            docs.push(&f.1);
+        }
+    }
+    (sigs.join("\n"), docs.join("\n"))
+}
+
 /// (S2) (declaration, kind, doc) of member `name` of a receiver whose type the description
 /// tells; None when it does not have one of that name
 fn typed_member_doc(api: &Api, k: Known, name: &str) -> Option<(String, String, String)> {
+    let forms = typed_forms(api, &k, name);
     match k {
         Known::Ns(ns) => {
             let full = format!("{}.{}", ns, name);
             let g = api.global(&full)?;
             let it = global_item(api, name, g);
+            if forms.len() > 1 {
+                let (sig, doc) = forms_text(&forms);
+                return Some((sig, String::from("Name des Hosts"), doc));
+            }
             Some((it.detail, String::from("Name des Hosts"), it.doc))
         }
         Known::Ty(t) => {
-            let lib = crate::api::list_of(&t).map_or(t.as_str(), |_| "list");
-            let Some(ty) = api.get_type(&t) else {
+            let t = crate::api::member_type(&t);
+            let lib = crate::api::list_of(t).map_or(t, |_| "list");
+            let Some(ty) = api.get_type(t) else {
                 return method_doc(lib, name).map(|(s, d)| (s, String::from("Standardbibliothek"), d));
             };
             if let Some(p) = ty.find_prop(name) {
                 let ro = if p.readonly { ", nur lesbar" } else { "" };
                 return Some((format!("{}.{}", ty.name, p.label().trim_start_matches("readonly ")), format!("Eigenschaft von {}{}", ty.name, ro), p.doc.clone()));
             }
-            if let Some(m) = ty.find_method(name) {
-                return Some((m.sig.label(&format!("{}.{}", ty.name, m.name)), format!("Methode von {}", ty.name), m.doc.clone()));
+            if !forms.is_empty() {
+                let (sig, doc) = forms_text(&forms);
+                return Some((sig, format!("Methode von {}", ty.name), doc));
             }
             if (name == "on" || name == "off") && !ty.events.is_empty() {
                 let evs: Vec<String> = ty.events.iter().map(|e| e.label()).collect();
@@ -1583,13 +1659,26 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
     let dot = f.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Dot);
     let (prog, _) = crate::parse_partial("", src);
     let idx = index_of(&prog, src);
-    let (label, doc) = match dot {
+    let types = cx.api.map(|api| lsapi::infer(&prog, &idx, api));
+    // (S3) the forms: (label, doc, the signature when the description has one)
+    let found: Vec<(String, String, Option<&Sig>)> = match dot {
         Some(d) => {
             // the receiver as the full list sees it (for its symbol)
-            let types = cx.api.map(|api| lsapi::infer(&prog, &idx, api));
             let r = d.checked_sub(1).map(|j| all.partition_point(|t| t.start < toks[j].start)).filter(|&j| j < all.len());
-            let (sig, _, doc) = member_doc(src, &all, &idx, r, name, cx, types.as_ref())?;
-            (sig.split(" · ").next().unwrap_or("").to_string(), doc)
+            let known = match (&types, r) {
+                (Some(t), Some(rr)) => t.chain(src, &all, rr),
+                _ => None,
+            };
+            let typed = match (cx.api, &known) {
+                (Some(api), Some(k)) => typed_forms(api, k, name),
+                _ => Vec::new(),
+            };
+            if typed.is_empty() {
+                let (sig, _, doc) = member_doc(src, &all, &idx, r, name, cx, types.as_ref())?;
+                alloc::vec![(sig.split(" · ").next().unwrap_or("").to_string(), doc, None)]
+            } else {
+                typed.into_iter().map(|(l, d, s)| (l, d, Some(s))).collect()
+            }
         }
         None => match idx.sym_of(name, toks[f].start) {
             Some(s) => {
@@ -1597,23 +1686,52 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
                 if s.kind != SymKind::Fn && s.ty != "fn" && s.kind != SymKind::Param {
                     return None;
                 }
-                (format!("{}({})", s.name, s.params.join(", ")), s.doc.clone())
+                alloc::vec![(format!("{}({})", s.name, s.params.join(", ")), s.doc.clone(), None)]
             }
-            None => match (cx.api.and_then(|a| a.global(name)), cx.host.iter().find(|h| h.name == name && h.params.is_some()), lsdoc::doc(name)) {
-                (Some(g), _, _) if matches!(g.kind, GlobalKind::Func(_)) => {
-                    let GlobalKind::Func(s) = &g.kind else { return None };
-                    (s.label(name), g.doc.clone())
+            None => {
+                let typed = cx.api.map(|a| global_forms(a, name)).unwrap_or_default();
+                match (typed.is_empty(), cx.host.iter().find(|h| h.name == name && h.params.is_some()), lsdoc::doc(name)) {
+                    (false, _, _) => typed.into_iter().map(|(l, d, s)| (l, d, Some(s))).collect(),
+                    (true, Some(h), _) => alloc::vec![(host_detail(h), String::from(h.doc), None)],
+                    (true, None, Some(d)) if d.params.is_some() => alloc::vec![(lib_detail(d, false), String::from(d.text), None)],
+                    _ => return None,
                 }
-                (_, Some(h), _) => (host_detail(h), String::from(h.doc)),
-                (_, None, Some(d)) if d.params.is_some() => (lib_detail(d, false), String::from(d.text)),
-                _ => return None,
-            },
+            }
         },
     };
-    let params = param_ranges(&label);
-    let variadic = label.contains("..");
-    let active = if commas >= params.len() && variadic && !params.is_empty() { params.len() - 1 } else { commas.min(params.len()) };
-    Some(Signature { label, params, active, doc })
+    // (S3) the form of the arguments typed so far: one with room for the argument at the caret
+    // whose finished arguments' types (where known) fit, else one with room, else the first
+    let given = match &types {
+        Some(t) => t.arg_types(src, &all, all.partition_point(|x| x.start < toks[o].start), all.partition_point(|x| x.end <= pos), false),
+        None => Vec::new(),
+    };
+    let takes = |s: &Sig, typed: bool| -> bool {
+        if s.arity().1.is_some_and(|m| commas >= m.max(1)) {
+            return false;
+        }
+        let rest = s.params.iter().position(|p| p.rest);
+        !typed
+            || given.iter().enumerate().all(|(i, t)| {
+                let p = match rest {
+                    Some(r) if r <= i => s.params.get(r),
+                    _ => s.params.get(i),
+                };
+                p.is_none_or(|p| crate::api::fits(t, &p.ty) || (t == "nil" && p.optional))
+            })
+    };
+    let pick = |typed: bool| found.iter().position(|f| f.2.is_none_or(|s| takes(s, typed)));
+    let form = pick(true).or_else(|| pick(false)).unwrap_or(0);
+    let forms: Vec<Form> = found
+        .iter()
+        .map(|(label, doc, _)| {
+            let params = param_ranges(label);
+            let variadic = label.contains("..");
+            let active = if commas >= params.len() && variadic && !params.is_empty() { params.len() - 1 } else { commas.min(params.len()) };
+            Form { label: label.clone(), params, active, doc: doc.clone() }
+        })
+        .collect();
+    let cur = forms[form].clone();
+    Some(Signature { label: cur.label, params: cur.params, active: cur.active, doc: cur.doc, forms, form })
 }
 
 /// the bytes of the parameters inside the parentheses of a label "f(a, b, ..)" (commas inside
@@ -1893,27 +2011,26 @@ fn nested_expr(e: &Expr, idx: &Index, out: &mut Vec<DocSymbol>) {
 
 /// see the module comment: syntax errors; with an Api or HostItems the names against theirs,
 /// the built-ins and the library (an unknown one is an error, as compile_with makes it), else
-/// against script::GLOBALS as script::check; with an Api the members of known host types
-/// (warnings: lsapi.rs); sorted by position
+/// against script::GLOBALS as script::check; with an Api the members of known host types,
+/// (S3) removed names and with Api::check_calls the number of arguments of calls (warnings:
+/// lsapi.rs; the same as script::compile_api gives); sorted by position
 pub fn check<'a>(src: &str, cx: impl Into<Context<'a>>) -> Vec<Diagnostic> {
     let cx: Context = cx.into();
     let (prog, mut d) = crate::parse_partial("", src);
-    if cx.api.is_none() && cx.host.is_empty() {
-        d.extend(crate::check::resolve(&prog, crate::GLOBALS));
-    } else {
-        let mut names: Vec<&str> = cx.api.map(|a| a.names()).unwrap_or_default();
-        for h in cx.host {
-            let root = h.name.split('.').next().unwrap_or(h.name);
-            if !names.contains(&root) {
-                names.push(root);
-            }
+    let mut roots: Vec<&str> = Vec::new();
+    for h in cx.host {
+        let root = h.name.split('.').next().unwrap_or(h.name);
+        if !roots.contains(&root) {
+            roots.push(root);
         }
-        d.extend(crate::check::resolve_strict(&prog, &crate::known_names(&names)));
     }
-    if let Some(api) = cx.api {
-        let idx = index_of(&prog, src);
-        let types = lsapi::infer(&prog, &idx, api);
-        d.extend(lsapi::diagnostics(&prog, &types, src));
+    match cx.api {
+        Some(api) => {
+            d.extend(lsapi::check_names(&prog, api, &roots));
+            d.extend(lsapi::check_members(&prog, src, api));
+        }
+        None if roots.is_empty() => d.extend(crate::check::resolve(&prog, crate::GLOBALS)),
+        None => d.extend(crate::check::resolve_strict(&prog, &crate::known_names(&roots), &[])),
     }
     d.sort_by_key(|x| (x.line, x.col));
     d

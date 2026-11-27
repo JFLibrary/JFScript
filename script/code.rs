@@ -23,6 +23,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crate::api::Api;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Op {
     /// +1: nil, true, false
@@ -236,9 +238,18 @@ pub(crate) struct Code {
     pub consts: Vec<Const>,
     pub globals: Vec<String>,
     pub hosts: Vec<HostName>,
-    /// the host's names when compile_with made it (None: compile, compile_named); the
-    /// modules a script imports compile the same way
-    pub strict: Option<Vec<String>>,
+    /// the host's names when compile_with or compile_api made it (None: compile,
+    /// compile_named); the modules a script imports compile the same way
+    pub strict: Option<Strict>,
+}
+
+/// how compile_with / (S3) compile_api made a program: the host's names and the description of
+/// compile_api (its modules and further scripts get its checks, their warnings go to
+/// Vm::take_warnings)
+#[derive(Clone, Debug)]
+pub(crate) struct Strict {
+    pub names: Vec<String>,
+    pub api: Option<Arc<Api>>,
 }
 
 /// where an instruction is in the source (Program::line_table); the file is Program::name

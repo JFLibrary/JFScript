@@ -158,7 +158,7 @@ pub(crate) fn encode(vm: &mut Vm, v: Value, indent: u32) -> Result<String, Exc> 
 
 /// json.encode(v, indent)
 pub(crate) fn encode_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let indent = match opt_int("json.encode", a, 1, "indent")? {
+    let indent = match opt_int(vm, "json.encode", a, 1, "indent")? {
         None => 0,
         Some(n @ 0..=8) => n as u32,
         Some(n) => return err(format!("json.encode: indent muss zwischen 0 und 8 liegen, nicht {}", n)),
@@ -256,7 +256,7 @@ pub(crate) fn decode_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
     let len = match arg(a, 0) {
         Value::Str(r) => heap::text(&vm.heap, r).len(),
         Value::Bytes(r) => vm.heap.bytes_of(r).len(),
-        v => return bad("json.decode", "text", "str oder bytes", v),
+        v => return bad(vm, "json.decode", "text", "str oder bytes", v),
     };
     spend(vm, text_fuel(len))?;
     let tree = match arg(a, 0) {
