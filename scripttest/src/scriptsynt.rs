@@ -661,6 +661,9 @@ fn formatter(t: &mut T) {
         ("let l = [ // all\n  x for x in xs // here\n]", "let l = [ // all\n  x for x in xs // here\n]"),
         ("fn f(cb=fn(){return 1}){}", "fn f(cb = fn() {\n  return 1\n}) {}"),
         ("let x = c /* a */ ? 1 /* b */ : 2 // c", "let x = c /* a */ ? 1 /* b */ : 2 // c"),
+        ("fn f(a, // first\nb = /* two */ 2 // zwei\n) {}", "fn f(a, // first\n  b = /* two */ 2 // zwei\n) {}"),
+        ("let {a, // eins\nb: [c, ...d]} = m", "let {a, // eins\n  b: [c, ...d]} = m"),
+        ("f(\n// vorher\nw: 1 // w\n)", "f(\n  // vorher\n  w: 1 // w\n)"),
     ];
     for (i, (src, want)) in cases.iter().enumerate() {
         let got = script::fmt::format(src);

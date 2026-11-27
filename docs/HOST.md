@@ -417,10 +417,10 @@ existing host needs no change:
   host set with `set_global` (`config`) counts as the host's name there.
 * `obj.on(..)` and `obj.off(..)` take `event:` and `f:`; the library takes the names of its
   descriptions; a script function its parameters' names.
-* What a host may change: nothing. The parameter names of the description are part of its
-  interface now (G9.3: English) and should not change lightly; a host that wants the names
-  itself binds as above with `Arg::named` -- the VM gives it the values only (to hand it the
-  names too would cost a second calling convention; not in S3).
+* What a host must change: nothing. The parameter names of its description are part of its
+  interface now (G9.3: English) and should not change lightly. A host does not see which
+  arguments were named -- the VM hands it the values in parameter order only; handing it the
+  names as well would need a second calling convention, so that is not in S3.
 
 ### Compiling with the description (S3)
 
