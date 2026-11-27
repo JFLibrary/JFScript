@@ -6,16 +6,19 @@
 // errors of getters, setters and operators with their positions, fuel and limits in hooks and
 // listeners, yields in a hook, slices and clones; and the same host's description (script::Api)
 // in the language services (completion after a dot, hover, signature help, diagnostics of
-// unknown members) and the object catalogue
+// unknown members) and the object catalogue.  (S3) The gaps the first S2 host found: forms
+// (overloads), optional parameters and unions in signatures, binding a call (also by name),
+// counting arguments (check_calls), compile_api with the warnings of the same parse (also of
+// modules and add_script), the host's type names in messages, closer suggestions, removed names
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use script::api::{EntryKind, Type};
+use script::api::{self, Arg, EntryKind, Mismatch, Type};
 use script::ls::{self, CompleteCx, Context, HostItem, ItemKind};
-use script::{num, Api, Cx, ErrorKind, Fail, Host, Limits, Object, Operator, Status, Value, Vm};
+use script::{num, Api, Cx, ErrorKind, Fail, Host, Limits, Object, Operator, Status, Value, Vm, Warning};
 
 use crate::T;
 
@@ -49,6 +52,8 @@ struct TestHost {
     /// Host::listen: "on click", "off input"
     listens: Vec<String>,
     log: Vec<String>,
+    /// (S3) the modules Host::load gives: (path, source)
+    files: Vec<(String, String)>,
 }
 
 impl TestHost {
@@ -62,6 +67,7 @@ impl TestHost {
             dropped: Vec::new(),
             listens: Vec::new(),
             log: Vec::new(),
+            files: Vec::new(),
         }
     }
 
@@ -113,6 +119,10 @@ fn len3(a: [f64; 3]) -> f64 {
 }
 
 impl Host for TestHost {
+    fn load(&mut self, _cx: &mut Cx, path: &str) -> Result<String, String> {
+        self.files.iter().find(|f| f.0 == path).map(|f| f.1.clone()).ok_or_else(|| String::from("die Datei gibt es nicht"))
+    }
+
     fn call(&mut self, cx: &mut Cx, name: &str, args: &[Value]) -> Result<Value, Fail> {
         let arg = |i: usize| args.get(i).copied().unwrap_or(Value::Nil);
         match name {
@@ -441,6 +451,14 @@ pub fn run(t: &mut T) {
     services(t);
     diagnostics(t);
     catalogue(t);
+    forms(t);
+    binding(t);
+    calls(t);
+    form_services(t);
+    form_catalogue(t);
+    compiled(t);
+    type_names(t);
+    suggestions(t);
 }
 
 // ---------------------------------------------------------------- the VM
@@ -1081,7 +1099,7 @@ fn catalogue(t: &mut T) {
     // validate tells what does not fit
     let bad = Api::new("x")
         .func("f(a: shape): nope", "")
-        .func("f(): int", "")
+        .value("f: int", "")
         .typ(Type::new("p", "").prop("q: int", "").method("q(): int", "").method("on(): nil", "").op("int + int: int", "").event("e: unknown", ""))
         .typ(Type::new("str", ""));
     let v = bad.validate();
@@ -1099,4 +1117,409 @@ fn catalogue(t: &mut T) {
         t.check(&format!("validate: {}", w), v.iter().any(|x| x == w));
     }
     t.eq("validate: nothing else", v.len(), want.len());
+}
+
+// ---------------------------------------------------------------- (S3) the gaps the first S2 host found
+
+/// (S3) a description with forms (overloads), optional parameters, unions and removed names,
+/// whose calls are counted (check_calls)
+fn api3() -> Api {
+    Api::new("Testhost S3")
+        .doc("Formen, optionale Parameter, Vereinigungen.")
+        .func("vec(x: float, y: float, z?: float): vec", "Ein Vektor aus Zahlen.")
+        .func("vec(v: vec | list): vec", "Ein Vektor aus einem Vektor oder einer Liste.")
+        .func("vec.dot(a: vec, b: vec): float", "Das Skalarprodukt.")
+        .func("cube(size: number = 1): mesh", "Ein Würfel.")
+        .func("load(path: str): mesh", "Ein Netz aus einer Datei.")
+        .func("load(id: int): vec", "Ein gespeicherter Punkt.")
+        .func("put(v: vec, at?: int): nil", "Legt einen Punkt ab.")
+        .func("put(s: str, at?: int): nil", "Legt einen Text ab.")
+        .func("pick(a: number | vec): number | vec", "Das Argument.")
+        .namespace("geom", "Körper.")
+        .func("geom.box(w: float, h: float, d: float): mesh", "Ein Quader.")
+        .func("geom.cone(r: float, h: float): mesh", "Ein Kegel.")
+        .func("geom.merge(...meshes: mesh): mesh", "Zusammengefügt.")
+        .removed("geom.move", "m.translate")
+        .removed("box", "geom.box")
+        .value("sel: mesh | nil", "Die Auswahl, wenn es eine gibt.")
+        .typ(Type::new("vec", "Ein Vektor.").value().prop("readonly x: float", "Die x-Komponente.").method("length(): float", "Die Länge."))
+        .typ(
+            Type::new("mesh", "Ein Netz.")
+                .prop("readonly faces: int", "Die Zahl der Flächen.")
+                .method("translate(x: float, y: float, z: float): mesh", "Verschoben um x, y, z.")
+                .method("translate(v: vec): mesh", "Verschoben um v.")
+                .method("scale(s: number | vec): mesh", "Skaliert.")
+                .method("bevel(width: float, segments?: int): mesh", "Abgeschrägt.")
+                .removed("move", "translate"),
+        )
+        .check_calls()
+}
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| String::from(*s)).collect()
+}
+
+/// optional parameters, unions, forms as the description has them; fits
+fn forms(t: &mut T) {
+    let a = api3();
+    t.eq("forms: the description is whole", a.validate(), Vec::<String>::new());
+    let v = a.sigs("vec");
+    t.eq("forms: vec has two", v.iter().map(|s| s.label("vec")).collect::<Vec<_>>(), strings(&["vec(x: float, y: float, z?: float): vec", "vec(v: vec | list): vec"]));
+    let p = &v[0].params[2];
+    t.eq("optional: z?", (p.name.as_str(), p.ty.as_str(), p.optional, p.default.clone(), p.rest), ("z", "float", true, None, false));
+    t.eq("a union", v[1].params[0].ty.as_str(), "vec | list");
+    t.eq("arity", (v[0].arity(), v[1].arity(), a.sigs("geom.merge")[0].arity(), a.sigs("cube")[0].arity()), ((2, Some(3)), (1, Some(1)), (0, None), (0, Some(1))));
+    // the signatures of S2 mean what they meant (a default makes a parameter optional)
+    let old = Api::new("s2").func("f(a: float, b: int = 1, ...rest): mesh", "");
+    let s = old.sigs("f")[0];
+    t.eq(
+        "S2 parameters",
+        s.params.iter().map(|p| (p.name.as_str(), p.ty.as_str(), p.default.as_deref(), p.rest, p.optional)).collect::<Vec<_>>(),
+        vec![("a", "float", None, false, false), ("b", "int", Some("1"), false, true), ("rest", "", None, true, false)],
+    );
+    t.eq("S2 label", s.label("f"), String::from("f(a: float, b: int = 1, ...rest): mesh"));
+    // unions written without blanks, in properties and results
+    let u = Api::new("u").func("f(a: int|str): vec|nil", "").typ(Type::new("vec", "").prop("p:int | list<vec>", ""));
+    let f = u.sigs("f")[0];
+    t.eq("union text", (f.params[0].ty.as_str(), f.ret.as_str(), u.types[0].props[0].ty.as_str()), ("int | str", "vec | nil", "int | list<vec>"));
+    t.eq("union valid", u.validate(), Vec::<String>::new());
+    // the forms of a method; global() and find_method() give the first
+    let m = a.get_type("mesh").unwrap();
+    t.eq("method forms", m.sigs("translate").len(), 2);
+    t.eq("find_methods", m.find_methods("translate").iter().map(|x| x.doc.as_str()).collect::<Vec<_>>(), vec!["Verschoben um x, y, z.", "Verschoben um v."]);
+    t.eq("find_method: the first", m.find_method("translate").map(|x| x.sig.params.len()), Some(3));
+    t.eq("global: the first", a.global("vec").map(|g| g.doc.as_str()), Some("Ein Vektor aus Zahlen."));
+    t.eq("funcs", a.funcs("load").len(), 2);
+    let cases = [
+        ("int", "float", true),
+        ("float", "int", false),
+        ("int", "number", true),
+        ("float", "number", true),
+        ("str", "number", false),
+        ("list", "list<vec>", true),
+        ("list<vec>", "list", true),
+        ("list<int>", "list<float>", true),
+        ("list<str>", "list<vec>", false),
+        ("vec", "vec | list", true),
+        ("str", "vec | list", false),
+        ("int | float", "number", true),
+        ("int | str", "int", false),
+        ("", "vec", true),
+        ("any", "vec", true),
+        ("nil", "vec", false),
+        ("nil", "vec | nil", true),
+    ];
+    for (got, want, yes) in cases {
+        t.eq(&format!("fits({}, {})", got, want), api::fits(got, want), yes);
+    }
+}
+
+/// which form a call binds to, and which parameter each argument fills
+fn binding(t: &mut T) {
+    let a = api3();
+    let vf = a.sigs("vec");
+    let pos = |tys: &[&'static str]| -> Vec<Arg<'static>> { tys.iter().map(|x| Arg::pos(x)).collect() };
+    let form = |args: &[Arg]| api::bind(&vf, args).map(|b| (b.form, b.params.clone()));
+    t.eq("bind: three numbers", form(&pos(&["int", "float", "int"])), Ok((0, vec![vec![0], vec![1], vec![2]])));
+    t.eq("bind: z left out", form(&pos(&["int", "int"])), Ok((0, vec![vec![0], vec![1], vec![]])));
+    t.eq("bind: a list", form(&pos(&["list"])), Ok((1, vec![vec![0]])));
+    t.eq("bind: a vec", form(&pos(&["vec"])), Ok((1, vec![vec![0]])));
+    t.eq("bind: a type not known: the form of that number", form(&pos(&[""])), Ok((1, vec![vec![0]])));
+    t.eq("bind: a str fits none", form(&pos(&["str"])), Err(vec![Mismatch::Missing { param: 1 }, Mismatch::Type { arg: 0, param: 0 }]));
+    t.eq("bind: too many", form(&pos(&["int"; 4])), Err(vec![Mismatch::TooMany { most: 3 }, Mismatch::TooMany { most: 1 }]));
+    t.eq("bind: no forms", api::bind(&[], &pos(&["int"])).map(|b| b.form), Err(vec![]));
+    // a rest parameter takes any number
+    let merge = a.sigs("geom.merge");
+    t.eq("bind: rest, none", api::bind(&merge, &[]).map(|b| b.params), Ok(vec![vec![]]));
+    let b = api::bind(&merge, &pos(&["mesh", "mesh", "mesh"])).unwrap();
+    t.eq("bind: rest, three", (b.params.clone(), b.args("meshes").to_vec(), b.arg("meshes")), (vec![vec![0, 1, 2]], vec![0, 1, 2], Some(0)));
+    t.eq("bind: rest of a wrong type", api::bind(&merge, &pos(&["mesh", "vec"])).map(|b| b.form), Err(vec![Mismatch::Type { arg: 1, param: 0 }]));
+    // nil is what a left-out argument is: it fits an optional parameter only
+    let bevel = a.get_type("mesh").unwrap().sigs("bevel");
+    t.check("bind: nil for an optional parameter", api::bind(&bevel, &pos(&["float", "nil"])).is_ok());
+    t.eq("bind: nil for one that is not", api::bind(&bevel, &pos(&["nil"])).map(|b| b.form), Err(vec![Mismatch::Type { arg: 0, param: 0 }]));
+    // named arguments (their syntax comes later in S3): by the parameter's name, after the
+    // positional ones
+    let s = vf[0];
+    t.eq("bind: named", s.bind(&[Arg::pos("int"), Arg::named("z", "int"), Arg::named("y", "float")]), Ok(vec![vec![0], vec![2], vec![1]]));
+    let b = api::bind(&vf, &[Arg::named("v", "list")]).unwrap();
+    t.eq("bind: a name picks the form", (b.form, b.arg("v"), b.arg("x")), (1, Some(0), None));
+    t.eq("bind: a name no parameter has", s.bind(&[Arg::pos("int"), Arg::named("w", "int")]), Err(Mismatch::NoParam { arg: 1 }));
+    t.eq("bind: by position and by name", s.bind(&[Arg::pos("int"), Arg::pos("int"), Arg::named("x", "int")]), Err(Mismatch::Twice { arg: 2, param: 0 }));
+    t.eq("bind: a rest parameter by name", merge[0].bind(&[Arg::named("meshes", "mesh")]), Err(Mismatch::NoParam { arg: 0 }));
+    t.eq("bind: named, one missing", s.bind(&[Arg::named("y", "int")]), Err(Mismatch::Missing { param: 0 }));
+}
+
+/// ls::check with check_calls: the number of arguments against every form
+fn calls(t: &mut T) {
+    let a = api3();
+    let cx = Context::new(&a);
+    let d = |src: &str| ls::check(src, &cx).iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let clean = "let v = vec(1, 2)\nlet w = vec(1, 2, 3)\nlet u = vec([1, 2, 3])\nlet m = cube()\n\
+                 let n = cube(2).translate(v).translate(1, 2, 3).bevel(0.1).bevel(0.1, 2).scale(2).scale(v)\n\
+                 let g = geom.merge()\nlet h = geom.merge(m, n, m)\nprint(vec.dot(v, w), load(\"a\"), load(1), put(v), put(\"a\", 2))";
+    t.eq("calls: all fit a form", d(clean), Vec::<String>::new());
+    let cases: &[(&str, &str)] = &[
+        ("geom.box(1, 2)", "1:6: Warnung: geom.box: 2 Argumente, braucht aber mindestens 3 (w, h, d)"),
+        ("geom.box(1, 2, 3, 4)", "1:6: Warnung: geom.box: 4 Argumente, nimmt aber höchstens 3 (w, h, d)"),
+        ("cube(1, 2)", "1:1: Warnung: cube: 2 Argumente, nimmt aber höchstens 1 (size)"),
+        ("vec(1, 2, 3, 4)", "1:1: Warnung: vec: 4 Argumente passen zu keiner Form (vec(x, y, z), vec(v))"),
+        ("vec()", "1:1: Warnung: vec: ohne Argumente passt keine Form (vec(x, y, z), vec(v))"),
+        ("cube(1).translate(1, 2)", "1:9: Warnung: mesh.translate: 2 Argumente passen zu keiner Form (mesh.translate(x, y, z), mesh.translate(v))"),
+        ("cube(1).bevel()", "1:9: Warnung: mesh.bevel: kein Argument, braucht aber mindestens 1 (width, segments)"),
+        ("cube(1).bevel(1, 2, 3)", "1:9: Warnung: mesh.bevel: 3 Argumente, nimmt aber höchstens 2 (width, segments)"),
+        ("vec(1, 2).length(1)", "1:11: Warnung: vec.length: 1 Argument, nimmt aber keine"),
+        ("put(1, 2, 3)", "1:1: Warnung: put: 3 Argumente passen zu keiner Form (put(v, at), put(s, at))"),
+    ];
+    for (src, want) in cases {
+        t.eq(src, d(src), vec![String::from(*want)]);
+    }
+    // a function of the script with a host's name is the script's
+    t.eq("calls: the script's own vec", d("fn vec(a) { return a }\nprint(vec(1, 2, 3, 4))"), Vec::<String>::new());
+    // without check_calls (descriptions of S2 name the longest form): nothing counted
+    let s2 = api();
+    t.eq("calls: not counted without check_calls", ls::check("cube(1, 2, 3)\nvec()\ncube(1).bevel()", &s2), Vec::new());
+    // a host's own warning about extra arguments: the most any form reads
+    let most = |forms: &[&script::api::Sig]| forms.iter().map(|s| s.arity().1).try_fold(0, |m, x| x.map(|x| m.max(x)));
+    t.eq("the most arguments of the forms", (most(&a.sigs("vec")), most(&a.sigs("geom.merge")), most(&a.sigs("cube"))), (Some(3), None, Some(1)));
+}
+
+/// signature help, hover, completion and the types with forms and unions
+fn form_services(t: &mut T) {
+    let a = api3();
+    let cx = Context::new(&a);
+    let sg = |src: &str| {
+        let at = src.find('|').expect("caret");
+        let code = src.replacen('|', "", 1);
+        ls::signature(&code, at as u32, &cx).map(|s| (s.forms.iter().map(|f| f.label.clone()).collect::<Vec<_>>(), s.form, s.label.clone(), s.active))
+    };
+    let vf = strings(&["vec(x: float, y: float, z?: float): vec", "vec(v: vec | list): vec"]);
+    t.eq("signature: the forms, the first with room", sg("vec(|"), Some((vf.clone(), 0, vf[0].clone(), 0)));
+    t.eq("signature: the active parameter", sg("vec(1, 2, |"), Some((vf.clone(), 0, vf[0].clone(), 2)));
+    t.eq("signature: no form with room: the first", sg("vec(1, 2, 3, |").map(|x| (x.1, x.3)), Some((0, 3)));
+    // put(v: vec, at?) and put(s: str, at?): the type of the first argument picks the form
+    let put = |s: &str| sg(s).map(|x| (x.1, x.3));
+    t.eq("signature: a str picks its form", put("put(\"a\", |"), Some((1, 1)));
+    t.eq("signature: a vec picks its form", put("put(vec(1, 2), |"), Some((0, 1)));
+    t.eq("signature: a let of a known type", put("let v = vec(1, 2)\nput(v, |"), Some((0, 1)));
+    t.eq("signature: a type not known: the first", put("fn f(x) { put(x, | }"), Some((0, 1)));
+    t.eq("signature: the form's description", ls::signature("put(\"a\", ", 9, &cx).map(|s| s.doc), Some(String::from("Legt einen Text ab.")));
+    t.eq("signature: a method's forms", sg("cube(1).translate(|").map(|x| x.0), Some(strings(&["mesh.translate(x: float, y: float, z: float): mesh", "mesh.translate(v: vec): mesh"])));
+    t.eq("signature: a union", sg("cube(1).scale(|").map(|x| x.2), Some(String::from("mesh.scale(s: number | vec): mesh")));
+    t.eq("signature: one form", ls::signature("geom.box(1, ", 12, &cx).map(|s| (s.forms.len(), s.form, s.active)), Some((1, 0, 1)));
+    // hover: each form on a line of its own
+    let hv = |src: &str| {
+        let at = src.find('|').expect("caret");
+        let code = src.replacen('|', "", 1);
+        ls::hover(&code, at as u32, &cx).map(|h| (h.sig, h.doc))
+    };
+    t.eq(
+        "hover: a function's forms",
+        hv("|vec(1, 2)"),
+        Some((String::from("vec(x: float, y: float, z?: float): vec\nvec(v: vec | list): vec"), String::from("Ein Vektor aus Zahlen.\nEin Vektor aus einem Vektor oder einer Liste."))),
+    );
+    t.eq("hover: a method's forms", hv("cube(1).trans|late(1, 2, 3)").map(|h| h.0), Some(String::from("mesh.translate(x: float, y: float, z: float): mesh\nmesh.translate(v: vec): mesh")));
+    t.eq("hover: one form", hv("geom.b|ox(1, 2, 3)").map(|h| h.0), Some(String::from("geom.box(w: float, h: float, d: float): mesh")));
+    // completion: one item per name, with its first form
+    let c = ls::complete("ve", 2, &cx);
+    t.eq("complete: one vec", c.items.iter().filter(|i| i.label == "vec").map(|i| i.detail.clone()).collect::<Vec<_>>(), strings(&["vec(x: float, y: float, z?: float): vec"]));
+    t.eq("complete: one translate", labels("cube(1).|", &cx).iter().filter(|l| *l == "translate").count(), 1);
+    // a call's type: the result of the forms its arguments may bind to
+    let has = |src: &str, w: &str| labels(src, &cx).iter().any(|g| g == w);
+    t.check("load(str) is a mesh", has("load(\"a\").|", "faces"));
+    t.check("load(int) is a vec", has("load(1).|", "length"));
+    t.check("load(an int of a let) is a vec", has("let n = 1\nlet p = load(n)\np.|", "length"));
+    t.check("load(x) is not known", !has("fn f(x) { load(x).| }", "faces") && !has("fn f(x) { load(x).| }", "length"));
+    // T | nil has T's members
+    t.check("a union with nil", has("sel.|", "faces"));
+    let d = |src: &str| ls::check(src, &cx).iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    t.eq("check: a union with nil", d("print(sel.facs)"), strings(&["1:11: Warnung: mesh hat keine Eigenschaft facs – meinst du faces?"]));
+    t.eq("check: another union has no members", d("print(pick(1).nope)"), Vec::<String>::new());
+    t.check("complete: another union has no members", !has("pick(1).|", "length"));
+    t.eq("check: forms of different results: not known", d("fn f(x) { return load(x).nope }"), Vec::<String>::new());
+    t.eq("check: a known form's result", d("print(load(1).nope)"), strings(&["1:15: Warnung: vec hat keine Eigenschaft nope"]));
+}
+
+/// the catalogue, the Markdown page and validate with forms and unions
+fn form_catalogue(t: &mut T) {
+    let a = api3();
+    let cat = a.catalogue();
+    let vecs: Vec<&script::api::Entry> = cat.iter().filter(|e| e.name == "vec" && e.kind == EntryKind::Function).collect();
+    t.eq("catalogue: a function's forms in their order", vecs.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), vec!["vec(x: float, y: float, z?: float): vec", "vec(v: vec | list): vec"]);
+    t.eq("catalogue: the namespace's members once", vecs.iter().map(|e| e.children.len()).collect::<Vec<_>>(), vec![1, 0]);
+    let mesh = cat.iter().find(|e| e.name == "mesh").unwrap();
+    t.eq(
+        "catalogue: a method's forms",
+        mesh.children.iter().filter(|e| e.name == "translate").map(|e| (e.kind, e.label.as_str(), e.doc.as_str())).collect::<Vec<_>>(),
+        vec![(EntryKind::Method, "translate(x: float, y: float, z: float): mesh", "Verschoben um x, y, z."), (EntryKind::Method, "translate(v: vec): mesh", "Verschoben um v.")],
+    );
+    let md = a.markdown();
+    for w in [
+        "- `vec(x: float, y: float, z?: float): vec` – Ein Vektor aus Zahlen.",
+        "- `vec(v: vec | list): vec` – Ein Vektor aus einem Vektor oder einer Liste.",
+        "  - `vec.dot(a: vec, b: vec): float` – Das Skalarprodukt.",
+        "- `sel: mesh | nil` – Die Auswahl, wenn es eine gibt.",
+        "- `bevel(width: float, segments?: int): mesh` – Abgeschrägt.",
+        "- `scale(s: number | vec): mesh` – Skaliert.",
+        "- `translate(v: vec): mesh` – Verschoben um v.",
+        "  - `geom.merge(...meshes: mesh): mesh` – Zusammengefügt.",
+    ] {
+        t.check(&format!("markdown has {:?}", w), md.lines().any(|l| l == w));
+    }
+    t.check("markdown: the forms in their order", md.find("vec(x: float").unwrap_or(usize::MAX) < md.find("vec(v: vec").unwrap_or(0));
+    // validate: forms are no name twice; the same form twice, a rest parameter in the middle,
+    // a removed name still described, a type of a union nobody describes are
+    let bad = Api::new("x")
+        .func("f(a: int): int", "")
+        .func("f(a: int, b?: int): int", "")
+        .func("f(a: int): int", "")
+        .func("g(...a: int, b: int): nil", "")
+        .func("h(a: int | shape): nil", "")
+        .func("k(): nil", "")
+        .removed("k", "f")
+        .typ(Type::new("p", "").method("m(): nil", "").method("m(a: int): nil", "").method("m(): nil", "").prop("q: int", "").method("q(): int", "").removed("m", "q"));
+    let v = bad.validate();
+    let want = [
+        "f: die Form f(a: int): int kommt zweimal vor",
+        "g: ...a muss der letzte Parameter sein",
+        "h (a): unbekannter Typ int | shape",
+        "k: ist als entfernt angegeben und zugleich beschrieben",
+        "p.m: die Form m(): nil kommt zweimal vor",
+        "p.q: der Name kommt zweimal vor",
+        "p.m: ist als entfernt angegeben und zugleich beschrieben",
+    ];
+    for w in want {
+        t.check(&format!("validate: {}", w), v.iter().any(|x| x == w));
+    }
+    t.eq("validate: nothing else", v.len(), want.len());
+}
+
+/// compile_api: the program and the warnings of the same parse, also of modules and scripts
+fn compiled(t: &mut T) {
+    let a = api3();
+    let src = "let m = cube(1)\nprint(m.facs)\nlet k = 7 / 2\ngeom.move(m)\n";
+    let c = script::compile_api("main.jfs", src, &a);
+    let got = c.as_ref().map(|c| c.warnings.iter().map(|d| format!("{}:{}", d.file, d)).collect::<Vec<_>>()).map_err(|e| e.len());
+    let want: Vec<String> = ls::check(src, &a).iter().filter(|d| !d.error).map(|d| format!("main.jfs:{}", d)).collect();
+    t.eq("compile_api: the warnings ls::check gives, with the file", got, Ok(want.clone()));
+    t.eq("compile_api: a member, a division, a removed name", want.len(), 3);
+    t.eq("compile_api: a member", want.first().map(|s| s.as_str()), Some("main.jfs:2:9: Warnung: mesh hat keine Eigenschaft facs – meinst du faces?"));
+    t.check("compile_api: a division", want.get(1).is_some_and(|s| s.starts_with("main.jfs:3:9: Warnung: Ganzzahlige Division: 7 / 2")));
+    t.eq("compile_api: a removed name", want.get(2).map(|s| s.as_str()), Some("main.jfs:4:6: Warnung: geom.move wurde entfernt – nimm m.translate"));
+    // errors as compile_with gives them, a removed global name says what to take instead
+    let e = |src: &str| match script::compile_api("x.jfs", src, &a) {
+        Ok(_) => Vec::new(),
+        Err(d) => d.iter().map(|x| format!("{} {}", x.file, x)).collect::<Vec<_>>(),
+    };
+    t.eq("compile_api: errors", e("prnt(1)\nbox(1, 2, 3)\nlet k = 7 / 2"), strings(&["x.jfs 1:1: Fehler: Unbekannter Name prnt – meinst du print?", "x.jfs 2:1: Fehler: box wurde entfernt – nimm geom.box"]));
+    let with = script::compile_with("x.jfs", "prnt(1)", &a.names()).err().map(|d| d.iter().map(|x| format!("{} {}", x.file, x)).collect::<Vec<_>>());
+    t.eq("compile_api: the errors of compile_with", Some(e("prnt(1)")), with);
+    // the program runs as compile_with's
+    let mut h = TestHost::new();
+    let c = script::compile_api("ok.jfs", "let f = cube(2).faces", &a).unwrap();
+    let mut vm = Vm::new(&c.program, Limits::default());
+    let _ = finish(&mut vm, &mut h);
+    t.eq("compile_api: the program runs", vm.global("f"), Some(Value::Int(6)));
+    t.eq("compile_api: no warnings", (c.warnings.len(), c.program.name()), (0, "ok.jfs"));
+    // a module imported through Host::load: its warnings, with its file, come with the VM's own
+    let module = "fn f() {\n  return cube(1).facs\n}\nlet n = 7 / 2\n";
+    let shown = |w: &[Warning]| w.iter().map(|x| format!("{}:{}:{}: {}", x.file, x.line, x.col, x.msg)).collect::<Vec<_>>();
+    let mut h = TestHost::new();
+    h.files.push((String::from("lib/m.jfs"), String::from(module)));
+    let c = script::compile_api("app.jfs", "let m = import(\"lib/m.jfs\")\nlet r = m.n\n", &a).unwrap();
+    let mut vm = Vm::new(&c.program, Limits::default());
+    let _ = finish(&mut vm, &mut h);
+    t.eq("compile_api: the module runs", vm.global("r"), Some(Value::Int(3)));
+    let w = shown(&vm.take_warnings());
+    t.eq("compile_api: a module's warnings", w.len(), 2);
+    t.eq("compile_api: a module's member", w.first().map(|s| s.as_str()), Some("lib/m.jfs:2:18: mesh hat keine Eigenschaft facs – meinst du faces?"));
+    t.check("compile_api: a module's division", w.get(1).is_some_and(|s| s.starts_with("lib/m.jfs:4:9: Ganzzahlige Division")));
+    // compile_with as before: none
+    let mut h = TestHost::new();
+    h.files.push((String::from("lib/m.jfs"), String::from(module)));
+    let p = script::compile_with("app.jfs", "let m = import(\"lib/m.jfs\")\nlet r = m.n\n", &a.names()).unwrap();
+    let mut vm = Vm::new(&p, Limits::default());
+    let _ = finish(&mut vm, &mut h);
+    t.eq("compile_with: a module's warnings are not looked for", (vm.global("r"), vm.take_warnings().len()), (Some(Value::Int(3)), 0));
+    // a further script of the VM (Vm::add_script)
+    let mut h = TestHost::new();
+    let c = script::compile_api("page.jfs", "let a = 1\n", &a).unwrap();
+    let mut vm = Vm::new(&c.program, Limits::default());
+    let _ = finish(&mut vm, &mut h);
+    t.check("add_script", vm.add_script("two.jfs", "fn g() { return cube(1).facs }\nlet b = a + 1\n").is_ok());
+    let _ = finish(&mut vm, &mut h);
+    t.eq("add_script: its warnings", shown(&vm.take_warnings()), strings(&["two.jfs:1:25: mesh hat keine Eigenschaft facs – meinst du faces?"]));
+}
+
+/// messages name a host object's type by the host's name, as type(x) does
+fn type_names(t: &mut T) {
+    let cases: &[(&str, &str)] = &[
+        ("return \"a\".split(cube(1))", "str.split: sep muss str sein, nicht mesh"),
+        ("return [1].map(vec(1, 2, 3))", "list.map: f muss eine Funktion sein, nicht vec"),
+        ("return int(cube(1))", "int(…) braucht eine Zahl oder einen Text, nicht mesh"),
+        ("return float(vec(1, 2))", "float(…) braucht eine Zahl oder einen Text, nicht vec"),
+        ("return math.abs(vec(1, 2, 3))", "math.abs: x muss eine Zahl sein, nicht vec"),
+        ("let m = {}\nm[cube(1)] = 1", "Ein Map-Schlüssel muss str, int oder bool sein, nicht mesh"),
+        ("return {a: 1}.get(cube(1))", "map.get: Ein Map-Schlüssel muss str, int oder bool sein, nicht mesh"),
+        ("for i in 0..cube(1) { }", "Ein Bereich a..b braucht ganze Zahlen, nicht mesh"),
+        ("return [cube(1), 1].sort()", "list.sort: int und mesh lassen sich nicht vergleichen – gib eine Vergleichsfunktion an"),
+        ("return [3, 1].sort(fn(a, b) { return cube(1) })", "list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht mesh"),
+        ("return [1, 2].slice(vec(1, 2))", "list.slice: start muss int sein, nicht vec"),
+        ("return list.range(0, vec(1, 2))", "list.range: end muss eine Zahl sein, nicht vec"),
+        ("return bytes([vec(1, 2, 3)])", "bytes: Ein Byte muss int sein, nicht vec"),
+        ("return \"{:d}\".format(cube(1))", "str.format: {:d} braucht int, nicht mesh"),
+        ("return \"{a}\".format(cube(1))", "str.format: Für {a} muss das erste Argument eine Map sein, nicht mesh"),
+        ("return import(cube(1))", "import braucht den Pfad einer Datei (str), nicht mesh"),
+    ];
+    for (src, want) in cases {
+        let got = eval(src);
+        t.check(&format!("{}: {}", src, got), got.starts_with("ERR ") && got.ends_with(want));
+    }
+    // a host calling a host object; Value::type_name stays "object" (it knows no VM)
+    let mut h = TestHost::new();
+    let mut vm = vm_for("let m = cube(1)\n", Limits::default()).unwrap();
+    let _ = finish(&mut vm, &mut h);
+    let m = vm.global("m").unwrap();
+    t.eq("call_value of a host object", vm.call_value(m, &[]).err().map(|e| e.msg), Some(String::from("mesh ist keine Funktion")));
+    t.eq("Value::type_name and Vm::type_of", (m.type_name(), vm.type_of(m)), ("object", "mesh"));
+}
+
+/// suggestions for unknown names: only really close ones
+fn suggestions(t: &mut T) {
+    let first = |d: Vec<script::Diagnostic>| d.into_iter().next().map(|x| x.msg).unwrap_or_default();
+    let names: &[(&str, &str)] = &[
+        // kept: a letter missing, two swapped, only the case, two changes in a long name
+        ("print(prnt)", "Unbekannter Name prnt – meinst du print?"),
+        ("pirnt(1)", "Unbekannter Name pirnt – meinst du print?"),
+        ("PRINT(1)", "Unbekannter Name PRINT – meinst du print?"),
+        ("let count = 0\ncoutn += 1", "Unbekannter Name coutn – meinst du count?"),
+        ("let cylinder = 1\nprint(cilynder)", "Unbekannter Name cilynder – meinst du cylinder?"),
+        // gone: two changes in a short name, another first letter
+        ("print(loger)", "Unbekannter Name loger"),
+        ("let format = 1\nprint(normal)", "Unbekannter Name normal"),
+        ("x = 5", "Unbekannter Name x – eine neue Variable wird mit let x = … angelegt"),
+    ];
+    for (src, want) in names {
+        t.eq(src, first(script::check(src)), String::from(*want));
+    }
+    // members of a host's namespace and types (ls::check with an Api)
+    let g = Api::new("g").func("geom.box(w: float): mesh", "").func("geom.cone(r: float): mesh", "").typ(Type::new("mesh", "").prop("readonly faces: int", "").method("bevel(width: float): mesh", ""));
+    let members: &[(&str, &str)] = &[
+        ("geom.move(1)", "Unbekannter Name geom.move"),
+        ("geom.bx(1)", "Unbekannter Name geom.bx – meinst du geom.box?"),
+        ("geom.boxx(1)", "Unbekannter Name geom.boxx – meinst du geom.box?"),
+        ("geom.Cone(1)", "Unbekannter Name geom.Cone – meinst du geom.cone?"),
+        ("geom.box(1).bevl(1)", "mesh hat keine Methode bevl – meinst du bevel?"),
+        ("geom.box(1).faxxs", "mesh hat keine Eigenschaft faxxs"),
+        ("geom.box(1).fc", "mesh hat keine Eigenschaft fc"),
+    ];
+    for (src, want) in members {
+        t.eq(src, first(ls::check(src, &g)), String::from(*want));
+    }
+    // removed names say what to take instead
+    let a = api3();
+    t.eq("removed: a member", first(ls::check("cube(1).move(1, 2, 3)", &a)), String::from("mesh.move wurde entfernt – nimm translate"));
+    t.eq("removed: a member read", first(ls::check("print(cube(1).move)", &a)), String::from("mesh.move wurde entfernt – nimm translate"));
+    t.eq("removed: a namespace's", first(ls::check("geom.move(1)", &a)), String::from("geom.move wurde entfernt – nimm m.translate"));
+    t.eq("removed: a global name", first(ls::check("box(1)", &a)), String::from("box wurde entfernt – nimm geom.box"));
 }

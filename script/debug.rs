@@ -590,7 +590,8 @@ impl Vm {
             Value::Float(f) => f,
             _ => num::NAN,
         };
-        let mismatch = |what: &str| format!("{} {} passt nicht zu {} und {}", what, op.text(), x.type_name(), y.type_name());
+        let (tx, ty) = (self.type_of(x), self.type_of(y));
+        let mismatch = |what: &str| format!("{} {} passt nicht zu {} und {}", what, op.text(), tx, ty);
         Ok(match op {
             BinOp::Eq => Value::Bool(self.same(x, y)),
             BinOp::Ne => Value::Bool(!self.same(x, y)),
@@ -659,7 +660,7 @@ impl Vm {
             }
             (Value::Map(_), k) => match self.heap.key(k) {
                 Some(_) => Ok(self.map_get(obj, k).unwrap_or(Value::Nil)),
-                None => Err(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", k.type_name())),
+                None => Err(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", self.type_of(k))),
             },
             (Value::Str(s), Value::Int(i)) => {
                 let so = self.heap.str(s);
@@ -672,8 +673,8 @@ impl Vm {
                 let bs = self.heap.bytes_of(b);
                 usize::try_from(i).ok().and_then(|i| bs.get(i)).map(|x| Value::Int(*x as i64)).ok_or_else(|| format!("Index {} liegt außerhalb der Bytes (Länge {})", i, bs.len()))
             }
-            (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => Err(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), i.type_name())),
-            _ => Err(format!("{} lässt sich nicht indizieren", obj.type_name())),
+            (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => Err(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i))),
+            _ => Err(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
         }
     }
 
@@ -685,7 +686,7 @@ impl Vm {
                 Value::Bytes(r) => self.heap.bytes_of(r).len() as i64,
                 Value::List(r) => self.heap.list(r).len() as i64,
                 Value::Map(r) => self.heap.map(r).live as i64,
-                v => return Err(format!("len braucht str, bytes, list oder map, nicht {}", v.type_name())),
+                v => return Err(format!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
             }),
             "type" => self.alloc_str(String::from(self.type_of(a))).map_err(text)?,
             "str" => match a {
@@ -703,7 +704,7 @@ impl Vm {
                     let s = self.str(a).unwrap_or("");
                     Value::Int(stdlib::parse_int(s, None).ok_or_else(|| format!("int(…): \"{}\" ist keine ganze Zahl", s))?)
                 }
-                v => return Err(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", v.type_name())),
+                v => return Err(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             _ => match a {
                 Value::Float(_) => a,
@@ -715,7 +716,7 @@ impl Vm {
                         Err(_) => return Err(format!("float(…): \"{}\" ist keine Zahl", s)),
                     }
                 }
-                v => return Err(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", v.type_name())),
+                v => return Err(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
         })
     }
@@ -761,7 +762,7 @@ impl Vm {
             ExprKind::Unary(UnOp::Neg, a) => match self.ev(fi, at, a)? {
                 Value::Int(i) => Value::Int(i.wrapping_neg()),
                 Value::Float(f) => Value::Float(num::neg(f)),
-                v => return Err(format!("Das Minus passt nicht zu {}", v.type_name())),
+                v => return Err(format!("Das Minus passt nicht zu {}", self.type_of(v))),
             },
             // (S3) a settled promise's value; the expression does not wait
             ExprKind::Unary(UnOp::Await, a) => {

@@ -18,14 +18,45 @@
 //   api.catalogue()        the object catalogue as a tree of Entry, for a UI (jfscript-ide later)
 //   api.markdown()         the same as a Markdown page: the app's reference
 //   Api::from_items(&items)   the description of today's ls::HostItem list (no types)
+//   (S3) api.sigs(name), ty.sigs(name)   the forms (overloads) of a function or method
+//   (S3) bind(&forms, &args) -> Binding   which form fits a call and which parameter each
+//                          argument fills (Sig::bind for one form; see "Binding" below);
+//                          Sig::arity() the fewest and most arguments, count_warning(..) the
+//                          message for a number that fits no form
+//   (S3) .removed(name, hint)   a name that is gone and what to take instead (Api and Type):
+//                          "geom.move wurde entfernt – nimm m.translate"
+//   (S3) .check_calls()    the signatures name every form a call may take: the language
+//                          services warn about a call whose arguments fit none of them
 //
-// Types are text: int float str bool bytes list map fn nil any, the name of a type of the
-// description, list<T> (a list of T: `for x in` and `l[i]` give T), (S3) promise and promise<T>
-// (what a long operation returns: `await` gives a T; task.rs); anything else is shown as written
-// and means nothing to the services.  Signatures are written as in TypeScript (G1 d, G3):
-// "name(a: T, b: T = default, ...rest: T): R"; a parameter without a type is any, a function
-// without ": R" returns nothing known.  The builders never fail: what does not parse is kept as
-// text; validate() tells.
+// Types are text: int float str bool bytes list map fn nil any, (S3) number (int or float), the
+// name of a type of the description, list<T> (a list of T: `for x in` and `l[i]` give T), (S3)
+// promise and promise<T> (what a long operation returns: `await` gives a T; task.rs), (S3) a
+// union "number | vec" of those (also in properties and results; "vec | nil" counts as vec where
+// a member is looked up); anything else is shown as written and means nothing to the services.
+// Signatures are written as in TypeScript (G1 d, G3): "name(a: T, b?: T, c: T = default,
+// ...rest: T): R"; a parameter without a type is any, a function without ": R" returns nothing
+// known.  (S3) A parameter with `?` or a default may be left out (optional); the others may not
+// (the services count that only with check_calls: before S3 a missing argument was simply nil,
+// and descriptions of that time name the longest form).  Several signatures of one name are its
+// forms (overloads, as TypeScript writes them): .func("vec(x: float, y: float, z: float): vec",
+// ..).func("vec(v: vec | list): vec", ..); each has its own description, the first one is what
+// global() and find_method() give.  The builders never fail: what does not parse is kept as text;
+// validate() tells.
+//
+// Binding (S3): a call's arguments (Arg: by position or, with the named arguments of S3, by name;
+// the type as type(x) gives it or "" when not known) fill a form's parameters thus:
+//   1. the arguments by position fill the parameters in order; a rest parameter takes every
+//      one from its place on; more of them than parameters: TooMany
+//   2. a named argument fills the parameter of its name: none of that name (or a rest
+//      parameter): NoParam; a parameter that already has one: Twice
+//   3. a parameter that may not be left out (no `?`, no default, no rest) without one: Missing
+//   4. every argument's type fits its parameter's (fits(): int fits float and number, list fits
+//      list<T>, a union takes each of its types, "" and any fit all; nil fits an optional
+//      parameter, nil being what a left-out argument is): else Type
+// bind() takes the first form, in the order the host declared them, that fits; Err gives each
+// form's first mismatch.  The VM does not bind: a host function still gets the values as the
+// script passed them, and a host binds when it wants to (to pick an overload, to read a named
+// argument by its parameter's name: Binding::arg("width")).
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -34,8 +65,8 @@ use alloc::vec::Vec;
 use crate::ls::HostItem;
 use crate::vm::Operator;
 
-/// the types every script knows (not described by a host)
-pub(crate) const BUILTIN_TYPES: &[&str] = &["int", "float", "str", "bool", "bytes", "list", "map", "fn", "nil", "any", "promise"];
+/// the types every script knows (not described by a host); number is int or float
+pub(crate) const BUILTIN_TYPES: &[&str] = &["int", "float", "str", "bool", "bytes", "list", "map", "fn", "nil", "any", "number", "promise"];
 
 /// a host's object model (see the module comment)
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -43,8 +74,15 @@ pub struct Api {
     /// the app's name, the catalogue's title ("modeltool")
     pub name: String,
     pub doc: String,
+    /// (a name declared several times as a function: its forms, see the module comment)
     pub globals: Vec<Global>,
     pub types: Vec<Type>,
+    /// (S3) global names that are gone ("geom.move") with what to take instead
+    pub removed: Vec<Removed>,
+    /// (S3) the signatures name every form a call may take (overloads, optional parameters):
+    /// ls::check and script::compile_api warn about a call of a host function or method whose
+    /// arguments fit none of them (by number)
+    pub check_calls: bool,
 }
 
 /// a global name of the host
@@ -54,6 +92,20 @@ pub struct Global {
     pub name: String,
     pub kind: GlobalKind,
     pub doc: String,
+}
+
+/// (S3) a name that is gone and the text of what to take instead ("m.translate")
+#[derive(Clone, Debug, PartialEq)]
+pub struct Removed {
+    pub name: String,
+    pub hint: String,
+}
+
+impl Removed {
+    /// "geom.move wurde entfernt – nimm m.translate" (shown: the name as the message names it)
+    pub fn message(&self, shown: &str) -> String {
+        if self.hint.is_empty() { format!("{} wurde entfernt", shown) } else { format!("{} wurde entfernt – nimm {}", shown, self.hint) }
+    }
 }
 
 /// what a global name is
@@ -79,12 +131,14 @@ pub struct Sig {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Param {
     pub name: String,
-    /// "" any
+    /// "" any; a union as "number | vec"
     pub ty: String,
     /// the default as written ("0", "\"x\""); None: none (a missing argument is nil)
     pub default: Option<String>,
     /// ...name: any number of further arguments
     pub rest: bool,
+    /// (S3) a call may leave it out: written `name?: T`, or with a default
+    pub optional: bool,
 }
 
 /// a type of host objects
@@ -96,9 +150,12 @@ pub struct Type {
     /// a value type: == compares type and data (Cx::new_value); else identity (new_object)
     pub value: bool,
     pub props: Vec<Prop>,
+    /// (a name declared several times: its forms, see the module comment)
     pub methods: Vec<Method>,
     pub events: Vec<Event>,
     pub ops: Vec<OpDesc>,
+    /// (S3) members that are gone ("move") with what to take instead
+    pub removed: Vec<Removed>,
 }
 
 /// a property (obj.name, obj.name = v)
@@ -211,7 +268,18 @@ fn find_top(s: &str, c: char) -> Option<usize> {
     if parts.len() < 2 { None } else { Some(parts[0].len()) }
 }
 
-/// "a: T = d", "...rest: T", "x", ".."
+/// a type as written, a union with " | " between its types ("number|vec" -> "number | vec")
+fn norm_type(t: &str) -> String {
+    let t = t.trim();
+    let parts = split_top(t, '|');
+    if parts.len() < 2 {
+        return String::from(t);
+    }
+    let parts: Vec<&str> = parts.into_iter().map(str::trim).collect();
+    parts.join(" | ")
+}
+
+/// "a: T = d", "b?: T", "...rest: T", "x", ".."
 fn parse_param(p: &str) -> Param {
     let p = p.trim();
     if p == ".." || p == "..." {
@@ -229,7 +297,12 @@ fn parse_param(p: &str) -> Param {
         Some(i) => (head[..i].trim(), head[i + 1..].trim()),
         None => (head.trim(), ""),
     };
-    Param { name: String::from(name), ty: String::from(ty), default, rest }
+    let (name, q) = match name.strip_suffix('?') {
+        Some(n) => (n.trim_end(), true),
+        None => (name, false),
+    };
+    let optional = !rest && (q || default.is_some());
+    Param { name: String::from(name), ty: norm_type(ty), default, rest, optional }
 }
 
 /// "a: T, b" (the text inside the parentheses)
@@ -245,7 +318,7 @@ fn parse_sig(s: &str) -> (String, Sig) {
     let s = s.trim();
     let Some(open) = s.find('(') else {
         return match find_top(s, ':') {
-            Some(i) => (String::from(s[..i].trim()), Sig { params: Vec::new(), ret: String::from(s[i + 1..].trim()) }),
+            Some(i) => (String::from(s[..i].trim()), Sig { params: Vec::new(), ret: norm_type(&s[i + 1..]) }),
             None => (String::from(s), Sig::default()),
         };
     };
@@ -271,7 +344,7 @@ fn parse_sig(s: &str) -> (String, Sig) {
     let params = parse_params(s.get(open + 1..close).unwrap_or(""));
     let after = s.get(close + 1..).unwrap_or("").trim();
     let ret = after.strip_prefix(':').map_or("", |r| r.trim());
-    (name, Sig { params, ret: String::from(ret) })
+    (name, Sig { params, ret: norm_type(ret) })
 }
 
 /// "readonly x: T" -> (readonly, name, T)
@@ -282,7 +355,7 @@ fn parse_typed(s: &str) -> (bool, String, String) {
         None => (false, s),
     };
     match find_top(s, ':') {
-        Some(i) => (ro, String::from(s[..i].trim()), String::from(s[i + 1..].trim())),
+        Some(i) => (ro, String::from(s[..i].trim()), norm_type(&s[i + 1..])),
         None => (ro, String::from(s), String::new()),
     }
 }
@@ -305,7 +378,7 @@ fn parse_op(s: &str, doc: &str) -> Option<OpDesc> {
 // ---------------------------------------------------------------- labels
 
 impl Param {
-    /// "a: T = d", "...rest: T", ".."
+    /// "a: T = d", "b?: T", "...rest: T", ".."
     pub fn label(&self) -> String {
         if self.name == ".." {
             return String::from("..");
@@ -315,6 +388,9 @@ impl Param {
             s.push_str("...");
         }
         s.push_str(&self.name);
+        if self.optional && self.default.is_none() && !self.rest {
+            s.push('?');
+        }
         if !self.ty.is_empty() {
             s.push_str(": ");
             s.push_str(&self.ty);
@@ -404,6 +480,20 @@ impl Api {
         self
     }
 
+    /// (S3) a global name that is gone ("geom.move") and what to take instead ("m.translate"):
+    /// the services say so where a script still uses it
+    pub fn removed(mut self, name: &str, hint: &str) -> Api {
+        self.removed.push(Removed { name: String::from(name.trim()), hint: String::from(hint.trim()) });
+        self
+    }
+
+    /// (S3) the signatures name every form a call may take: count the arguments of calls (see
+    /// Api::check_calls)
+    pub fn check_calls(mut self) -> Api {
+        self.check_calls = true;
+        self
+    }
+
     /// the description of HostItems (ls::HostItem, the services' form before S2): a function
     /// for an item with parameters (no types: "port, handlers"), a namespace for a name others
     /// are dotted under, else a value; namespaces of dotted names without an item of their own
@@ -476,14 +566,30 @@ impl Type {
         self
     }
 
+    /// (S3) a member that is gone ("move") and what to take instead ("translate")
+    pub fn removed(mut self, name: &str, hint: &str) -> Type {
+        self.removed.push(Removed { name: String::from(name.trim()), hint: String::from(hint.trim()) });
+        self
+    }
+
     /// the property of that name
     pub fn find_prop(&self, name: &str) -> Option<&Prop> {
         self.props.iter().find(|p| p.name == name)
     }
 
-    /// the method of that name
+    /// the method of that name (its first form)
     pub fn find_method(&self, name: &str) -> Option<&Method> {
         self.methods.iter().find(|m| m.name == name)
+    }
+
+    /// (S3) every form of the method of that name, in the order they were declared
+    pub fn find_methods(&self, name: &str) -> Vec<&Method> {
+        self.methods.iter().filter(|m| m.name == name).collect()
+    }
+
+    /// (S3) the signatures of the method's forms (for bind)
+    pub fn sigs(&self, name: &str) -> Vec<&Sig> {
+        self.methods.iter().filter(|m| m.name == name).map(|m| &m.sig).collect()
     }
 
     /// the event of that name
@@ -504,15 +610,261 @@ pub(crate) fn promise_of(ty: &str) -> Option<&str> {
     ty.trim().strip_prefix("promise<")?.strip_suffix('>').map(str::trim)
 }
 
-/// an argument of type `got` fits a parameter or operand of type `want`
-pub(crate) fn fits(got: &str, want: &str) -> bool {
-    got == want || want.is_empty() || want == "any" || (want == "float" && got == "int") || (want == "list" && list_of(got).is_some())
+/// (S3) the types of a union ("number | vec" -> number, vec); a type that is none: itself
+pub fn alternatives(ty: &str) -> Vec<&str> {
+    split_top(ty, '|').into_iter().map(str::trim).collect()
+}
+
+/// (S3) the type whose members a value of type ty has: ty itself, or the one type of a union
+/// besides nil ("vec | nil" -> vec); another union has none ("")
+pub(crate) fn member_type(ty: &str) -> &str {
+    let alts = alternatives(ty);
+    if alts.len() < 2 {
+        return ty.trim();
+    }
+    let rest: Vec<&str> = alts.into_iter().filter(|t| *t != "nil").collect();
+    if rest.len() == 1 { rest[0] } else { "" }
+}
+
+/// a value of type `got` fits a parameter or operand of type `want`: the same type, any or ""
+/// on either side (not known), int for float or number, float for number, a list for a list<T>
+/// and the other way round, (S3) a union of `want` when it fits one of its types, a union as
+/// `got` when each of its types fits
+pub fn fits(got: &str, want: &str) -> bool {
+    let (got, want) = (got.trim(), want.trim());
+    if got == want || want.is_empty() || want == "any" || got.is_empty() || got == "any" {
+        return true;
+    }
+    let ga = alternatives(got);
+    if ga.len() > 1 {
+        return ga.iter().all(|g| fits(g, want));
+    }
+    if got == "number" {
+        return fits("int", want) && fits("float", want);
+    }
+    let wa = alternatives(want);
+    if wa.len() > 1 {
+        return wa.iter().any(|w| fits(got, w));
+    }
+    match (got, want) {
+        ("int", "float") | ("int" | "float", "number") => true,
+        _ => match (list_of(got), list_of(want)) {
+            (Some(g), Some(w)) => fits(g, w),
+            (Some(_), None) => want == "list",
+            (None, Some(_)) => got == "list",
+            (None, None) => false,
+        },
+    }
+}
+
+// ---------------------------------------------------------------- binding a call (S3)
+
+/// an argument of a call as bind() sees it (see the module comment)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arg<'a> {
+    /// the name of a named argument (`width: 2`); None: by position
+    pub name: Option<&'a str>,
+    /// its type: as type(x) gives it ("int", "vec"), a type of the description, or "" (not
+    /// known: it fits every parameter)
+    pub ty: &'a str,
+}
+
+impl<'a> Arg<'a> {
+    /// an argument by position
+    pub fn pos(ty: &'a str) -> Arg<'a> {
+        Arg { name: None, ty }
+    }
+
+    /// a named argument
+    pub fn named(name: &'a str, ty: &'a str) -> Arg<'a> {
+        Arg { name: Some(name), ty }
+    }
+}
+
+/// why a form does not fit a call (bind; the indexes are the call's arguments and the form's
+/// parameters)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mismatch {
+    /// more arguments by position than the form has parameters (and none of them is a rest
+    /// parameter): it takes at most `most`
+    TooMany { most: usize },
+    /// a parameter that may not be left out got no argument
+    Missing { param: usize },
+    /// a named argument names no parameter of the form (or its rest parameter)
+    NoParam { arg: usize },
+    /// a parameter got a second argument: by position and by name, or named twice
+    Twice { arg: usize, param: usize },
+    /// an argument's type does not fit its parameter's
+    Type { arg: usize, param: usize },
+}
+
+/// which form fits a call and which parameter each argument fills (bind)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Binding<'s> {
+    /// the form's index among those given to bind
+    pub form: usize,
+    pub sig: &'s Sig,
+    /// for each parameter of sig, the arguments that fill it (indexes into the call's
+    /// arguments): none when the call left it out (its default, else nil), one, or for a rest
+    /// parameter any number
+    pub params: Vec<Vec<usize>>,
+}
+
+impl Binding<'_> {
+    /// the argument that fills the parameter of that name (None: left out, or no such
+    /// parameter); a rest parameter: its first
+    pub fn arg(&self, name: &str) -> Option<usize> {
+        self.args(name).first().copied()
+    }
+
+    /// the arguments that fill the parameter of that name (a rest parameter's, in order)
+    pub fn args(&self, name: &str) -> &[usize] {
+        match self.sig.params.iter().position(|p| p.name == name) {
+            Some(i) => &self.params[i],
+            None => &[],
+        }
+    }
+}
+
+impl Sig {
+    /// (S3) the fewest and the most arguments a call may give (None: any number, a rest
+    /// parameter)
+    pub fn arity(&self) -> (usize, Option<usize>) {
+        let min = self.params.iter().filter(|p| !p.optional && !p.rest).count();
+        let max = if self.params.iter().any(|p| p.rest) { None } else { Some(self.params.len()) };
+        (min, max)
+    }
+
+    /// (S3) which parameter each argument fills, by the rules of the module comment: for each
+    /// parameter the arguments that fill it; Err: the first rule the call breaks
+    pub fn bind(&self, args: &[Arg]) -> Result<Vec<Vec<usize>>, Mismatch> {
+        let ps = &self.params;
+        let mut filled: Vec<Vec<usize>> = alloc::vec![Vec::new(); ps.len()];
+        // 1. by position
+        let mut next = 0usize;
+        for i in (0..args.len()).filter(|&i| args[i].name.is_none()) {
+            match ps.get(next) {
+                Some(p) if p.rest => filled[next].push(i),
+                Some(_) => {
+                    filled[next].push(i);
+                    next += 1;
+                }
+                None => return Err(Mismatch::TooMany { most: ps.len() }),
+            }
+        }
+        // 2. by name
+        for (i, a) in args.iter().enumerate() {
+            let Some(n) = a.name else { continue };
+            let Some(p) = ps.iter().position(|p| p.name == n && !p.rest) else {
+                return Err(Mismatch::NoParam { arg: i });
+            };
+            if !filled[p].is_empty() {
+                return Err(Mismatch::Twice { arg: i, param: p });
+            }
+            filled[p].push(i);
+        }
+        // 3. what may not be left out
+        if let Some(p) = (0..ps.len()).find(|&j| !ps[j].optional && !ps[j].rest && filled[j].is_empty()) {
+            return Err(Mismatch::Missing { param: p });
+        }
+        // 4. the types
+        for (j, p) in ps.iter().enumerate() {
+            for &i in &filled[j] {
+                let ty = args[i].ty.trim();
+                if !(fits(ty, &p.ty) || (ty == "nil" && p.optional)) {
+                    return Err(Mismatch::Type { arg: i, param: j });
+                }
+            }
+        }
+        Ok(filled)
+    }
+}
+
+/// (S3) the first of the forms (the overloads of one name in the order the host declared them:
+/// Api::sigs, Type::sigs) that fits the call's arguments, and which parameter each argument
+/// fills; Err: each form's first mismatch, in their order (empty for no forms)
+pub fn bind<'s>(forms: &[&'s Sig], args: &[Arg]) -> Result<Binding<'s>, Vec<Mismatch>> {
+    let mut why = Vec::with_capacity(forms.len());
+    for (k, s) in forms.iter().enumerate() {
+        match s.bind(args) {
+            Ok(params) => return Ok(Binding { form: k, sig: s, params }),
+            Err(m) => why.push(m),
+        }
+    }
+    Err(why)
+}
+
+/// "kein Argument", "1 Argument", "3 Argumente"
+fn count_text(n: usize) -> String {
+    match n {
+        0 => String::from("kein Argument"),
+        1 => String::from("1 Argument"),
+        _ => format!("{} Argumente", n),
+    }
+}
+
+/// "w, h, d", "m, ...cuts": the names of a form's parameters
+fn param_names(s: &Sig) -> String {
+    let ps: Vec<String> = s.params.iter().map(|p| if p.rest && p.name != ".." { format!("...{}", p.name) } else { p.name.clone() }).collect();
+    ps.join(", ")
+}
+
+/// (S3) the warning of ls::check (with Api::check_calls) for a call with `given` arguments when
+/// their number fits none of the forms (None: one fits, or there are none); shown: how the
+/// message names the function ("geom.box", "mesh.move").  A host may give it at run time too
+/// (Cx::warn): "geom.box: 4 Argumente, nimmt aber höchstens 3 (w, h, d)", "vec: 2 Argumente
+/// passen zu keiner Form (vec(x, y, z), vec(v))"
+pub fn count_warning(shown: &str, forms: &[&Sig], given: usize) -> Option<String> {
+    let fits = |s: &&Sig| {
+        let (min, max) = s.arity();
+        given >= min && max.is_none_or(|m| given <= m)
+    };
+    if forms.is_empty() || forms.iter().any(fits) {
+        return None;
+    }
+    if let [s] = forms {
+        let (min, max) = s.arity();
+        let names = param_names(s);
+        return Some(match max {
+            Some(0) => format!("{}: {}, nimmt aber keine", shown, count_text(given)),
+            Some(m) if given > m => format!("{}: {}, nimmt aber höchstens {} ({})", shown, count_text(given), m, names),
+            _ => format!("{}: {}, braucht aber mindestens {} ({})", shown, count_text(given), min, names),
+        });
+    }
+    let all: Vec<String> = forms.iter().map(|s| format!("{}({})", shown, param_names(s))).collect();
+    Some(match given {
+        0 => format!("{}: ohne Argumente passt keine Form ({})", shown, all.join(", ")),
+        1 => format!("{}: 1 Argument passt zu keiner Form ({})", shown, all.join(", ")),
+        n => format!("{}: {} Argumente passen zu keiner Form ({})", shown, n, all.join(", ")),
+    })
 }
 
 impl Api {
-    /// the global of that name ("vec", "log.warn")
+    /// the global of that name ("vec", "log.warn"); a function's first form
     pub fn global(&self, name: &str) -> Option<&Global> {
         self.globals.iter().find(|g| g.name == name)
+    }
+
+    /// (S3) every form of the global function of that name, in the order they were declared
+    pub fn funcs(&self, name: &str) -> Vec<&Global> {
+        self.globals.iter().filter(|g| g.name == name && matches!(g.kind, GlobalKind::Func(_))).collect()
+    }
+
+    /// (S3) the signatures of the function's forms (for bind)
+    pub fn sigs(&self, name: &str) -> Vec<&Sig> {
+        self.globals
+            .iter()
+            .filter(|g| g.name == name)
+            .filter_map(|g| match &g.kind {
+                GlobalKind::Func(s) => Some(s),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// (S3) the removed global name of that name
+    pub fn find_removed(&self, name: &str) -> Option<&Removed> {
+        self.removed.iter().find(|r| r.name == name)
     }
 
     /// the type of that name
@@ -538,8 +890,13 @@ impl Api {
         self.globals.iter().any(|g| (g.name == name && g.kind == GlobalKind::Namespace) || (g.name.len() > name.len() && g.name.starts_with(name) && g.name.as_bytes()[name.len()] == b'.'))
     }
 
-    /// the result of a op b for these operand types, from the operators of either type
+    /// the result of a op b for these operand types, from the operators of either type (none
+    /// for an operand whose type is not known)
     pub(crate) fn op_result(&self, op: Operator, a: &str, b: &str) -> Option<&str> {
+        let unknown = |t: &str| t.is_empty() || t == "any";
+        if unknown(b) || (op != Operator::Neg && unknown(a)) {
+            return None;
+        }
         for t in [a, b] {
             let Some(ty) = self.get_type(t) else { continue };
             for o in &ty.ops {
@@ -553,33 +910,61 @@ impl Api {
     }
 
     /// what does not fit the description (German), empty when all is well: types named
-    /// nowhere, names twice, operators of other types
+    /// nowhere, names twice (forms of a function or method are no name twice, the same form
+    /// twice is), a rest parameter that is not the last, operators of other types, removed
+    /// names that are still described
     pub fn validate(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        let known = |t: &str| -> bool {
+        fn known(api: &Api, t: &str) -> bool {
             let t = t.trim();
-            let t = list_of(t).or_else(|| promise_of(t)).unwrap_or(t);
-            t.is_empty() || BUILTIN_TYPES.contains(&t) || self.get_type(t).is_some()
-        };
+            if t.is_empty() {
+                return true;
+            }
+            let alts = alternatives(t);
+            if alts.len() > 1 {
+                return alts.iter().all(|a| !a.is_empty() && known(api, a));
+            }
+            match list_of(t).or_else(|| promise_of(t)) {
+                Some(inner) => known(api, inner),
+                None => BUILTIN_TYPES.contains(&t) || api.get_type(t).is_some(),
+            }
+        }
         let mut check = |ty: &str, at: &str, out: &mut Vec<String>| {
-            if !known(ty) {
+            if !known(self, ty) {
                 out.push(format!("{}: unbekannter Typ {}", at, ty));
             }
         };
         let sig = |s: &Sig, at: &str, out: &mut Vec<String>, check: &mut dyn FnMut(&str, &str, &mut Vec<String>)| {
-            for p in &s.params {
+            for (i, p) in s.params.iter().enumerate() {
                 check(&p.ty, &format!("{} ({})", at, p.name), out);
+                if p.rest && i + 1 < s.params.len() {
+                    out.push(format!("{}: ...{} muss der letzte Parameter sein", at, p.name));
+                }
             }
             check(&s.ret, at, out);
         };
         for (i, g) in self.globals.iter().enumerate() {
-            if self.globals[..i].iter().any(|x| x.name == g.name) {
-                out.push(format!("{}: der Name kommt zweimal vor", g.name));
+            let before: Vec<&Global> = self.globals[..i].iter().filter(|x| x.name == g.name).collect();
+            if !before.is_empty() {
+                match &g.kind {
+                    // another form of a function
+                    GlobalKind::Func(s) if before.iter().all(|x| matches!(x.kind, GlobalKind::Func(_))) => {
+                        if before.iter().any(|x| x.kind == g.kind) {
+                            out.push(format!("{}: die Form {} kommt zweimal vor", g.name, s.label(&g.name)));
+                        }
+                    }
+                    _ => out.push(format!("{}: der Name kommt zweimal vor", g.name)),
+                }
             }
             match &g.kind {
                 GlobalKind::Func(s) => sig(s, &g.name, &mut out, &mut check),
                 GlobalKind::Value(t) => check(t, &g.name, &mut out),
                 GlobalKind::Namespace => {}
+            }
+        }
+        for r in &self.removed {
+            if self.global(&r.name).is_some() || self.is_namespace(&r.name) {
+                out.push(format!("{}: ist als entfernt angegeben und zugleich beschrieben", r.name));
             }
         }
         for (i, t) in self.types.iter().enumerate() {
@@ -589,14 +974,27 @@ impl Api {
             if BUILTIN_TYPES.contains(&t.name.as_str()) {
                 out.push(format!("{}: ein Name der Sprache, kein Typ des Hosts", t.name));
             }
-            let mut names: Vec<&str> = Vec::new();
-            for n in t.props.iter().map(|p| p.name.as_str()).chain(t.methods.iter().map(|m| m.name.as_str())) {
-                if names.contains(&n) {
-                    out.push(format!("{}.{}: der Name kommt zweimal vor", t.name, n));
+            // (name, the method's index; None: a property)
+            let mut names: Vec<(&str, Option<usize>)> = Vec::new();
+            let members = t.props.iter().map(|p| (p.name.as_str(), None)).chain(t.methods.iter().enumerate().map(|(k, m)| (m.name.as_str(), Some(k))));
+            for (n, m) in members {
+                let before: Vec<Option<usize>> = names.iter().filter(|x| x.0 == n).map(|x| x.1).collect();
+                match m {
+                    // another form of a method
+                    Some(k) if !before.is_empty() && before.iter().all(|b| b.is_some()) => {
+                        if before.iter().flatten().any(|&b| t.methods[b].sig == t.methods[k].sig) {
+                            out.push(format!("{}.{}: die Form {} kommt zweimal vor", t.name, n, t.methods[k].sig.label(n)));
+                        }
+                    }
+                    _ if !before.is_empty() => out.push(format!("{}.{}: der Name kommt zweimal vor", t.name, n)),
+                    _ if n == "on" || n == "off" => out.push(format!("{}.{}: on und off sind die Ereignisse der VM", t.name, n)),
+                    _ => {}
                 }
-                names.push(n);
-                if n == "on" || n == "off" {
-                    out.push(format!("{}.{}: on und off sind die Ereignisse der VM", t.name, n));
+                names.push((n, m));
+            }
+            for r in &t.removed {
+                if t.find_prop(&r.name).is_some() || t.find_method(&r.name).is_some() {
+                    out.push(format!("{}.{}: ist als entfernt angegeben und zugleich beschrieben", t.name, r.name));
                 }
             }
             for p in &t.props {
@@ -627,7 +1025,8 @@ impl Api {
 impl Api {
     /// the object catalogue (G8.3): the global names (a namespace with its dotted members as
     /// children), then the types with their properties, methods, events and operators; names
-    /// in alphabetical order, operators as described
+    /// in alphabetical order, (S3) the forms of a function or method one entry each in their
+    /// order, operators as described
     pub fn catalogue(&self) -> Vec<Entry> {
         let mut out: Vec<Entry> = Vec::new();
         let mut globals: Vec<&Global> = self.globals.iter().collect();
@@ -641,13 +1040,15 @@ impl Api {
             };
             Entry { kind, name: g.name.clone(), label, doc: g.doc.clone(), children: Vec::new() }
         };
-        for g in &globals {
+        for (i, g) in globals.iter().enumerate() {
             if g.name.contains('.') {
                 continue;
             }
             let mut e = entry(g);
             let pre = format!("{}.", g.name);
-            for m in globals.iter().filter(|m| m.name.starts_with(&pre)) {
+            // (the dotted members under the first entry of the name, not under each form)
+            let first = !globals[..i].iter().any(|x| x.name == g.name);
+            for m in globals.iter().filter(|m| first && m.name.starts_with(&pre)) {
                 e.children.push(entry(m));
             }
             if !e.children.is_empty() && e.kind == EntryKind::Value {

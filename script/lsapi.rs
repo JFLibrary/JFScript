@@ -15,15 +15,23 @@
 //   Types::chain(src, toks, idx, r)   the same for the code before a dot as tokens (it may not
 //                    parse while it is typed): name(.member | .call(..) | [..])* back from token r
 //   diagnostics(..)  warnings: a property, method or event a known host type does not have (with
-//                    the closest name), a method called as a property or the other way round, a
-//                    read-only property assigned, a member of a host namespace that is not there
+//                    the closest name: check::suggest_member), a method called as a property or
+//                    the other way round, a read-only property assigned, a member of a host
+//                    namespace that is not there; (S3) a removed member or name with what to take
+//                    instead; with Api::check_calls a call of a host function or method whose
+//                    number of arguments fits none of its forms
+//
+// (S3) Forms (overloads): the result of a call is the one all forms its arguments may bind to
+// share (Sig::bind with the types known here, also of the arguments of a call in a chain: an
+// argument whose type is not known fits every form), when none fits the one all forms share;
+// else not known.  A union type has members only as "T | nil" (T's).
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::api::{self, Api, GlobalKind};
+use crate::api::{self, Api, Arg, GlobalKind, Sig};
 use crate::ast::*;
 use crate::lex::{Tok, TokKind};
 use crate::ls::Index;
@@ -128,7 +136,7 @@ impl Types<'_> {
                 match src {
                     ForSrc::Each(e) => {
                         self.expr_walk(e);
-                        let item = String::from(api::list_of(&self.expr(e)).unwrap_or(""));
+                        let item = String::from(api::list_of(api::member_type(&self.expr(e))).unwrap_or(""));
                         let (sa, sb) = (self.decl(a.span.start), b.as_ref().and_then(|b| self.decl(b.span.start)));
                         match b {
                             None => self.set(sa, item),
@@ -196,7 +204,7 @@ impl Types<'_> {
                     && let (Some(Expr { kind: ExprKind::Str(ev), .. }), Some(Expr { kind: ExprKind::Fn(f), .. })) = (args.first(), args.get(1))
                 {
                     let ty = self.expr(obj);
-                    let et = self.api.get_type(&ty).and_then(|t| t.find_event(ev)).map(|x| x.ty.clone());
+                    let et = self.api.get_type(api::member_type(&ty)).and_then(|t| t.find_event(ev)).map(|x| x.ty.clone());
                     if let (Some(et), Some(p)) = (et, f.params.first()) {
                         let sym = self.decl(p.span.start);
                         self.set(sym, et);
@@ -232,21 +240,39 @@ impl Types<'_> {
         }
     }
 
-    /// the result of a host function (namespaced or not)
-    fn func_ret(&self, name: &str) -> String {
-        match self.api.global(name).map(|g| &g.kind) {
-            Some(GlobalKind::Func(s)) => s.ret.clone(),
-            _ => String::new(),
+    /// the result of a host function (namespaced or not); args: the types of the call's
+    /// arguments when they are there
+    fn func_ret(&self, name: &str, args: Option<&[String]>) -> String {
+        self.ret_of(&self.api.sigs(name), args)
+    }
+
+    /// (S3) the result of a call of one of these forms: the one all forms the arguments may bind
+    /// to share (their types as far as known: an argument of a type not known fits every form,
+    /// so that is no guess), else the one all forms share, else not known
+    fn ret_of(&self, forms: &[&Sig], args: Option<&[String]>) -> String {
+        if forms.len() == 1 {
+            return forms[0].ret.clone();
         }
+        let same = |fs: &[&Sig]| match fs.first() {
+            Some(f) if fs.iter().all(|x| x.ret == f.ret) => f.ret.clone(),
+            _ => String::new(),
+        };
+        if let Some(tys) = args {
+            let a: Vec<Arg> = tys.iter().map(|t| Arg::pos(t)).collect();
+            let fit: Vec<&Sig> = forms.iter().copied().filter(|s| s.bind(&a).is_ok()).collect();
+            if !fit.is_empty() {
+                return same(&fit);
+            }
+        }
+        same(forms)
     }
 
     /// the type of a member (prop or method's result) of type ty
-    fn member(&self, ty: &str, name: &str, call: bool) -> String {
-        let Some(t) = self.api.get_type(ty) else { return String::new() };
-        if call {
-            t.find_method(name).map_or(String::new(), |m| m.sig.ret.clone())
-        } else {
-            t.find_prop(name).map_or(String::new(), |p| p.ty.clone())
+    fn member(&self, ty: &str, name: &str, call: Option<Option<&[String]>>) -> String {
+        let Some(t) = self.api.get_type(api::member_type(ty)) else { return String::new() };
+        match call {
+            Some(args) => self.ret_of(&t.sigs(name), args),
+            None => t.find_prop(name).map_or(String::new(), |p| p.ty.clone()),
         }
     }
 
@@ -298,17 +324,23 @@ impl Types<'_> {
             },
             ExprKind::Field(obj, name) => match self.namespace(obj) {
                 Some(ns) => self.global(&format!("{}.{}", ns, name.text)),
-                None => self.member(&self.expr(obj), &name.text, false),
+                None => self.member(&self.expr(obj), &name.text, None),
             },
-            ExprKind::Method(obj, name, _) => match self.namespace(obj) {
-                Some(ns) => self.func_ret(&format!("{}.{}", ns, name.text)),
-                None => self.member(&self.expr(obj), &name.text, true),
-            },
-            ExprKind::Call(f, _) => match &f.kind {
-                ExprKind::Var(n) if self.idx.use_from(f.span.start).and_then(|u| u.sym).is_none() => self.func_ret(n),
+            ExprKind::Method(obj, name, args) => {
+                let tys: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                match self.namespace(obj) {
+                    Some(ns) => self.func_ret(&format!("{}.{}", ns, name.text), Some(&tys)),
+                    None => self.member(&self.expr(obj), &name.text, Some(Some(&tys))),
+                }
+            }
+            ExprKind::Call(f, args) => match &f.kind {
+                ExprKind::Var(n) if self.idx.use_from(f.span.start).and_then(|u| u.sym).is_none() => {
+                    let tys: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                    self.func_ret(n, Some(&tys))
+                }
                 _ => String::new(),
             },
-            ExprKind::Index(obj, _) => String::from(api::list_of(&self.expr(obj)).unwrap_or("")),
+            ExprKind::Index(obj, _) => String::from(api::list_of(api::member_type(&self.expr(obj))).unwrap_or("")),
             ExprKind::Binary(op, a, b) => self.binary(*op, &self.expr(a), &self.expr(b)),
             ExprKind::Unary(UnOp::Neg, a) => {
                 let t = self.expr(a);
@@ -332,9 +364,15 @@ impl Types<'_> {
 
     /// the type of the code that ends at token r of the full token list (see the module comment)
     pub(crate) fn chain(&self, src: &str, toks: &[Tok], r: usize) -> Option<Known> {
+        self.chain_in(src, toks, r, 0)
+    }
+
+    /// chain(); depth: how many calls' arguments it is inside (their types are looked at to a
+    /// few levels only)
+    fn chain_in(&self, src: &str, toks: &[Tok], r: usize, depth: u32) -> Option<Known> {
         enum Step {
             Member(String),
-            Call(String),
+            Call(String, Vec<String>),
             Index,
         }
         let text = |t: &Tok| &src[t.start as usize..t.end as usize];
@@ -356,8 +394,8 @@ impl Types<'_> {
         };
         let mut steps: Vec<Step> = Vec::new();
         let mut k = r;
-        // the start: Ok((name, start, called)) or a str literal
-        let start: Result<(String, u32, bool), ()> = loop {
+        // the start: Ok((name, start, the arguments' types when called)) or a str literal
+        let start: Result<(String, u32, Option<Vec<String>>), ()> = loop {
             let t = toks[k];
             match t.kind {
                 TokKind::Ident => {
@@ -367,19 +405,20 @@ impl Types<'_> {
                             steps.push(Step::Member(name));
                             k = prev(d)?;
                         }
-                        _ => break Ok((name, t.start, false)),
+                        _ => break Ok((name, t.start, None)),
                     }
                 }
                 TokKind::RParen => {
                     let o = open(k, TokKind::RParen, TokKind::LParen)?;
                     let f = prev(o).filter(|&j| toks[j].kind == TokKind::Ident)?;
                     let name = String::from(text(&toks[f]));
+                    let args = self.args_in(src, toks, o, k, true, depth + 1);
                     match prev(f) {
                         Some(d) if toks[d].kind == TokKind::Dot => {
-                            steps.push(Step::Call(name));
+                            steps.push(Step::Call(name, args));
                             k = prev(d)?;
                         }
-                        _ => break Ok((name, toks[f].start, true)),
+                        _ => break Ok((name, toks[f].start, Some(args))),
                     }
                 }
                 TokKind::RBracket => {
@@ -396,11 +435,11 @@ impl Types<'_> {
             Ok((name, at, called)) => {
                 let sym = self.idx.sym_of(&name, at);
                 match (sym, called) {
-                    (Some(i), false) => Known::Ty(self.sym[i].clone()),
-                    (Some(_), true) => return None,
-                    (None, true) => Known::Ty(self.func_ret(&name)),
-                    (None, false) if self.api.is_namespace(&name) => Known::Ns(name),
-                    (None, false) => Known::Ty(self.global(&name)),
+                    (Some(i), None) => Known::Ty(self.sym[i].clone()),
+                    (Some(_), Some(_)) => return None,
+                    (None, Some(args)) => Known::Ty(self.func_ret(&name, Some(&args))),
+                    (None, None) if self.api.is_namespace(&name) => Known::Ns(name),
+                    (None, None) => Known::Ty(self.global(&name)),
                 }
             }
         };
@@ -410,10 +449,10 @@ impl Types<'_> {
                     let full = format!("{}.{}", ns, m);
                     if self.api.is_namespace(&full) { Known::Ns(full) } else { Known::Ty(self.global(&full)) }
                 }
-                (Known::Ns(ns), Step::Call(m)) => Known::Ty(self.func_ret(&format!("{}.{}", ns, m))),
-                (Known::Ty(t), Step::Member(m)) => Known::Ty(self.member(&t, &m, false)),
-                (Known::Ty(t), Step::Call(m)) => Known::Ty(self.member(&t, &m, true)),
-                (Known::Ty(t), Step::Index) => Known::Ty(String::from(api::list_of(&t).unwrap_or(""))),
+                (Known::Ns(ns), Step::Call(m, args)) => Known::Ty(self.func_ret(&format!("{}.{}", ns, m), Some(&args))),
+                (Known::Ty(t), Step::Member(m)) => Known::Ty(self.member(&t, &m, None)),
+                (Known::Ty(t), Step::Call(m, args)) => Known::Ty(self.member(&t, &m, Some(Some(&args)))),
+                (Known::Ty(t), Step::Index) => Known::Ty(String::from(api::list_of(api::member_type(&t)).unwrap_or(""))),
                 (Known::Ns(_), Step::Index) => return None,
             };
             if matches!(&cur, Known::Ty(t) if t.is_empty()) {
@@ -425,25 +464,130 @@ impl Types<'_> {
             k => Some(k),
         }
     }
+
+    /// (S3) the types of the arguments after the ( at token open of the full token list up to
+    /// token end: those followed by a comma and, with last (a call that is closed at end), the one
+    /// after the last comma; each a literal's ("int", "str", "list" ..), a name's or a chain's
+    /// (`m`, `doc.page`, `cube(1)`), else "" (not known)
+    pub(crate) fn arg_types(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool) -> Vec<String> {
+        self.args_in(src, toks, open, end, last, 0)
+    }
+
+    fn args_in(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool, depth: u32) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seg: Vec<usize> = Vec::new();
+        let (mut level, mut commas) = (0i32, 0usize);
+        for j in open + 1..end.min(toks.len()) {
+            match toks[j].kind {
+                TokKind::Space | TokKind::Newline | TokKind::Comment | TokKind::Eof => continue,
+                TokKind::LParen | TokKind::LBracket | TokKind::LBrace | TokKind::StrHead => level += 1,
+                TokKind::RParen | TokKind::RBracket | TokKind::RBrace | TokKind::StrTail => level -= 1,
+                TokKind::Comma if level == 0 => {
+                    out.push(self.arg_type(src, toks, &seg, depth));
+                    seg.clear();
+                    commas += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            seg.push(j);
+        }
+        if last && (!seg.is_empty() || commas > 0) {
+            out.push(self.arg_type(src, toks, &seg, depth));
+        }
+        out
+    }
+
+    /// the type of one argument, its tokens' indexes in seg (see arg_types)
+    fn arg_type(&self, src: &str, toks: &[Tok], seg: &[usize], depth: u32) -> String {
+        let kind = |i: usize| toks[seg[i]].kind;
+        let lit = |k: TokKind| -> &'static str {
+            match k {
+                TokKind::Int => "int",
+                TokKind::Float => "float",
+                TokKind::Str => "str",
+                TokKind::True | TokKind::False => "bool",
+                TokKind::Nil => "nil",
+                _ => "",
+            }
+        };
+        // the bracket that opens at the first token closes at the last
+        let whole = |open: TokKind, close: TokKind| -> bool {
+            let mut level = 0i32;
+            for i in 0..seg.len() {
+                if kind(i) == open {
+                    level += 1;
+                } else if kind(i) == close {
+                    level -= 1;
+                    if level == 0 {
+                        return i + 1 == seg.len();
+                    }
+                }
+            }
+            false
+        };
+        let n = seg.len();
+        if n == 0 || depth > 8 {
+            return String::new();
+        }
+        let first = kind(0);
+        if n == 1 && !lit(first).is_empty() {
+            return String::from(lit(first));
+        }
+        if n == 2 && first == TokKind::Minus && matches!(kind(1), TokKind::Int | TokKind::Float) {
+            return String::from(lit(kind(1)));
+        }
+        for (open, close, ty) in [(TokKind::LBracket, TokKind::RBracket, "list"), (TokKind::LBrace, TokKind::RBrace, "map"), (TokKind::StrHead, TokKind::StrTail, "str")] {
+            if first == open && whole(open, close) {
+                return String::from(ty);
+            }
+        }
+        if first != TokKind::Ident {
+            return String::new();
+        }
+        // name(.member | .call(..) | [..])*: nothing else outside the brackets
+        let mut level = 0i32;
+        for i in 0..n {
+            match kind(i) {
+                TokKind::LParen | TokKind::LBracket => level += 1,
+                TokKind::RParen | TokKind::RBracket => level -= 1,
+                TokKind::Ident | TokKind::Dot => {}
+                _ if level > 0 => {}
+                _ => return String::new(),
+            }
+        }
+        match self.chain_in(src, toks, seg[n - 1], depth) {
+            Some(Known::Ty(t)) => t,
+            _ => String::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- diagnostics
 
-/// the closest of names to a misspelt one (as check does for names)
+/// the member a misspelt one is really close to (the rule of check.rs)
 fn closest<'a>(name: &str, names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    let max = match name.chars().count() {
-        0..=2 => return None,
-        3..=4 => 1,
-        _ => 2,
-    };
-    let mut best: Option<(usize, &str)> = None;
-    for c in names {
-        let d = crate::check::distance(name, c);
-        if d <= max && best.is_none_or(|(b, _)| d < b) {
-            best = Some((d, c));
+    crate::check::suggest_member(name, names)
+}
+
+/// (S3) the names of a parsed script against a host's description and `more` names (the roots
+/// of HostItems, the names of earlier scripts): unknown ones are errors, removed ones say what
+/// to take instead (check::resolve_strict)
+pub(crate) fn check_names<'a>(prog: &Program, api: &'a Api, more: &[&'a str]) -> Vec<Diagnostic> {
+    let mut names = api.names();
+    for m in more {
+        if !names.contains(m) {
+            names.push(m);
         }
     }
-    best.map(|(_, c)| c)
+    crate::check::resolve_strict(prog, &crate::known_names(&names), &api.removed)
+}
+
+/// (S3) the description's warnings on a parsed script: diagnostics() over infer()
+pub(crate) fn check_members(prog: &Program, src: &str, api: &Api) -> Vec<Diagnostic> {
+    let idx = crate::ls::index_of(prog, src);
+    let types = infer(prog, &idx, api);
+    diagnostics(prog, &types, src)
 }
 
 /// see the module comment
@@ -543,9 +687,23 @@ impl Diags<'_, '_> {
             }
             ExprKind::Call(f, args) => {
                 self.expr(f);
+                self.call(f, args);
                 args.iter().for_each(|x| self.expr(x));
             }
             _ => {}
+        }
+    }
+
+    /// (S3) f(args) of a host function: the number of arguments against its forms (check_calls)
+    fn call(&mut self, f: &Expr, args: &[Expr]) {
+        let api = self.t.api;
+        let ExprKind::Var(n) = &f.kind else { return };
+        if !api.check_calls || self.t.idx.use_from(f.span.start).and_then(|u| u.sym).is_some() {
+            return;
+        }
+        if let Some(m) = api::count_warning(n, &api.sigs(n), args.len()) {
+            let at = Name { text: n.clone(), span: f.span };
+            self.warn(&at, m);
         }
     }
 
@@ -555,21 +713,40 @@ impl Diags<'_, '_> {
         if let Some(ns) = self.t.namespace(obj) {
             let full = format!("{}.{}", ns, name.text);
             if api.global(&full).is_none() && !api.is_namespace(&full) {
-                let pre = format!("{}.", ns);
-                let near = closest(&full, api.globals.iter().map(|g| g.name.as_str()).filter(|g| g.starts_with(&pre)));
-                let mut m = format!("Unbekannter Name {}", full);
-                if let Some(c) = near {
-                    m.push_str(&format!(" – meinst du {}?", c));
+                if let Some(r) = api.find_removed(&full) {
+                    self.warn(name, r.message(&full));
+                    return;
                 }
+                // (the members of the namespace, compared without it)
+                let pre = format!("{}.", ns);
+                let mut shorts: Vec<&str> = Vec::new();
+                for g in api.globals.iter().filter_map(|g| g.name.strip_prefix(pre.as_str())) {
+                    let first = g.split('.').next().unwrap_or(g);
+                    if !shorts.contains(&first) {
+                        shorts.push(first);
+                    }
+                }
+                let mut m = format!("Unbekannter Name {}", full);
+                if let Some(c) = closest(&name.text, shorts.into_iter()) {
+                    m.push_str(&format!(" – meinst du {}{}?", pre, c));
+                }
+                self.warn(name, m);
+            } else if let Use::Call(args) = how
+                && api.check_calls
+                && let Some(m) = api::count_warning(&full, &api.sigs(&full), args.len())
+            {
                 self.warn(name, m);
             }
             return;
         }
         let ty = self.t.expr(obj);
-        let Some(t) = api.get_type(&ty) else { return };
+        let Some(t) = api.get_type(api::member_type(&ty)) else { return };
         let n = name.text.as_str();
         let names = || t.props.iter().map(|p| p.name.as_str()).chain(t.methods.iter().map(|m| m.name.as_str()));
         let unknown = |what: &str| -> String {
+            if let Some(r) = t.removed.iter().find(|r| r.name == n) {
+                return r.message(&format!("{}.{}", t.name, n));
+            }
             match closest(n, names()) {
                 Some(c) => format!("{} hat keine {} {} – meinst du {}?", t.name, what, n, c),
                 None => format!("{} hat keine {} {}", t.name, what, n),
@@ -609,6 +786,10 @@ impl Diags<'_, '_> {
                         let m = unknown("Methode");
                         self.warn(name, m);
                     }
+                } else if api.check_calls
+                    && let Some(m) = api::count_warning(&format!("{}.{}", t.name, n), &t.sigs(n), args.len())
+                {
+                    self.warn(name, m);
                 }
             }
         }

@@ -140,80 +140,80 @@ pub(crate) fn err<T>(m: String) -> Result<T, Exc> {
     Err(Exc::Msg(m))
 }
 
-/// "f: p muss want sein, nicht <type>"
-pub(crate) fn bad<T>(f: &str, p: &str, want: &str, got: Value) -> Result<T, Exc> {
-    err(format!("{}: {} muss {} sein, nicht {}", f, p, want, got.type_name()))
+/// "f: p muss want sein, nicht <type>" (a host object's type by the host's name: mesh, vec)
+pub(crate) fn bad<T>(vm: &Vm, f: &str, p: &str, want: &str, got: Value) -> Result<T, Exc> {
+    err(format!("{}: {} muss {} sein, nicht {}", f, p, want, vm.type_of(got)))
 }
 
-pub(crate) fn want_int(f: &str, a: &[Value], i: usize, p: &str) -> Result<i64, Exc> {
+pub(crate) fn want_int(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<i64, Exc> {
     match arg(a, i) {
         Value::Int(n) => Ok(n),
-        v => bad(f, p, "int", v),
+        v => bad(vm, f, p, "int", v),
     }
 }
 
 /// an optional int (nil: None)
-pub(crate) fn opt_int(f: &str, a: &[Value], i: usize, p: &str) -> Result<Option<i64>, Exc> {
+pub(crate) fn opt_int(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Option<i64>, Exc> {
     match arg(a, i) {
         Value::Nil => Ok(None),
         Value::Int(n) => Ok(Some(n)),
-        v => bad(f, p, "int", v),
+        v => bad(vm, f, p, "int", v),
     }
 }
 
-pub(crate) fn want_str(f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
+pub(crate) fn want_str(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
     match arg(a, i) {
         Value::Str(r) => Ok(r),
-        v => bad(f, p, "str", v),
+        v => bad(vm, f, p, "str", v),
     }
 }
 
-pub(crate) fn want_list(f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
+pub(crate) fn want_list(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
     match arg(a, i) {
         Value::List(r) => Ok(r),
-        v => bad(f, p, "list", v),
+        v => bad(vm, f, p, "list", v),
     }
 }
 
-pub(crate) fn want_map(f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
+pub(crate) fn want_map(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
     match arg(a, i) {
         Value::Map(r) => Ok(r),
-        v => bad(f, p, "map", v),
+        v => bad(vm, f, p, "map", v),
     }
 }
 
-pub(crate) fn want_bytes(f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
+pub(crate) fn want_bytes(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Ref, Exc> {
     match arg(a, i) {
         Value::Bytes(r) => Ok(r),
-        v => bad(f, p, "bytes", v),
+        v => bad(vm, f, p, "bytes", v),
     }
 }
 
-pub(crate) fn want_fn(f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
+pub(crate) fn want_fn(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
     match arg(a, i) {
         v @ (Value::Func(_) | Value::Native(_)) => Ok(v),
-        v => err(format!("{}: {} muss eine Funktion sein, nicht {}", f, p, v.type_name())),
+        v => err(format!("{}: {} muss eine Funktion sein, nicht {}", f, p, vm.type_of(v))),
     }
 }
 
 /// a number as a float
-pub(crate) fn want_num(f: &str, a: &[Value], i: usize, p: &str) -> Result<f64, Exc> {
+pub(crate) fn want_num(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<f64, Exc> {
     match arg(a, i) {
         Value::Int(n) => Ok(num::from_i64(n)),
         Value::Float(x) => Ok(x),
-        v => bad(f, p, "eine Zahl", v),
+        v => bad(vm, f, p, "eine Zahl", v),
     }
 }
 
 /// start..end for slice(start, end) over len items: a negative index counts from the end,
 /// nil is the start / the end, indexes outside are clamped, end before start is empty
-pub(crate) fn span(f: &str, a: &[Value], i: usize, len: usize) -> Result<(usize, usize), Exc> {
+pub(crate) fn span(vm: &Vm, f: &str, a: &[Value], i: usize, len: usize) -> Result<(usize, usize), Exc> {
     let n = len as i64;
     let at = |v: Value, p: &str, dflt: i64| -> Result<i64, Exc> {
         match v {
             Value::Nil => Ok(dflt),
             Value::Int(k) => Ok(if k < 0 { (n + k).max(0) } else { k.min(n) }),
-            v => bad(f, p, "int", v),
+            v => bad(vm, f, p, "int", v),
         }
     };
     let s = at(arg(a, i), "start", 0)?;
@@ -222,8 +222,8 @@ pub(crate) fn span(f: &str, a: &[Value], i: usize, len: usize) -> Result<(usize,
 }
 
 /// the message of a value that cannot be a map key
-pub(crate) fn key_error<T>(f: &str, k: Value) -> Result<T, Exc> {
-    err(format!("{}: Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", f, k.type_name()))
+pub(crate) fn key_error<T>(vm: &Vm, f: &str, k: Value) -> Result<T, Exc> {
+    err(format!("{}: Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", f, vm.type_of(k)))
 }
 
 // ---- fuel, heap, callbacks
@@ -340,8 +340,8 @@ pub(crate) fn parse_int(s: &str, base: Option<u32>) -> Option<i64> {
 
 fn int_parse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "int.parse";
-    let r = want_str(F, a, 0, "s")?;
-    let base = match opt_int(F, a, 1, "base")? {
+    let r = want_str(vm, F, a, 0, "s")?;
+    let base = match opt_int(vm, F, a, 1, "base")? {
         None => None,
         Some(b @ 2..=36) => Some(b as u32),
         Some(b) => return err(format!("{}: base muss zwischen 2 und 36 liegen, nicht {}", F, b)),
@@ -359,7 +359,7 @@ pub(crate) fn parse_float(s: &str) -> Option<f64> {
 }
 
 fn float_parse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let r = want_str("float.parse", a, 0, "s")?;
+    let r = want_str(vm, "float.parse", a, 0, "s")?;
     let s = heap::text(&vm.heap, r);
     let v = parse_float(s).map_or(Value::Nil, Value::Float);
     let fuel = text_fuel(s.len());
@@ -369,11 +369,11 @@ fn float_parse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc>
 
 // ---- bytes
 
-fn byte_of(v: Value) -> Result<u8, Exc> {
+fn byte_of(vm: &Vm, v: Value) -> Result<u8, Exc> {
     match v {
         Value::Int(i @ 0..=255) => Ok(i as u8),
         Value::Int(i) => err(format!("bytes: {} ist kein Byte (0 bis 255)", i)),
-        v => err(format!("bytes: Ein Byte muss int sein, nicht {}", v.type_name())),
+        v => err(format!("bytes: Ein Byte muss int sein, nicht {}", vm.type_of(v))),
     }
 }
 
@@ -386,25 +386,25 @@ fn bytes_new(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
         [Value::List(r)] => {
             let n = vm.heap.list(*r).len();
             spend(vm, list_fuel(n))?;
-            vm.heap.list(*r).iter().map(|v| byte_of(*v)).collect::<Result<_, _>>()?
+            vm.heap.list(*r).iter().map(|v| byte_of(vm, *v)).collect::<Result<_, _>>()?
         }
         [v] if !matches!(v, Value::Int(_)) => {
-            return err(format!("bytes braucht str, list, bytes oder Bytes als int, nicht {}", v.type_name()));
+            return err(format!("bytes braucht str, list, bytes oder Bytes als int, nicht {}", vm.type_of(*v)));
         }
-        _ => a.iter().map(|v| byte_of(*v)).collect::<Result<_, _>>()?,
+        _ => a.iter().map(|v| byte_of(vm, *v)).collect::<Result<_, _>>()?,
     };
     new_bytes(vm, data)
 }
 
 fn bytes_len(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let b = want_bytes("bytes.len", a, 0, "b")?;
+    let b = want_bytes(vm, "bytes.len", a, 0, "b")?;
     Ok(Value::Int(vm.heap.bytes_of(b).len() as i64))
 }
 
 fn bytes_slice(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let b = want_bytes("bytes.slice", a, 0, "b")?;
+    let b = want_bytes(vm, "bytes.slice", a, 0, "b")?;
     let all = vm.heap.bytes_of(b);
-    let (s, e) = span("bytes.slice", a, 1, all.len())?;
+    let (s, e) = span(vm, "bytes.slice", a, 1, all.len())?;
     if s == 0 && e == all.len() {
         return Ok(a[0]);
     }
@@ -413,7 +413,7 @@ fn bytes_slice(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc>
 }
 
 fn bytes_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let b = want_bytes("bytes.hex", a, 0, "b")?;
+    let b = want_bytes(vm, "bytes.hex", a, 0, "b")?;
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let data = vm.heap.bytes_of(b);
     let mut s = String::with_capacity(2 * data.len());
@@ -428,7 +428,7 @@ fn bytes_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 
 fn bytes_from_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "bytes.from_hex";
-    let r = want_str(F, a, 0, "hex")?;
+    let r = want_str(vm, F, a, 0, "hex")?;
     let s = heap::text(&vm.heap, r);
     let mut out = Vec::with_capacity(s.len() / 2);
     let mut hi: Option<u8> = None;
@@ -451,7 +451,7 @@ fn bytes_from_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, E
 
 fn bytes_text(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "bytes.text";
-    let b = want_bytes(F, a, 0, "b")?;
+    let b = want_bytes(vm, F, a, 0, "b")?;
     let lossy = arg(a, 1).truthy();
     let data = vm.heap.bytes_of(b);
     let s = match core::str::from_utf8(data) {
@@ -474,7 +474,7 @@ pub(crate) fn fnv(data: &[u8]) -> u32 {
 }
 
 fn bytes_hash(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let b = want_bytes("bytes.hash", a, 0, "b")?;
+    let b = want_bytes(vm, "bytes.hash", a, 0, "b")?;
     let data = vm.heap.bytes_of(b);
     let h = fnv(data);
     let fuel = text_fuel(data.len());
@@ -485,19 +485,19 @@ fn bytes_hash(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
 // ---- map
 
 fn map_len(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.len", a, 0, "m")?;
+    let m = want_map(vm, "map.len", a, 0, "m")?;
     Ok(Value::Int(vm.heap.map(m).live as i64))
 }
 
 fn map_keys(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.keys", a, 0, "m")?;
+    let m = want_map(vm, "map.keys", a, 0, "m")?;
     let keys: Vec<Value> = vm.heap.map(m).iter().map(|e| e.key).collect();
     spend(vm, map_fuel(keys.len()))?;
     new_list(vm, keys)
 }
 
 fn map_values(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.values", a, 0, "m")?;
+    let m = want_map(vm, "map.values", a, 0, "m")?;
     let vals: Vec<Value> = vm.heap.map(m).iter().map(|e| e.val).collect();
     spend(vm, map_fuel(vals.len()))?;
     new_list(vm, vals)
@@ -505,7 +505,7 @@ fn map_values(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
 
 /// [[key, value], ..]
 fn map_entries(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.entries", a, 0, "m")?;
+    let m = want_map(vm, "map.entries", a, 0, "m")?;
     let pairs: Vec<(Value, Value)> = vm.heap.map(m).iter().map(|e| (e.key, e.val)).collect();
     spend(vm, map_fuel(pairs.len()))?;
     let mut out = Vec::with_capacity(pairs.len());
@@ -519,18 +519,18 @@ fn map_entries(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc>
 fn position(vm: &Vm, f: &str, m: Ref, k: Value) -> Result<Option<usize>, Exc> {
     match vm.heap.key(k) {
         Some(key) => Ok(vm.heap.map_find(m, key)),
-        None => key_error(f, k),
+        None => key_error(vm, f, k),
     }
 }
 
 fn map_has(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.has", a, 0, "m")?;
+    let m = want_map(vm, "map.has", a, 0, "m")?;
     Ok(Value::Bool(position(vm, "map.has", m, arg(a, 1))?.is_some()))
 }
 
 /// m[k], or the default when the key is missing
 fn map_get(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.get", a, 0, "m")?;
+    let m = want_map(vm, "map.get", a, 0, "m")?;
     Ok(match position(vm, "map.get", m, arg(a, 1))? {
         Some(i) => vm.heap.map(m).entries[i].val,
         None => arg(a, 2),
@@ -539,7 +539,7 @@ fn map_get(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 
 /// remove m[k]; whether it was there
 fn map_delete(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let m = want_map("map.delete", a, 0, "m")?;
+    let m = want_map(vm, "map.delete", a, 0, "m")?;
     let Some(i) = position(vm, "map.delete", m, arg(a, 1))? else { return Ok(Value::Bool(false)) };
     vm.heap.update(m, |o| {
         if let Obj::Map(map) = o {
@@ -553,11 +553,11 @@ fn map_delete(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
 /// the first appearance stays)
 fn map_merge(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "map.merge";
-    want_map(F, a, 0, "m")?;
+    want_map(vm, F, a, 0, "m")?;
     let mut out: Map = Map::default();
     let mut visited = 0;
     for (i, v) in a.iter().enumerate() {
-        let Value::Map(r) = *v else { return bad(F, if i == 0 { "m" } else { "other" }, "map", *v) };
+        let Value::Map(r) = *v else { return bad(vm, F, if i == 0 { "m" } else { "other" }, "map", *v) };
         let entries: Vec<(Value, Value, u32)> = vm.heap.map(r).iter().map(|e| (e.key, e.val, e.hash)).collect();
         visited += entries.len();
         for (k, val, hash) in entries {
@@ -589,15 +589,15 @@ pub(crate) fn is_nan(v: Value) -> bool {
     matches!(v, Value::Float(x) if num::is_nan(x))
 }
 
-fn number(f: &str, v: Value) -> Result<Value, Exc> {
+fn number(vm: &Vm, f: &str, v: Value) -> Result<Value, Exc> {
     match v {
         Value::Int(_) | Value::Float(_) => Ok(v),
-        v => bad(f, "x", "eine Zahl", v),
+        v => bad(vm, f, "x", "eine Zahl", v),
     }
 }
 
-fn math_abs(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    match number("math.abs", arg(a, 0))? {
+fn math_abs(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    match number(vm, "math.abs", arg(a, 0))? {
         Value::Int(i) => Ok(Value::Int(i.wrapping_abs())),
         Value::Float(x) => Ok(Value::Float(num::abs(x))),
         _ => unreachable!(),
@@ -613,7 +613,7 @@ fn extreme(vm: &mut Vm, a: &[Value], f: &str, max: bool) -> Result<Value, Exc> {
     spend(vm, list_fuel(items.len()))?;
     let mut best: Option<Value> = None;
     for v in items {
-        let x = number(f, v)?;
+        let x = number(vm, f, v)?;
         if is_nan(x) {
             return Ok(Value::Float(num::NAN));
         }
@@ -638,16 +638,16 @@ fn math_max(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 }
 
 /// x limited to lo..hi (the values themselves, ints stay ints)
-fn math_clamp(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+fn math_clamp(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "math.clamp";
-    let x = number(F, arg(a, 0))?;
+    let x = number(vm, F, arg(a, 0))?;
     let lo = match arg(a, 1) {
         v @ (Value::Int(_) | Value::Float(_)) if !is_nan(v) => v,
-        v => return bad(F, "lo", "eine Zahl (nicht nan)", v),
+        v => return bad(vm, F, "lo", "eine Zahl (nicht nan)", v),
     };
     let hi = match arg(a, 2) {
         v @ (Value::Int(_) | Value::Float(_)) if !is_nan(v) => v,
-        v => return bad(F, "hi", "eine Zahl (nicht nan)", v),
+        v => return bad(vm, F, "hi", "eine Zahl (nicht nan)", v),
     };
     if num_cmp(lo, hi) == Ordering::Greater {
         return err(format!("{}: lo ist größer als hi", F));
@@ -664,32 +664,32 @@ fn math_clamp(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 }
 
 /// floor, ceil, round, trunc: an int stays the same int, a float gives the integral float
-fn integral(a: &[Value], f: &str, op: fn(f64) -> f64) -> Result<Value, Exc> {
-    match number(f, arg(a, 0))? {
+fn integral(vm: &Vm, a: &[Value], f: &str, op: fn(f64) -> f64) -> Result<Value, Exc> {
+    match number(vm, f, arg(a, 0))? {
         Value::Float(x) => Ok(Value::Float(op(x))),
         v => Ok(v),
     }
 }
 
-fn math_floor(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    integral(a, "math.floor", num::floor)
+fn math_floor(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    integral(vm, a, "math.floor", num::floor)
 }
 
-fn math_ceil(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    integral(a, "math.ceil", num::ceil)
+fn math_ceil(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    integral(vm, a, "math.ceil", num::ceil)
 }
 
-fn math_round(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    integral(a, "math.round", math::round)
+fn math_round(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    integral(vm, a, "math.round", math::round)
 }
 
-fn math_trunc(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    integral(a, "math.trunc", num::trunc)
+fn math_trunc(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    integral(vm, a, "math.trunc", num::trunc)
 }
 
 /// a float function of one argument with a fixed cost
 fn unary(vm: &mut Vm, a: &[Value], f: &str, fuel: u64, op: fn(f64) -> f64) -> Result<Value, Exc> {
-    let x = want_num(f, a, 0, "x")?;
+    let x = want_num(vm, f, a, 0, "x")?;
     spend(vm, fuel)?;
     Ok(Value::Float(op(x)))
 }
@@ -723,8 +723,8 @@ fn math_cos(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 }
 
 fn math_pow(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let x = want_num("math.pow", a, 0, "x")?;
-    let y = want_num("math.pow", a, 1, "y")?;
+    let x = want_num(vm, "math.pow", a, 0, "x")?;
+    let y = want_num(vm, "math.pow", a, 1, "y")?;
     spend(vm, 8)?;
     Ok(Value::Float(math::pow(x, y)))
 }
@@ -747,8 +747,8 @@ fn math_atan(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
 
 /// atan2(y, x): the angle of the point (x, y)
 fn math_atan2(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let y = want_num("math.atan2", a, 0, "y")?;
-    let x = want_num("math.atan2", a, 1, "x")?;
+    let y = want_num(vm, "math.atan2", a, 0, "y")?;
+    let x = want_num(vm, "math.atan2", a, 1, "x")?;
     spend(vm, 4)?;
     Ok(Value::Float(math::atan2(y, x)))
 }
@@ -766,7 +766,7 @@ fn math_hypot(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
         match v {
             Value::Int(i) => xs.push(num::from_i64(i)),
             Value::Float(x) => xs.push(x),
-            v => return bad(F, "x", "eine Zahl", v),
+            v => return bad(vm, F, "x", "eine Zahl", v),
         }
     }
     Ok(Value::Float(num::hypot(&xs)))
@@ -784,13 +784,13 @@ fn math_tan_deg(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc
     unary(vm, a, "math.tan_deg", 4, math::tan_deg)
 }
 
-fn math_is_nan(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let x = number("math.is_nan", arg(a, 0))?;
+fn math_is_nan(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    let x = number(vm, "math.is_nan", arg(a, 0))?;
     Ok(Value::Bool(is_nan(x)))
 }
 
-fn math_is_finite(_: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    Ok(Value::Bool(match number("math.is_finite", arg(a, 0))? {
+fn math_is_finite(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
+    Ok(Value::Bool(match number(vm, "math.is_finite", arg(a, 0))? {
         Value::Float(x) => x.to_bits() & 0x7FF0_0000_0000_0000 != 0x7FF0_0000_0000_0000,
         _ => true,
     }))

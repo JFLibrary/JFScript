@@ -282,7 +282,17 @@ API of JFNetworker) and only warns about others. A host with another set passes 
 `script::compile_with(name, src, &["document", "fetch"])`: the built-ins and the standard
 library are known anyway, and a name that is neither declared nor known is an error with its
 line and column ("Unbekannter Name prnt – meinst du print?"), so a typing error stops the script
-before it runs. `check_with(src, globals)` gives the editor's diagnostics for such a host.
+before it runs. `check_with(src, globals)` gives the editor's diagnostics for such a host. (S3) A
+host with a description (`script::Api`, [HOST.md](HOST.md#descriptions)) compiles with
+`script::compile_api(name, src, &api)`: the same program and errors, and in the same parse the
+warnings `ls::check` gives (members a host type does not have, removed names, a division of two
+ints), also for the modules the script imports.
+
+**Suggestions** ("meinst du print?") name only a name that is really close to the unknown one:
+one inserted, deleted or changed character or two swapped neighbours (`prnt`, `pirnt`) for names
+of 3 to 5 characters, two for 6 to 8, three for longer ones, from two on with the same first
+letter; a difference in case alone always (`PRINT`). Names of 1 or 2 characters get none. Members
+of a host's namespace or type are compared without the namespace, with the members there only.
 
 **A division of two ints** truncates (`7 / 2` is `3`, as in C, Rust and Go; JavaScript has only
 one number). That stays (G7.2 of the direction paper), and `check` / `check_with` warn where both
@@ -328,7 +338,9 @@ btn.off("click")                      // all functions of the event; off("click"
   it, `obj.m(..)` calls a method. A name it does not have throws a catchable error with the
   type's name ("mesh hat keine Eigenschaft color"), a read-only property the host's own ("shape.id
   ist nur lesbar"); errors of the host carry the line and column of the property or the call.
-* `type(x)` is the host's name for the type; `print`, `str(x)` and `"${x}"` show the host's text
+* `type(x)` is the host's name for the type, and (S3) so is every message that names a value's
+  type ("str.split: sep muss str sein, nicht mesh", "int(…) braucht eine Zahl oder einen Text,
+  nicht vec"); `print`, `str(x)` and `"${x}"` show the host's text
   (`mesh(6 Flächen)`), else `<mesh 3>` or, for a value type, `vec(1.0, 2.0, 3.0)`. Host objects
   are truthy; they cannot be map keys, indexed, iterated with `for` or written as JSON (methods of
   the host give lists where it makes sense).

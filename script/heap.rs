@@ -58,7 +58,8 @@ const _: () = assert!(core::mem::size_of::<Value>() == 16 && core::mem::size_of:
 
 impl Value {
     /// the type name scripts see: nil bool int float str bytes list map fn; "object" for a host
-    /// object (the script sees its host's name for the type: Vm::type_of)
+    /// object (the value alone does not know its type: the script and the VM's messages use the
+    /// host's name, Vm::type_of / Cx::type_of)
     pub fn type_name(self) -> &'static str {
         match self {
             Value::Nil => "nil",

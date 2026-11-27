@@ -32,13 +32,13 @@ use crate::strlib;
 use crate::vm::{Exc, Host, Vm};
 
 pub(crate) fn len(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.len", a, 0, "l")?;
+    let l = want_list(vm, "list.len", a, 0, "l")?;
     Ok(Value::Int(vm.heap.list(l).len() as i64))
 }
 
 /// append the arguments (as l.push(x, ..))
 pub(crate) fn push(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.push", a, 0, "l")?;
+    let l = want_list(vm, "list.push", a, 0, "l")?;
     vm.reserve(16 * (a.len() as u64).saturating_sub(1))?;
     vm.heap.update(l, |o| {
         if let Obj::List(v) = o {
@@ -50,7 +50,7 @@ pub(crate) fn push(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, 
 
 /// remove and return the last item (nil when the list is empty)
 pub(crate) fn pop(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.pop", a, 0, "l")?;
+    let l = want_list(vm, "list.pop", a, 0, "l")?;
     Ok(vm.heap.update(l, |o| match o {
         Obj::List(v) => v.pop(),
         _ => None,
@@ -64,8 +64,8 @@ fn outside<T>(f: &str, i: i64, n: usize) -> Result<T, Exc> {
 /// x before index i (0..=len)
 pub(crate) fn insert(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "list.insert";
-    let l = want_list(F, a, 0, "l")?;
-    let i = want_int(F, a, 1, "i")?;
+    let l = want_list(vm, F, a, 0, "l")?;
+    let i = want_int(vm, F, a, 1, "i")?;
     let n = vm.heap.list(l).len();
     if i < 0 || i as u64 > n as u64 {
         return outside(F, i, n);
@@ -84,8 +84,8 @@ pub(crate) fn insert(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
 /// remove and return the item at index i (0..len)
 pub(crate) fn remove(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "list.remove";
-    let l = want_list(F, a, 0, "l")?;
-    let i = want_int(F, a, 1, "i")?;
+    let l = want_list(vm, F, a, 0, "l")?;
+    let i = want_int(vm, F, a, 1, "i")?;
     let n = vm.heap.list(l).len();
     if i < 0 || i as u64 >= n as u64 {
         return outside(F, i, n);
@@ -99,16 +99,16 @@ pub(crate) fn remove(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
 
 /// a new list of the items start..end
 pub(crate) fn slice(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.slice", a, 0, "l")?;
+    let l = want_list(vm, "list.slice", a, 0, "l")?;
     let items = vm.heap.list(l);
-    let (s, e) = span("list.slice", a, 1, items.len())?;
+    let (s, e) = span(vm, "list.slice", a, 1, items.len())?;
     let part = items[s..e].to_vec();
     new_list(vm, part)
 }
 
 /// reverse in place; the list
 pub(crate) fn reverse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.reverse", a, 0, "l")?;
+    let l = want_list(vm, "list.reverse", a, 0, "l")?;
     let n = vm.heap.list(l).len();
     spend(vm, list_fuel(n))?;
     vm.heap.update(l, |o| {
@@ -121,7 +121,7 @@ pub(crate) fn reverse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Valu
 
 /// the first index of an item == x
 fn position(vm: &mut Vm, a: &[Value], f: &str) -> Result<Option<usize>, Exc> {
-    let l = want_list(f, a, 0, "l")?;
+    let l = want_list(vm, f, a, 0, "l")?;
     let x = arg(a, 1);
     let items = vm.heap.list(l);
     let at = items.iter().position(|v| vm.same(*v, x));
@@ -140,11 +140,11 @@ pub(crate) fn index(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 
 /// the items' texts with sep between them (l.join(sep), sep "" when missing)
 pub(crate) fn join(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.join", a, 0, "l")?;
+    let l = want_list(vm, "list.join", a, 0, "l")?;
     let sep = match arg(a, 1) {
         Value::Nil => None,
         Value::Str(r) => Some(r),
-        v => return bad("list.join", "sep", "str", v),
+        v => return bad(vm, "list.join", "sep", "str", v),
     };
     strlib::join_list(vm, l, sep)
 }
@@ -160,8 +160,8 @@ fn snapshot(vm: &mut Vm, l: heap::Ref) -> Vec<Value> {
 
 /// a new list of f(item)
 pub(crate) fn map(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.map", a, 0, "l")?;
-    let f = want_fn("list.map", a, 1, "f")?;
+    let l = want_list(vm, "list.map", a, 0, "l")?;
+    let f = want_fn(vm, "list.map", a, 1, "f")?;
     let items = snapshot(vm, l);
     let mut out = Vec::with_capacity(items.len());
     for x in items {
@@ -173,8 +173,8 @@ pub(crate) fn map(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Value
 
 /// a new list of the items for which f(item) is truthy
 pub(crate) fn filter(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.filter", a, 0, "l")?;
-    let f = want_fn("list.filter", a, 1, "f")?;
+    let l = want_list(vm, "list.filter", a, 0, "l")?;
+    let f = want_fn(vm, "list.filter", a, 1, "f")?;
     let items = snapshot(vm, l);
     let mut out = Vec::new();
     for x in items {
@@ -189,8 +189,8 @@ pub(crate) fn filter(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Va
 /// f(f(f(init, a), b), c) ..
 pub(crate) fn reduce(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "list.reduce";
-    let l = want_list(F, a, 0, "l")?;
-    let f = want_fn(F, a, 1, "f")?;
+    let l = want_list(vm, F, a, 0, "l")?;
+    let f = want_fn(vm, F, a, 1, "f")?;
     let items = snapshot(vm, l);
     let (mut acc, rest) = if a.len() >= 3 {
         (a[2], &items[..])
@@ -220,8 +220,8 @@ fn order(vm: &Vm, a: Value, b: Value) -> Result<Ordering, Exc> {
         (Value::Bytes(x), Value::Bytes(y)) => Ok(vm.heap.bytes_of(x).cmp(vm.heap.bytes_of(y))),
         _ => err(format!(
             "list.sort: {} und {} lassen sich nicht vergleichen – gib eine Vergleichsfunktion an",
-            a.type_name(),
-            b.type_name()
+            vm.type_of(a),
+            vm.type_of(b)
         )),
     }
 }
@@ -247,7 +247,7 @@ impl Sorter<'_> {
             Value::Bool(x) => Ok(x),
             Value::Int(i) => Ok(i < 0),
             Value::Float(x) => Ok(num::lt(x, 0.0)),
-            v => err(format!("list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht {}", v.type_name())),
+            v => err(format!("list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht {}", self.vm.type_of(v))),
         }
     }
 
@@ -290,10 +290,10 @@ impl Sorter<'_> {
 
 /// sort in place (stable), with an optional comparison function; the list
 pub(crate) fn sort(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
-    let l = want_list("list.sort", a, 0, "l")?;
+    let l = want_list(vm, "list.sort", a, 0, "l")?;
     let cmp = match arg(a, 1) {
         Value::Nil => None,
-        _ => Some(want_fn("list.sort", a, 1, "cmp")?),
+        _ => Some(want_fn(vm, "list.sort", a, 1, "cmp")?),
     };
     let mut items = if cmp.is_some() { snapshot(vm, l) } else { vm.heap.list(l).clone() };
     let mut tmp = items.clone();
@@ -323,7 +323,7 @@ fn is_finite(x: f64) -> bool {
 }
 
 /// a finite number (int or float) for range and linspace
-fn finite(f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
+fn finite(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
     match arg(a, i) {
         v @ Value::Int(_) => Ok(v),
         Value::Float(x) if !is_finite(x) => {
@@ -332,7 +332,7 @@ fn finite(f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
             err(format!("{}: {} muss endlich sein, nicht {}", f, p, s))
         }
         v @ Value::Float(_) => Ok(v),
-        v => bad(f, p, "eine Zahl", v),
+        v => bad(vm, f, p, "eine Zahl", v),
     }
 }
 
@@ -350,10 +350,10 @@ fn float_of(v: Value) -> f64 {
 pub(crate) fn range(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "list.range";
     let (start, end, step) = if arg(a, 1) == Value::Nil && arg(a, 2) == Value::Nil {
-        (Value::Int(0), finite(F, a, 0, "end")?, Value::Int(1))
+        (Value::Int(0), finite(vm, F, a, 0, "end")?, Value::Int(1))
     } else {
-        let step = if arg(a, 2) == Value::Nil { Value::Int(1) } else { finite(F, a, 2, "step")? };
-        (finite(F, a, 0, "start")?, finite(F, a, 1, "end")?, step)
+        let step = if arg(a, 2) == Value::Nil { Value::Int(1) } else { finite(vm, F, a, 2, "step")? };
+        (finite(vm, F, a, 0, "start")?, finite(vm, F, a, 1, "end")?, step)
     };
     let max = max_items(vm);
     if let (Value::Int(s), Value::Int(e), Value::Int(d)) = (start, end, step) {
@@ -405,9 +405,9 @@ pub(crate) fn range(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
 /// 7) exactly 60, 120 ..
 pub(crate) fn linspace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     const F: &str = "list.linspace";
-    let s = float_of(finite(F, a, 0, "start")?);
-    let e = float_of(finite(F, a, 1, "end")?);
-    let n = want_int(F, a, 2, "n")?;
+    let s = float_of(finite(vm, F, a, 0, "start")?);
+    let e = float_of(finite(vm, F, a, 1, "end")?);
+    let n = want_int(vm, F, a, 2, "n")?;
     if n < 0 {
         return err(format!("{}: n darf nicht negativ sein, nicht {}", F, n));
     }
