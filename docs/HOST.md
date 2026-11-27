@@ -5,7 +5,9 @@ events, and a description of all of it for the editor and the object catalogue. 
 of [RICHTUNG.md](RICHTUNG.md) (G4.1, G4.2, G4.3, G4.5, G3 and G8.3). The first version -- functions
 by name through `Host::call`, maps as objects, `HostItem` lists for the editor -- stays as it is
 ([LANGUAGE.md](LANGUAGE.md)); everything here is added on top, and a host that does not use it
-compiles and behaves as before.
+compiles and behaves as before. What stage S3 added for the gaps the first such host (JFLib's
+modeltool) found is marked (S3): forms, optional parameters and unions in signatures, binding a
+call, `compile_api`, the host's type names in messages, closer suggestions and removed names.
 
 What the script sees is in [LANGUAGE.md](LANGUAGE.md#host-objects). The checks of all of it are
 the group `scripthost` of `scripttest` ([`scripthostt.rs`](../scripttest/src/scripthostt.rs)), a
@@ -37,8 +39,10 @@ let d = cx.data(v).unwrap();                    // &[Value]: the three floats
   (numbers as `==` does), `print` shows `vec(1.0, 2.0, 0.0)`. The host needs no table of them and
   hears of no drops.
 * The type is a `&'static str` the host chooses: what `type(x)` gives and what errors name ("vec
-  hat keine Eigenschaft q"). It must not be a name of the language (`str`, `list`, ..);
-  `Api::validate` says so.
+  hat keine Eigenschaft q", (S3) also the library's and the VM's: "str.split: sep muss str sein,
+  nicht mesh"). It must not be a name of the language (`str`, `list`, ..); `Api::validate` says
+  so. `Value::type_name()` alone says `object` (a value does not know its VM); `vm.type_of(v)` /
+  `cx.type_of(v)` give the host's name.
 * Objects the host makes between runs are valid until the next run, as `new_str`'s are; values it
   keeps longer it pins (`vm.pin`). `vm.find_object(ty, id)` gives the live object of an id
   without making one, `vm.take_dropped()` the drops at once (after `vm.collect()`, say).
@@ -205,14 +209,116 @@ assert!(api.validate().is_empty());                         // unknown types, na
 let prog = script::compile_with("model.jfs", src, &api.names())?;   // its names, strict
 ```
 
-* Types are text: `int float str bool bytes list map fn nil any`, a described type, `list<T>`
-  (a list of T: `for x in` and `l[i]` give T). Anything else is shown as written.
-* Parameters: `name: T`, `name: T = default`, `...rest: T`; a parameter without a type is any;
-  a function without `: R` returns nothing known.
+* Types are text: `int float str bool bytes list map fn nil any`, (S3) `number` (int or float), a
+  described type, `list<T>` (a list of T: `for x in` and `l[i]` give T), (S3) a union of those,
+  `number | vec`, also in properties, values and results (`find(name: str): shape | nil`; `T |
+  nil` has T's members in the editor, another union none). Anything else is shown as written.
+* Parameters: `name: T`, `name: T = default`, (S3) `name?: T` (optional without a default),
+  `...rest: T`; a parameter without a type is any; a function without `: R` returns nothing
+  known. A parameter with `?` or a default may be left out, a rest parameter takes any number.
+* (S3) Forms (overloads, as TypeScript writes them): a function or method declared several times,
+  each form with its own description; `api.sigs(name)` / `ty.sigs(name)` give them in order,
+  `global(name)` and `find_method(name)` the first. Two identical forms are an error of
+  `validate`, two forms are not.
 * Operators: `A op B: R` for `+ - * / % < <= > >=`, `-A: R` for the minus; listed under the type
   they belong to, also with the type on the right (`float * vec: vec`).
+* (S3) `.removed("geom.move", "m.translate")` (on `Api` for global and namespaced names, on `Type`
+  for members): a script that still uses the name hears "geom.move wurde entfernt – nimm
+  m.translate" instead of a guess (a warning for members, an error for a global name, as unknown
+  names are).
+* (S3) `.check_calls()`: the signatures name every form a call may take, so `ls::check` and
+  `compile_api` warn about a call whose number of arguments fits none ("geom.box: 4 Argumente,
+  nimmt aber höchstens 3 (w, h, d)", "vec: 2 Argumente passen zu keiner Form (vec(x, y, z),
+  vec(v))"). Off by default: descriptions of S2 name the longest form and leave the shorter ones
+  to the text (modeltool's `m.move(v)`), and parameters without a default were never required.
 * `Api::from_items(&host_items)` turns a `HostItem` list (the form before S2) into a description
   without types, so a host can move step by step.
+
+```rust
+let api = Api::new("modeltool")
+    .func("vec(x: float, y: float, z?: float): vec", "Ein Vektor aus Zahlen.")
+    .func("vec(v: vec | list): vec", "Ein Vektor aus einem Vektor oder einer Liste [x, y, z].")
+    .removed("geom.move", "m.translate")
+    .typ(Type::new("mesh", "Ein Netz.")
+        .method("translate(x: float, y: float, z: float): mesh", "Verschoben um x, y, z.")
+        .method("translate(v: vec | list): mesh", "Verschoben um v.")
+        .method("scale(s: number | vec): mesh", "Skaliert.")
+        .removed("move", "translate"))
+    .check_calls();
+```
+
+### Binding a call (S3)
+
+`api::bind(&forms, &args)` says which form a call fits and which parameter each argument fills;
+the VM does not bind (a host function gets the values as the script passed them), a host binds
+when it wants to: to pick an overload, to warn about extra arguments, and with the named
+arguments S3 adds next, to read an argument by its parameter's name.
+
+```rust
+use script::api::{self, Arg};
+
+fn call(&mut self, cx: &mut Cx, name: &str, args: &[Value]) -> Result<Value, Fail> {
+    let tys: Vec<&str> = args.iter().map(|v| cx.type_of(*v)).collect();
+    let a: Vec<Arg> = tys.iter().map(|t| Arg::pos(t)).collect();     // Arg::named(n, t) later
+    let b = match api::bind(&self.api.sigs(name), &a) {
+        Ok(b) => b,
+        Err(why) => return Err(cx.error(&self.wrong_call(name, &why))),  // each form's Mismatch
+    };
+    match (name, b.form) {
+        ("vec", 0) => vec3(cx, num(args, b.arg("x")), num(args, b.arg("y")), num(args, b.arg("z"))),
+        ("vec", 1) => vec_of(cx, args[b.arg("v").unwrap()]),
+        ..
+    }
+}
+```
+
+The rules, in this order (each form's first broken rule is its `Mismatch`):
+
+1. Arguments by position fill the parameters in order; a rest parameter takes every one from its
+   place on (`Binding::args("cuts")`). More than the parameters: `TooMany { most }`.
+2. A named argument fills the parameter of its name: none of that name, or a rest parameter:
+   `NoParam`; a parameter that already has an argument (by position or named twice): `Twice`.
+3. A parameter that may not be left out (no `?`, no default, not rest) without an argument:
+   `Missing`.
+4. Each argument's type fits its parameter's (`api::fits`): the same type, `any` or not known
+   (`""`) on either side, int for float and number, float for number, a list for `list<T>`, a
+   union when one of its types fits; `nil` fits an optional parameter (a left-out argument is nil).
+   Else `Type`.
+
+The first form that fits, in the order the host declared them, wins (as in TypeScript), so a
+host lists the more specific forms first. `Sig::arity()` gives the fewest and the most arguments
+of a form, `api::count_warning(shown, &forms, n)` the warning `ls::check` gives for a number
+that fits none: a host's own run-time warning about extra arguments can use either.
+
+Named arguments (`f(x, width: 2)`) come next in S3; the parser will hand a host the names with
+the values, `Arg::named("width", ty)` takes them as they are, and `b.arg("width")` finds the
+value whether the script passed it by position or by name. That is why the description's
+parameter names are part of the interface (G9.3: English) and should not change lightly.
+
+### Compiling with the description (S3)
+
+`script::compile_api(name, src, &api)` is `compile_with(name, src, &api.names())` plus the
+warnings of the language services on the same parse, so a host need not parse twice:
+
+```rust
+let c = script::compile_api("haus.jfs", src, &api)?;   // Err: the errors, as compile_with's
+for w in &c.warnings { report(w) }                      // Diagnostic: file, line, col, msg
+let mut vm = Vm::new(&c.program, limits);
+// .. run; the modules it imported (Host::load) were compiled the same way:
+for w in vm.take_warnings() { report(w) }               // a module's with its path, Cx::warn's
+```
+
+* The warnings are those of `ls::check(src, &api)` (with the file): members a known host type
+  does not have, removed names, a division of two ints, a top-level `let` read before it ran,
+  with `check_calls` the number of arguments. Unknown names are errors, as with `compile_with`.
+* A module imported by such a program, and a script of `vm.add_script`, is compiled with the
+  same description; its warnings join the VM's own (`Cx::warn`'s) in the order they came, as
+  `Warning { file, line, col, msg }` with the module's path, at most `MAX_WARNINGS` between two
+  `take_warnings`. A program of `compile_with` gives none, as before.
+* modeltool parses each script and module twice today (`ls::check` and `compile_with`); with
+  `compile_api` its script's warnings come with the program and its modules' through
+  `take_warnings`, each module's at the time of its import among the host's own (today it lists
+  all of the language services' first).
 
 ### In the editor
 
@@ -225,6 +331,14 @@ let h = ls::hover(src, at, &cx);                           // "mesh.bevel(width:
 let s = ls::signature(src, caret, &cx);                    // parameters with types and defaults
 let d = ls::check(src, &cx);                               // syntax, names, unknown members
 ```
+
+(S3) With forms, `signature` gives every form (`s.forms`, each with its label, parameter ranges,
+active parameter and description) and in `label`, `params`, `active`, `doc` the one at `s.form`:
+the first with room for the argument at the caret whose finished arguments fit where their types
+are known (`put("a", |` picks `put(s: str, ..)`), else the first with room, else the first.
+`hover` shows each form on a line of its own, completion one item per name with its first form.
+A call's type is the result all forms its arguments may bind to share: `load("a")` is a mesh
+when `load(path: str): mesh` and `load(id: int): vec`, `load(x)` of an unknown `x` is not known.
 
 `complete`, `hover`, `signature` and `definition` take a `&CompleteCx` as before or a `&Context`
 (or `&api`). The type of the code before a dot comes from the description and the script, simply
@@ -242,14 +356,26 @@ and honestly (no type annotations in scripts yet, G3 b is later):
 `ls::check` warns about a property or method the known type does not have (with the closest
 name: "mesh hat keine Eigenschaft facs – meinst du faces?"), a read-only property assigned, a
 method read as a property and the other way round, an event the type does not have, a member of
-a host namespace that is not there; unknown names are errors, as `compile_with` makes them.
+a host namespace that is not there, (S3) a removed name with what to take instead, with
+`check_calls` a call whose number of arguments fits no form; unknown names are errors, as
+`compile_with` makes them.
+
+(S3) "meinst du x?" names only a candidate that is really close (`check.rs`): inserted, deleted,
+changed characters and two swapped neighbours count one each, a difference in case nothing; at
+most 1 for names of 3 to 5 characters, 2 for 6 to 8, 3 for longer ones, and from 2 on the first
+letter must be the same. A member is compared without its namespace and only with the members of
+that namespace or type; names of 1 or 2 characters get none, a member of 2 that lacks a letter
+does (`vec.ad` -> `vec.add`). Kept: `prnt`, `pirnt`, `PRINT` -> `print`, `wran` -> `warn`,
+`facs` -> `faces`, `cilynder` -> `cylinder`; gone: `geom.move` -> `geom.cone` (2 changes in 4
+characters), `normal` -> `format`, `loger` -> `log`.
 
 ### The object catalogue
 
 `api.markdown()` is the app's reference as a page (globals, then one section per type with its
 properties, methods, events and operators); `api.catalogue()` is the same as a tree of `Entry {
-kind, name, label, doc, children }` for a UI. The catalogue window itself belongs to the later
-crate `jfscript-ide` (G8.1).
+kind, name, label, doc, children }` for a UI. (S3) The forms of a function or method are an entry
+(a line) each, in their order; optional parameters show as `z?: float`, unions as written. The
+catalogue window itself belongs to the later crate `jfscript-ide` (G8.1).
 
 ```text
 ### vec (Werttyp: == vergleicht die Werte)
