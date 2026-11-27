@@ -28,7 +28,7 @@ use agent_core::json::{self as js, Number, Value as J};
 use crate::heap::{self, Map, Ref, Value};
 use crate::num;
 use crate::stdlib::{arg, bad, cap, err, heap_full, list_fuel, new_list, new_map, new_str, opt_int, parse_float, spend, text_fuel};
-use crate::vm::{fuel_msg, ErrorKind, Exc, Host, Vm};
+use crate::vm::{Exc, Host, Vm};
 
 /// the most levels: no value deeper than this below the outermost one
 pub(crate) const DEPTH: usize = 64;
@@ -63,7 +63,7 @@ impl Enc<'_> {
             return Err(heap_full(vm));
         }
         if self.count / 8 > self.budget {
-            return Err(Exc::Fatal(ErrorKind::Fuel, fuel_msg(vm.lim.fuel)));
+            return Err(vm.fuel_out());
         }
         if depth > DEPTH {
             return err(format!("json.encode: Die Daten sind zu tief verschachtelt (mehr als {} Ebenen)", DEPTH));
@@ -135,7 +135,7 @@ impl Enc<'_> {
 
 /// v as JSON text (indent 0: compact)
 pub(crate) fn encode(vm: &mut Vm, v: Value, indent: u32) -> Result<String, Exc> {
-    let budget = vm.lim.fuel.saturating_sub(vm.call_fuel + vm.used);
+    let budget = vm.fuel_end.saturating_sub(vm.call_fuel + vm.used);
     let mut enc = Enc { vm: &*vm, seen: Vec::new(), count: 0, most: most(vm), budget, strings: 0 };
     let tree = enc.value(v, 0)?;
     let count = enc.count;

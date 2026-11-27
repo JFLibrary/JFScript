@@ -38,6 +38,7 @@ pub enum TokKind {
     Await,          // (S3) await e
     LParen, RParen, LBracket, RBracket, LBrace, RBrace, Comma, Dot, Colon, Semi,
     DotDot,         // ..
+    DotDotDot,      // (S3) ... before the rest of a list pattern: let [a, ...rest] = l
     Plus, Minus, Star, Slash, Percent, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
     Assign,         // =
     EqEq,           // ==
@@ -47,6 +48,7 @@ pub enum TokKind {
     AndAnd,         // &&
     OrOr,           // ||
     Coalesce,       // ??
+    Question,       // (S3) ? of the conditional c ? a : b
 }
 
 /// what a token is for syntax highlighting
@@ -265,7 +267,9 @@ impl Lexer<'_> {
     fn punct(&mut self, ch: char, line: u32, col: u32) -> TokKind {
         use TokKind::*;
         let two = |a: u8, b: u8, s: &Self| s.peek(0) == a && s.peek(1) == b;
-        let (kind, n) = if two(b'.', b'.', self) {
+        let (kind, n) = if two(b'.', b'.', self) && self.peek(2) == b'.' {
+            (DotDotDot, 3)
+        } else if two(b'.', b'.', self) {
             (DotDot, 2)
         } else if two(b'=', b'=', self) {
             (EqEq, 2)
@@ -312,6 +316,7 @@ impl Lexer<'_> {
                 '!' => Not,
                 '<' => Lt,
                 '>' => Gt,
+                '?' => Question,
                 _ => Error,
             };
             (k, 1)
@@ -331,7 +336,6 @@ impl Lexer<'_> {
                 let hint = match ch {
                     '&' => " (für „und“ schreibe &&)",
                     '|' => " (für „oder“ schreibe ||)",
-                    '?' => " (meinst du ?? für einen Ersatzwert?)",
                     '\'' => " (Zeichenketten stehen in doppelten Anführungszeichen \"…\")",
                     '$' => " (${…} gibt es nur in Zeichenketten)",
                     _ => "",

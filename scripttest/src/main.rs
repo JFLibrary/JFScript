@@ -7,7 +7,7 @@
 // (S3) await with promises of the host and waiting invocations (scriptawaitt.rs).
 // They came from JFLib's coretest.  Console program; exit code 1 when a check fails.
 //
-//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost, scriptawait
+//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost, scriptawait, scriptsyn
 //   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs), what host objects cost (scripthostt.rs)
 //   cargo run -p scripttest -- --math FILE     answers for tools/script_math_check.py
 //   (cargo jflib test -p scripttest runs it through tests/all.uis; --script is ignored)
@@ -25,6 +25,7 @@ mod scripthostt;
 mod scriptlibt;
 mod scriptlst;
 mod scriptmodt;
+mod scriptsynt;
 mod scriptt;
 mod scriptvmt;
 
@@ -64,7 +65,7 @@ fn run() -> i32 {
         scripthostt::bench();
         return 0;
     }
-    let groups: [(&'static str, fn(&mut T)); 7] = [
+    let groups: [(&'static str, fn(&mut T)); 8] = [
         ("script", scriptt::run),
         ("scriptvm", scriptvmt::run),
         ("scriptlib", scriptlibt::run),
@@ -72,6 +73,7 @@ fn run() -> i32 {
         ("scriptmod", scriptmodt::run),
         ("scripthost", scripthostt::run),
         ("scriptawait", scriptawaitt::run),
+        ("scriptsyn", scriptsynt::run),
     ];
     let mut failed = 0;
     let mut total = 0;

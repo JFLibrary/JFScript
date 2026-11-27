@@ -10,9 +10,17 @@
 //               division of two values that are certainly ints (intdiv.rs: it truncates),
 //               (S3) await in a function that list.map, list.sort .. run (awaitchk.rs)
 //   globals: the predeclared names (crate::GLOBALS for check())
-//   resolve_strict(&program, globals)   the same with unknown names as errors
+//   resolve_strict(&program, globals, api)   the same with unknown names as errors
 //               (crate::compile_with: the host says which names it has); (S3) with the
 //               removed names of a host's description: "box wurde entfernt – nimm geom.box"
+//
+// (S3) The syntax pass: the names of patterns (let [a, b], parameters, for {x, y}, the for
+// clauses of a comprehension, a scope of its own) are declared like a let's; a default sees the
+// parameters and names before it.  Named arguments: a name twice in one call is an error; one
+// to a function of the host is an error without the host's description (it binds them: no
+// form takes it), one to the library is checked against its parameters (lsdoc.rs), one to a fn
+// declaration of the file that is never assigned gives a warning when it names no parameter
+// (at run time that throws).
 //
 // Suggestions (S3): suggest(name, candidates) is the one rule for "meinst du x?", here and for
 // the members of host types and namespaces (lsapi.rs).  A candidate is suggested only when it
@@ -26,11 +34,12 @@
 // without its namespace: geom.move is no typo of geom.cone (move -> cone is 2 changes in 4
 // characters).
 
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::api::Removed;
+use crate::api::{self, Api, Arg, Removed};
 use crate::ast::*;
 use crate::Diagnostic;
 
@@ -40,34 +49,79 @@ struct Resolver<'a> {
     strict: bool,
     /// (S3) names that are gone, with what to take instead
     removed: &'a [Removed],
+    /// (S3) the host's description: named arguments to its functions are checked against it
+    api: Option<&'a Api>,
     /// top-level lets and fns: name, the byte from which top-level code may read it, line
     top: Vec<(&'a str, u32, u32)>,
     /// the block scopes inside the top level, innermost last
     scopes: Vec<Vec<&'a Name>>,
     fns: u32,
     loops: u32,
+    /// (S3) the fn declarations in blocks by their name's byte, the top-level ones by name
+    /// (named arguments to them are checked)
+    decls: BTreeMap<u32, &'a FnDef>,
+    top_fns: Vec<(&'a str, &'a FnDef)>,
+    /// (S3) names that an assignment changes somewhere in the file
+    assigned: BTreeSet<&'a str>,
     out: Vec<Diagnostic>,
 }
 
 /// see the module comment
 pub fn resolve(prog: &Program, globals: &[&str]) -> Vec<Diagnostic> {
-    run(prog, globals, false, &[])
+    run(prog, globals, false, None)
 }
 
-/// resolve() with unknown names as errors; removed: names that are gone (a host's description)
-pub(crate) fn resolve_strict(prog: &Program, globals: &[&str], removed: &[Removed]) -> Vec<Diagnostic> {
-    run(prog, globals, true, removed)
+/// resolve() with unknown names as errors; api: the host's description (its removed names, the
+/// signatures named arguments are checked against)
+pub(crate) fn resolve_strict(prog: &Program, globals: &[&str], api: Option<&Api>) -> Vec<Diagnostic> {
+    run(prog, globals, true, api)
 }
 
-fn run(prog: &Program, globals: &[&str], strict: bool, removed: &[Removed]) -> Vec<Diagnostic> {
-    let mut r = Resolver { globals, strict, removed, top: Vec::new(), scopes: Vec::new(), fns: 0, loops: 0, out: Vec::new() };
+fn run(prog: &Program, globals: &[&str], strict: bool, api: Option<&Api>) -> Vec<Diagnostic> {
+    let removed = api.map_or(&[][..], |a| &a.removed[..]);
+    let mut r = Resolver {
+        globals,
+        strict,
+        removed,
+        api,
+        top: Vec::new(),
+        scopes: Vec::new(),
+        fns: 0,
+        loops: 0,
+        decls: BTreeMap::new(),
+        top_fns: Vec::new(),
+        assigned: BTreeSet::new(),
+        out: Vec::new(),
+    };
     for s in &prog.body {
         match &s.kind {
-            StmtKind::Let { name, .. } => r.declare_top(name, s.span.end),
-            StmtKind::Fn(FnDef { name: Some(name), .. }) => r.declare_top(name, 0),
+            StmtKind::Let { pat, .. } => {
+                let mut ns = Vec::new();
+                pat.names(&mut ns);
+                for n in ns {
+                    r.declare_top(n, s.span.end);
+                }
+            }
+            StmtKind::Fn(f @ FnDef { name: Some(name), .. }) => {
+                r.declare_top(name, 0);
+                if !r.top_fns.iter().any(|x| x.0 == name.text) {
+                    r.top_fns.push((name.text.as_str(), f));
+                }
+            }
             _ => {}
         }
     }
+    visit(&prog.body, &mut |n| match n {
+        Node::Stmt(Stmt { kind: StmtKind::Assign { target: Expr { kind: ExprKind::Var(x), .. }, .. }, .. }) => {
+            r.assigned.insert(x.as_str());
+        }
+        Node::Pattern(Pattern { kind: PatKind::Target(t), .. }) => {
+            if let ExprKind::Var(x) = &t.kind {
+                r.assigned.insert(x.as_str());
+            }
+        }
+        _ => {}
+    });
     for s in &prog.body {
         r.stmt(s);
     }
@@ -231,8 +285,9 @@ impl<'a> Resolver<'a> {
     fn block(&mut self, b: &'a Block) {
         self.scopes.push(Vec::new());
         for s in &b.stmts {
-            if let StmtKind::Fn(FnDef { name: Some(n), .. }) = &s.kind {
+            if let StmtKind::Fn(f @ FnDef { name: Some(n), .. }) = &s.kind {
                 self.declare(n, false);
+                self.decls.insert(n.span.start, f);
             }
         }
         for s in &b.stmts {
@@ -245,8 +300,9 @@ impl<'a> Resolver<'a> {
         let loops = core::mem::replace(&mut self.loops, 0);
         self.fns += 1;
         self.scopes.push(Vec::new());
+        // (S3) a parameter's default sees the parameters before it
         for p in &f.params {
-            self.declare(p, true);
+            self.bind(p, true);
         }
         self.block(&f.body);
         self.scopes.pop();
@@ -254,13 +310,78 @@ impl<'a> Resolver<'a> {
         self.loops = loops;
     }
 
+    /// (S3) the names of a pattern into the innermost scope, the defaults in it read before the
+    /// names after them; param: the scope holds parameters.  A Target leaf (a destructuring
+    /// assignment) is written, not declared.
+    fn bind(&mut self, p: &'a Pattern, param: bool) {
+        match &p.kind {
+            PatKind::Name(n) => {
+                // a top-level let's name has its value from here on (a default after it in the
+                // pattern reads it)
+                if self.scopes.is_empty()
+                    && let Some(d) = self.top.iter_mut().find(|d| d.0 == n.text)
+                {
+                    d.1 = d.1.min(n.span.end);
+                }
+                self.declare(n, param)
+            }
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.bind(x, param);
+                }
+                if let Some(r) = rest {
+                    self.bind(r, param);
+                }
+            }
+            PatKind::Map(entries) => {
+                for (_, x) in entries {
+                    self.bind(x, param);
+                }
+            }
+            PatKind::Default(x, e) => {
+                self.expr(e);
+                self.bind(x, param);
+            }
+            PatKind::Target(t) => match &t.kind {
+                ExprKind::Var(n) => self.use_name(n, t.span, true),
+                _ => self.expr(t),
+            },
+        }
+    }
+
+    /// the variables of a for loop or clause: a scope is open; a range has one, a name
+    fn for_vars(&mut self, a: &'a Pattern, b: Option<&'a Pattern>, src: &'a ForSrc) {
+        self.bind(a, false);
+        if let Some(b) = b {
+            self.bind(b, false);
+        }
+        if matches!(src, ForSrc::Range(..)) {
+            if let Some(b) = b {
+                let at = b.name().map_or(Name { text: String::from(","), span: b.span }, |n| n.clone());
+                self.name_error(&at, String::from("Ein Bereich a..b hat nur eine Laufvariable"));
+            } else if a.name().is_none() {
+                self.report(a.span, 1, true, String::from("Ein Bereich a..b gibt ganze Zahlen: die lassen sich nicht zerlegen"));
+            }
+        }
+    }
+
+    fn src(&mut self, src: &'a ForSrc) {
+        match src {
+            ForSrc::Each(e) => self.expr(e),
+            ForSrc::Range(lo, hi) => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+        }
+    }
+
     fn stmt(&mut self, s: &'a Stmt) {
         match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat, init } => {
                 if let Some(e) = init {
                     self.expr(e);
                 }
-                self.declare(name, false);
+                self.bind(pat, false);
             }
             StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
@@ -279,21 +400,9 @@ impl<'a> Resolver<'a> {
                 self.loops -= 1;
             }
             StmtKind::For { a, b, src, body } => {
-                match src {
-                    ForSrc::Each(e) => self.expr(e),
-                    ForSrc::Range(lo, hi) => {
-                        self.expr(lo);
-                        self.expr(hi);
-                    }
-                }
+                self.src(src);
                 self.scopes.push(Vec::new());
-                self.declare(a, false);
-                if let Some(b) = b {
-                    self.declare(b, false);
-                    if matches!(src, ForSrc::Range(..)) {
-                        self.name_error(b, String::from("Ein Bereich a..b hat nur eine Laufvariable"));
-                    }
-                }
+                self.for_vars(a, b.as_ref(), src);
                 self.loops += 1;
                 self.block(body);
                 self.loops -= 1;
@@ -330,6 +439,10 @@ impl<'a> Resolver<'a> {
                 }
                 self.expr(value);
             }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                self.bind(pat, false);
+            }
             StmtKind::Block(b) => self.block(b),
         }
     }
@@ -350,7 +463,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             ExprKind::Fn(f) => self.func(f),
-            ExprKind::Unary(_, a) | ExprKind::Field(a, _) => self.expr(a),
+            ExprKind::Unary(_, a) | ExprKind::Field(a, _) | ExprKind::Named(_, a) => self.expr(a),
             ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -360,7 +473,145 @@ impl<'a> Resolver<'a> {
                 for x in args {
                     self.expr(x);
                 }
+                if args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {
+                    self.named(e, args);
+                }
+            }
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Comp(x, clauses) => {
+                // (S3) a scope per for clause, the expression in front last
+                let depth = self.scopes.len();
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.src(src);
+                            self.scopes.push(Vec::new());
+                            self.for_vars(a, b.as_ref(), src);
+                        }
+                        Clause::If(c) => self.expr(c),
+                    }
+                }
+                self.expr(x);
+                self.scopes.truncate(depth);
             }
         }
+    }
+
+    /// whether a name means a declaration of the script (not the host's)
+    fn declared(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.iter().any(|n| n.text == name)) || self.top.iter().any(|d| d.0 == name)
+    }
+
+    /// the fn declaration a name means, when it is one (innermost scope first)
+    fn decl_of(&self, name: &str) -> Option<&'a FnDef> {
+        for s in self.scopes.iter().rev() {
+            if let Some(n) = s.iter().rev().find(|n| n.text == name) {
+                return self.decls.get(&n.span.start).copied();
+            }
+        }
+        self.top_fns.iter().find(|x| x.0 == name).map(|x| x.1)
+    }
+
+    /// (S3) a call with named arguments (see the module comment)
+    fn named(&mut self, call: &'a Expr, args: &'a [Expr]) {
+        // a name twice
+        for (i, a) in args.iter().enumerate() {
+            if let ExprKind::Named(n, _) = &a.kind
+                && args[..i].iter().any(|b| matches!(&b.kind, ExprKind::Named(m, _) if m.text == n.text))
+            {
+                self.name_error(n, format!("Das benannte Argument {} kommt zweimal vor", n.text));
+                return;
+            }
+        }
+        // the function: a name of the host or of the library (f, ns.f), or a fn of the file
+        let (full, at) = match &call.kind {
+            ExprKind::Call(f, _) => match &f.kind {
+                ExprKind::Var(n) if !self.declared(n) => (n.clone(), f.span),
+                ExprKind::Var(n) => {
+                    if let Some(d) = self.decl_of(n)
+                        && !self.assigned.contains(n.as_str())
+                    {
+                        self.script_fn(n, d, args);
+                    }
+                    return;
+                }
+                _ => return,
+            },
+            ExprKind::Method(obj, name, _) => match &obj.kind {
+                ExprKind::Var(ns) if !self.declared(ns) => (format!("{}.{}", ns, name.text), name.span),
+                _ => return,
+            },
+            _ => return,
+        };
+        let shown = Name { text: full.clone(), span: at };
+        let forms: Vec<api::Sig> = match (crate::lsdoc::sig(&full), self.api) {
+            (Some(s), _) => alloc::vec![s],
+            (None, Some(a)) => a.sigs(&full).into_iter().cloned().collect(),
+            (None, None) => {
+                let msg = format!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", full);
+                self.name_error(&shown, msg);
+                return;
+            }
+        };
+        if forms.is_empty() {
+            if self.api.is_some_and(|a| a.global(&full).is_some()) {
+                let msg = format!("{} ist keine Funktion des Hosts, die benannte Argumente nimmt", full);
+                self.name_error(&shown, msg);
+            }
+            return;
+        }
+        let a: Vec<Arg> = args.iter().map(arg_of).collect();
+        let refs: Vec<&api::Sig> = forms.iter().collect();
+        if let Err(Some(m)) = api::bind_lenient(&refs, &a) {
+            let msg = api::named_message(&full, refs[0], &a, m);
+            let at = mismatch_at(args, m).unwrap_or(shown);
+            self.name_error(&at, msg);
+        }
+    }
+
+    /// named arguments to a fn of the file: a warning for a name that is no parameter, or one a
+    /// positional argument fills already (at run time they throw)
+    fn script_fn(&mut self, name: &str, d: &'a FnDef, args: &'a [Expr]) {
+        let pos = args.iter().filter(|a| !matches!(a.kind, ExprKind::Named(..))).count();
+        let params: Vec<Option<&str>> = d.params.iter().map(|p| p.name().map(|n| n.text.as_str())).collect();
+        for a in args {
+            let ExprKind::Named(n, _) = &a.kind else { continue };
+            let msg = match params.iter().position(|p| *p == Some(n.text.as_str())) {
+                None => {
+                    let mut m = format!("{} hat keinen Parameter {}", name, n.text);
+                    if let Some(c) = suggest_member(&n.text, params.iter().flatten().copied()) {
+                        m.push_str(&format!(" – meinst du {}?", c));
+                    }
+                    m
+                }
+                Some(i) if i < pos => format!("{}: der Parameter {} hat schon ein Argument", name, n.text),
+                Some(_) => continue,
+            };
+            self.report(n.span, n.text.chars().count(), false, msg);
+        }
+    }
+}
+
+/// (S3) a call's argument as api::bind sees it (a named one by its name; types not known)
+pub(crate) fn arg_of(e: &Expr) -> Arg<'_> {
+    match &e.kind {
+        ExprKind::Named(n, _) => Arg::named(&n.text, ""),
+        _ => Arg::pos(""),
+    }
+}
+
+/// the name of the argument a mismatch is about (a named one), for the message's place
+fn mismatch_at(args: &[Expr], m: api::Mismatch) -> Option<Name> {
+    let i = match m {
+        api::Mismatch::NoParam { arg } | api::Mismatch::Twice { arg, .. } => arg,
+        _ => return None,
+    };
+    match &args.get(i)?.kind {
+        ExprKind::Named(n, _) => Some(n.clone()),
+        _ => None,
     }
 }

@@ -149,6 +149,20 @@ pub(crate) fn doc(name: &str) -> Option<&'static Doc> {
     DOCS.iter().find(|x| x.name == name)
 }
 
+/// (S3) the parameters of a built-in or library function as a signature, the receiver of a
+/// method first ("str.split": s, sep, n; "math.min": a and any number more), for named
+/// arguments; None for a constant or an unknown name
+pub(crate) fn sig(name: &str) -> Option<crate::api::Sig> {
+    let d = doc(name)?;
+    let p = d.params?;
+    let all = match (d.recv.is_empty(), p.is_empty()) {
+        (true, _) => alloc::string::String::from(p),
+        (false, true) => alloc::string::String::from(d.recv),
+        (false, false) => alloc::format!("{}, {}", d.recv, p),
+    };
+    Some(crate::api::Sig { params: crate::api::parse_params(&all), ret: alloc::string::String::new() })
+}
+
 /// the methods of type ty (entries with a receiver)
 pub(crate) fn methods(ty: &str) -> impl Iterator<Item = &'static Doc> + '_ {
     DOCS.iter().filter(move |x| !x.recv.is_empty() && x.name.split_once('.').is_some_and(|(t, _)| t == ty))

@@ -136,6 +136,21 @@ pub(crate) enum Op {
     /// that is not settled yet makes the invocation wait (task.rs), and this instruction runs
     /// again when it goes on; any other value stays
     Await,
+    /// +1: (S3) item i of the list in slot s (nil past its end); a value that is no list throws
+    Elem(u32, u32),
+    /// +1: (S3) a new list of the items of the list in slot s from index i on
+    Rest(u32, u32),
+    /// +1: (S3) the entry of key k (constant) of the map in slot s, nil when it is missing; a
+    /// host object's property; another value throws
+    Key(u32, u32),
+    /// -1: (S3) the top appended to the list in slot s (a list comprehension's)
+    Append(u32),
+    /// 0: (S3) jump to t when slot s is not nil (a parameter with a default that got a value)
+    SkipIfSet(u32, u32),
+    /// (S3) a call with named arguments: constant k (Const::Call) tells what is called and the
+    /// names; the stack as for Call, CallHost, CallMethod or CallHostMethod (the compiler
+    /// counts its effect, Op::effect says 0)
+    CallNamed(u32),
 }
 
 impl Op {
@@ -144,13 +159,14 @@ impl Op {
         use Op::*;
         match self {
             Nil | True | False | Int(_) | Const(_) | Dup | GetLocal(_) | GetCell(_) | GetUp(_) | GetGlobal(_) | GetHost(_)
-            | GetHostField(_) | Closure(_) | IterNext(..) | RangeNext(..) => 1,
+            | GetHostField(_) | Closure(_) | IterNext(..) | RangeNext(..) | Elem(..) | Rest(..) | Key(..) => 1,
             Dup2 | IterNext2(..) => 2,
             Reserve(n) => n as i32,
             PopN(n) => -(n as i32),
             Pop | SetLocal(_) | SetCell(_) | SetUp(_) | SetGlobal(_) | AssignHost(_) | JumpIfFalse(_) | Return | EndModule | Throw
-            | Add | Sub | Mul | Div | Rem | Eq | Ne | Lt | Le | Gt | Ge | And(_) | Or(_) | Coalesce(_) | GetIndex => -1,
-            NewCell(_) | BoxLocal(_) | Neg | Not | Await | Jump(_) | GetField(_) | IterPrep(_) | RangePrep(_) => 0,
+            | Add | Sub | Mul | Div | Rem | Eq | Ne | Lt | Le | Gt | Ge | And(_) | Or(_) | Coalesce(_) | GetIndex | Append(_) => -1,
+            NewCell(_) | BoxLocal(_) | Neg | Not | Await | Jump(_) | GetField(_) | IterPrep(_) | RangePrep(_) | SkipIfSet(..)
+            | CallNamed(_) => 0,
             Concat(n) | MakeList(n) => 1 - n as i32,
             MakeMap(n) => 1 - 2 * n as i32,
             SetField(_) => -2,
@@ -210,6 +226,8 @@ pub(crate) struct Proto {
     pub up_names: Vec<String>,
     /// the module the function belongs to: 0 in a Program, the unit in a VM's linked code
     pub unit: u32,
+    /// (S3) the parameters' names, "" for a pattern (named arguments bind by them)
+    pub pnames: Vec<String>,
 }
 
 impl Proto {
@@ -224,6 +242,31 @@ pub(crate) enum Const {
     Int(i64),
     Float(f64),
     Str(String),
+    /// (S3) a call with named arguments (Op::CallNamed); its value in the VM is nil
+    Call(NamedCall),
+}
+
+/// (S3) what a call with named arguments calls, and the names of its last arguments
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct NamedCall {
+    pub kind: CallKind,
+    /// the arguments by position (the first ones)
+    pub positional: u32,
+    /// the names of the arguments after them, in order
+    pub names: Vec<String>,
+}
+
+/// (S3) the call a NamedCall stands for
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum CallKind {
+    /// a value: the callee below the arguments (as Op::Call)
+    Value,
+    /// host entry e (as Op::CallHost)
+    Host(u32),
+    /// a method: the object below the arguments, the name constant k (as Op::CallMethod)
+    Method(u32),
+    /// host entry e of base.name (as Op::CallHostMethod)
+    HostMethod(u32),
 }
 
 /// a name the script takes from the host: a plain name (print, config) or base.field for
@@ -339,7 +382,18 @@ impl Program {
             for (pc, op) in p.code.iter().enumerate() {
                 let (l, col) = p.pos[pc];
                 let note = match *op {
-                    Op::Const(k) | Op::GetField(k) | Op::SetField(k) | Op::CallMethod(k, _) => format!("  ; {:?}", c.consts[k as usize]),
+                    Op::Const(k) | Op::GetField(k) | Op::SetField(k) | Op::CallMethod(k, _) | Op::Key(_, k) => format!("  ; {:?}", c.consts[k as usize]),
+                    Op::CallNamed(k) => match &c.consts[k as usize] {
+                        Const::Call(n) => {
+                            let what = match n.kind {
+                                crate::code::CallKind::Host(h) | crate::code::CallKind::HostMethod(h) => c.hosts[h as usize].name.clone(),
+                                crate::code::CallKind::Method(m) => format!(".{:?}", c.consts[m as usize]),
+                                crate::code::CallKind::Value => String::from("value"),
+                            };
+                            format!("  ; {} {} + {}", what, n.positional, n.names.join(", "))
+                        }
+                        _ => String::new(),
+                    },
                     Op::GetGlobal(g) | Op::SetGlobal(g) => format!("  ; {}", c.globals[g as usize]),
                     Op::GetHost(h) | Op::GetHostField(h) | Op::AssignHost(h) | Op::CallHost(h, _) | Op::CallHostMethod(h, _) => {
                         format!("  ; {}", c.hosts[h as usize].name)

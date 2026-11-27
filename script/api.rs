@@ -306,7 +306,7 @@ fn parse_param(p: &str) -> Param {
 }
 
 /// "a: T, b" (the text inside the parentheses)
-fn parse_params(s: &str) -> Vec<Param> {
+pub(crate) fn parse_params(s: &str) -> Vec<Param> {
     if s.trim().is_empty() {
         return Vec::new();
     }
@@ -738,6 +738,29 @@ impl Sig {
     /// (S3) which parameter each argument fills, by the rules of the module comment: for each
     /// parameter the arguments that fill it; Err: the first rule the call breaks
     pub fn bind(&self, args: &[Arg]) -> Result<Vec<Vec<usize>>, Mismatch> {
+        let filled = self.bind_names(args)?;
+        let ps = &self.params;
+        // 3. what may not be left out
+        if let Some(p) = (0..ps.len()).find(|&j| !ps[j].optional && !ps[j].rest && filled[j].is_empty()) {
+            return Err(Mismatch::Missing { param: p });
+        }
+        // 4. the types
+        for (j, p) in ps.iter().enumerate() {
+            for &i in &filled[j] {
+                let ty = args[i].ty.trim();
+                if !(fits(ty, &p.ty) || (ty == "nil" && p.optional)) {
+                    return Err(Mismatch::Type { arg: i, param: j });
+                }
+            }
+        }
+        Ok(filled)
+    }
+
+    /// (S3) rules 1 and 2 of bind alone: the arguments by position and by name, without asking
+    /// whether a parameter is left out or what types they have (the VM's binding of a call with
+    /// named arguments: a host function gets nil for what is left out and checks the rest
+    /// itself, as for a call by position)
+    pub fn bind_names(&self, args: &[Arg]) -> Result<Vec<Vec<usize>>, Mismatch> {
         let ps = &self.params;
         let mut filled: Vec<Vec<usize>> = alloc::vec![Vec::new(); ps.len()];
         // 1. by position
@@ -763,20 +786,56 @@ impl Sig {
             }
             filled[p].push(i);
         }
-        // 3. what may not be left out
-        if let Some(p) = (0..ps.len()).find(|&j| !ps[j].optional && !ps[j].rest && filled[j].is_empty()) {
-            return Err(Mismatch::Missing { param: p });
-        }
-        // 4. the types
-        for (j, p) in ps.iter().enumerate() {
-            for &i in &filled[j] {
-                let ty = args[i].ty.trim();
-                if !(fits(ty, &p.ty) || (ty == "nil" && p.optional)) {
-                    return Err(Mismatch::Type { arg: i, param: j });
-                }
+        Ok(filled)
+    }
+}
+
+/// (S3) the form a call with named arguments goes to (the VM's binding, and the check of the
+/// compiler): the first form that fits it (bind), else the first whose parameters take its
+/// arguments by position and name (Sig::bind_names: a parameter left out is nil, the types are
+/// the host's to check); Err: the first form's mismatch of bind_names (None: no forms)
+pub fn bind_lenient<'s>(forms: &[&'s Sig], args: &[Arg]) -> Result<Binding<'s>, Option<Mismatch>> {
+    if let Ok(b) = bind(forms, args) {
+        return Ok(b);
+    }
+    let mut first = None;
+    for (k, s) in forms.iter().enumerate() {
+        match s.bind_names(args) {
+            Ok(params) => return Ok(Binding { form: k, sig: s, params }),
+            Err(m) => {
+                first.get_or_insert(m);
             }
         }
-        Ok(filled)
+    }
+    Err(first)
+}
+
+/// (S3) the message for a call with named arguments that fits no form (bind_lenient's
+/// mismatch of the first form): "geom.box hat keinen Parameter widht – meinst du width?",
+/// "geom.box: der Parameter w hat schon ein Argument", "geom.box: 4 Argumente vor den
+/// benannten, nimmt aber höchstens 3"; shown: how it names the function
+pub fn named_message(shown: &str, sig: &Sig, args: &[Arg], m: Mismatch) -> String {
+    let name_of = |p: usize| sig.params.get(p).map_or("", |x| x.name.as_str());
+    match m {
+        Mismatch::NoParam { arg } => {
+            let n = args.get(arg).and_then(|a| a.name).unwrap_or("");
+            let mut s = format!("{} hat keinen Parameter {}", shown, n);
+            let names = sig.params.iter().filter(|p| !p.rest).map(|p| p.name.as_str());
+            if let Some(c) = crate::check::suggest_member(n, names) {
+                s.push_str(&format!(" – meinst du {}?", c));
+            }
+            s
+        }
+        Mismatch::Twice { param, .. } => format!("{}: der Parameter {} hat schon ein Argument", shown, name_of(param)),
+        Mismatch::TooMany { most } => {
+            let given = args.iter().filter(|a| a.name.is_none()).count();
+            format!("{}: {} vor den benannten, nimmt aber höchstens {}", shown, count_text(given), most)
+        }
+        Mismatch::Missing { param } => format!("{}: der Parameter {} fehlt", shown, name_of(param)),
+        Mismatch::Type { arg, param } => {
+            let ty = args.get(arg).map_or("", |a| a.ty);
+            format!("{}: {} muss {} sein, nicht {}", shown, name_of(param), sig.params.get(param).map_or("", |p| p.ty.as_str()), ty)
+        }
     }
 }
 

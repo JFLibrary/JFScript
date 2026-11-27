@@ -65,9 +65,52 @@ fn awaits_block(b: &Block, out: &mut Vec<Span>) {
     }
 }
 
+/// (S3) the expressions in a pattern: its defaults and an assignment's targets (they run where
+/// the pattern is)
+fn defaults<'a>(p: &'a Pattern, out: &mut Vec<&'a Expr>) {
+    match &p.kind {
+        PatKind::Name(_) => {}
+        PatKind::List(items, rest) => {
+            items.iter().for_each(|x| defaults(x, out));
+            if let Some(r) = rest {
+                defaults(r, out);
+            }
+        }
+        PatKind::Map(entries) => entries.iter().for_each(|(_, x)| defaults(x, out)),
+        PatKind::Default(x, e) => {
+            out.push(e);
+            defaults(x, out);
+        }
+        PatKind::Target(e) => out.push(e),
+    }
+}
+
+/// the defaults of a function's parameters (they run inside it, like its body)
+fn param_defaults(f: &FnDef) -> Vec<&Expr> {
+    let mut v = Vec::new();
+    for p in &f.params {
+        defaults(p, &mut v);
+    }
+    v
+}
+
 fn awaits_stmt(s: &Stmt, out: &mut Vec<Span>) {
     match &s.kind {
-        StmtKind::Let { init: Some(e), .. } | StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => awaits_expr(e, out),
+        StmtKind::Let { pat, init } => {
+            if let Some(e) = init {
+                awaits_expr(e, out);
+            }
+            let mut d = Vec::new();
+            defaults(pat, &mut d);
+            d.into_iter().for_each(|e| awaits_expr(e, out));
+        }
+        StmtKind::AssignPat { pat, value } => {
+            awaits_expr(value, out);
+            let mut d = Vec::new();
+            defaults(pat, &mut d);
+            d.into_iter().for_each(|e| awaits_expr(e, out));
+        }
+        StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => awaits_expr(e, out),
         StmtKind::If { arms, els } => {
             for (c, b) in arms {
                 awaits_expr(c, out);
@@ -126,7 +169,38 @@ fn awaits_expr(e: &Expr, out: &mut Vec<Span>) {
             awaits_expr(f, out);
             args.iter().for_each(|x| awaits_expr(x, out));
         }
-        _ => {}
+        ExprKind::Cond(c, a, b) => {
+            awaits_expr(c, out);
+            awaits_expr(a, out);
+            awaits_expr(b, out);
+        }
+        ExprKind::Named(_, a) => awaits_expr(a, out),
+        // (S3) a comprehension runs in line: its awaits are the function's own
+        ExprKind::Comp(x, clauses) => {
+            for c in clauses {
+                match c {
+                    Clause::For { a, b, src } => {
+                        match src {
+                            ForSrc::Each(e) => awaits_expr(e, out),
+                            ForSrc::Range(lo, hi) => {
+                                awaits_expr(lo, out);
+                                awaits_expr(hi, out);
+                            }
+                        }
+                        let mut d = Vec::new();
+                        defaults(a, &mut d);
+                        if let Some(b) = b {
+                            defaults(b, &mut d);
+                        }
+                        d.into_iter().for_each(|e| awaits_expr(e, out));
+                    }
+                    Clause::If(c) => awaits_expr(c, out),
+                }
+            }
+            awaits_expr(x, out);
+        }
+        // (a fn literal runs when it is called; the rest has no awaits)
+        ExprKind::Fn(_) | ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
     }
 }
 
@@ -135,99 +209,35 @@ impl<'a> W<'a> {
         *self.decls.entry(n.text.as_str()).or_insert(0) += 1;
     }
 
-    /// count the declarations of a statement and everything in it
+    /// count the declarations of a statement and everything in it (lets, fns, parameters, for,
+    /// catch and (S3) comprehension variables, every name of a pattern)
     fn declared(&mut self, s: &'a Stmt) {
-        let mut stmts: Vec<&'a Stmt> = Vec::new();
-        let mut exprs: Vec<&'a Expr> = Vec::new();
-        stmts.push(s);
-        while !stmts.is_empty() || !exprs.is_empty() {
-            if let Some(s) = stmts.pop() {
-                match &s.kind {
-                    StmtKind::Let { name, init } => {
-                        self.decl(name);
-                        exprs.extend(init.iter());
-                    }
-                    StmtKind::Fn(f) => {
-                        if let Some(n) = &f.name {
-                            self.decl(n);
-                        }
-                        f.params.iter().for_each(|p| self.decl(p));
-                        stmts.extend(f.body.stmts.iter());
-                    }
-                    StmtKind::If { arms, els } => {
-                        for (c, b) in arms {
-                            exprs.push(c);
-                            stmts.extend(b.stmts.iter());
-                        }
-                        if let Some(b) = els {
-                            stmts.extend(b.stmts.iter());
-                        }
-                    }
-                    StmtKind::While { cond, body } => {
-                        exprs.push(cond);
-                        stmts.extend(body.stmts.iter());
-                    }
-                    StmtKind::For { a, b, src, body } => {
-                        self.decl(a);
-                        if let Some(b) = b {
-                            self.decl(b);
-                        }
-                        match src {
-                            ForSrc::Each(e) => exprs.push(e),
-                            ForSrc::Range(x, y) => {
-                                exprs.push(x);
-                                exprs.push(y);
-                            }
-                        }
-                        stmts.extend(body.stmts.iter());
-                    }
-                    StmtKind::Try { body, var, catch } => {
-                        if let Some(v) = var {
-                            self.decl(v);
-                        }
-                        stmts.extend(body.stmts.iter());
-                        stmts.extend(catch.stmts.iter());
-                    }
-                    StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => exprs.push(e),
-                    StmtKind::Assign { target, value, .. } => {
-                        exprs.push(target);
-                        exprs.push(value);
-                    }
-                    StmtKind::Block(b) => stmts.extend(b.stmts.iter()),
-                    _ => {}
-                }
-            } else if let Some(e) = exprs.pop() {
-                match &e.kind {
-                    ExprKind::Interp(v) | ExprKind::List(v) => exprs.extend(v.iter()),
-                    ExprKind::Map(kv) => kv.iter().for_each(|(k, v)| {
-                        exprs.push(k);
-                        exprs.push(v);
-                    }),
-                    ExprKind::Fn(f) => {
-                        f.params.iter().for_each(|p| self.decl(p));
-                        stmts.extend(f.body.stmts.iter());
-                    }
-                    ExprKind::Unary(_, a) | ExprKind::Field(a, _) => exprs.push(a),
-                    ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
-                        exprs.push(a);
-                        exprs.push(b);
-                    }
-                    ExprKind::Call(f, args) | ExprKind::Method(f, _, args) => {
-                        exprs.push(f);
-                        exprs.extend(args.iter());
-                    }
-                    _ => {}
-                }
-            }
+        let mut names: Vec<&'a Name> = Vec::new();
+        visit(core::slice::from_ref(s), &mut |n| match n {
+            Node::Stmt(Stmt { kind: StmtKind::Fn(FnDef { name: Some(x), .. }), .. }) => names.push(x),
+            Node::Stmt(Stmt { kind: StmtKind::Try { var: Some(v), .. }, .. }) => names.push(v),
+            Node::Pattern(Pattern { kind: PatKind::Name(x), .. }) => names.push(x),
+            _ => {}
+        });
+        for n in names {
+            self.decl(n);
         }
     }
 
     /// the functions given to a caller (`how`: "list.map" as written for the message)
     fn callbacks(&mut self, how: &str, args: &[Expr]) {
         for a in args {
+            // (S3) also a named argument: xs.map(f: fn(x) { .. })
+            let a = match &a.kind {
+                ExprKind::Named(_, v) => v.as_ref(),
+                _ => a,
+            };
             match &a.kind {
                 ExprKind::Fn(f) => {
                     let mut at = Vec::new();
+                    for d in param_defaults(f) {
+                        awaits_expr(d, &mut at);
+                    }
                     awaits_block(&f.body, &mut at);
                     for sp in at {
                         let m = format!(
@@ -257,8 +267,18 @@ impl<'a> W<'a> {
 
     fn stmt(&mut self, s: &Stmt) {
         match &s.kind {
-            StmtKind::Let { init: Some(e), .. } | StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => self.expr(e),
-            StmtKind::Fn(f) => self.block(&f.body),
+            StmtKind::Let { pat, init } => {
+                if let Some(e) = init {
+                    self.expr(e);
+                }
+                self.pattern(pat);
+            }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                self.pattern(pat);
+            }
+            StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => self.expr(e),
+            StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
                 for (c, b) in arms {
                     self.expr(c);
@@ -272,13 +292,11 @@ impl<'a> W<'a> {
                 self.expr(cond);
                 self.block(body);
             }
-            StmtKind::For { src, body, .. } => {
-                match src {
-                    ForSrc::Each(e) => self.expr(e),
-                    ForSrc::Range(a, b) => {
-                        self.expr(a);
-                        self.expr(b);
-                    }
+            StmtKind::For { a, b, src, body } => {
+                self.src(src);
+                self.pattern(a);
+                if let Some(b) = b {
+                    self.pattern(b);
                 }
                 self.block(body);
             }
@@ -291,7 +309,33 @@ impl<'a> W<'a> {
                 self.expr(value);
             }
             StmtKind::Block(b) => self.block(b),
-            _ => {}
+            StmtKind::Break | StmtKind::Continue | StmtKind::Return(None) => {}
+        }
+    }
+
+    fn func(&mut self, f: &FnDef) {
+        for p in &f.params {
+            self.pattern(p);
+        }
+        self.block(&f.body);
+    }
+
+    /// (S3) the expressions in a pattern (defaults, targets)
+    fn pattern(&mut self, p: &Pattern) {
+        let mut d = Vec::new();
+        defaults(p, &mut d);
+        for e in d {
+            self.expr(e);
+        }
+    }
+
+    fn src(&mut self, src: &ForSrc) {
+        match src {
+            ForSrc::Each(e) => self.expr(e),
+            ForSrc::Range(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
         }
     }
 
@@ -302,7 +346,7 @@ impl<'a> W<'a> {
                 self.expr(k);
                 self.expr(v);
             }),
-            ExprKind::Fn(f) => self.block(&f.body),
+            ExprKind::Fn(f) => self.func(f),
             ExprKind::Unary(_, a) | ExprKind::Field(a, _) => self.expr(a),
             ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
@@ -324,7 +368,28 @@ impl<'a> W<'a> {
                 self.expr(f);
                 args.iter().for_each(|x| self.expr(x));
             }
-            _ => {}
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Named(_, a) => self.expr(a),
+            ExprKind::Comp(x, clauses) => {
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.src(src);
+                            self.pattern(a);
+                            if let Some(b) = b {
+                                self.pattern(b);
+                            }
+                        }
+                        Clause::If(c) => self.expr(c),
+                    }
+                }
+                self.expr(x);
+            }
+            ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
         }
     }
 }

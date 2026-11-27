@@ -243,8 +243,8 @@ pub(crate) fn map_fuel(entries: usize) -> u64 {
 /// charge fuel; the fuel error of the invocation once Limits::fuel is used up
 pub(crate) fn spend(vm: &mut Vm, fuel: u64) -> Result<(), Exc> {
     vm.used += fuel;
-    if vm.call_fuel + vm.used > vm.lim.fuel {
-        return Err(Exc::Fatal(ErrorKind::Fuel, crate::vm::fuel_msg(vm.lim.fuel)));
+    if vm.call_fuel + vm.used > vm.fuel_end {
+        return Err(vm.fuel_out());
     }
     Ok(())
 }

@@ -137,7 +137,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::code::{Code, Const, Op, Program, Up};
+use crate::code::{CallKind, Code, Const, NamedCall, Op, Program, Up};
 use crate::debug::{Dbg, Pause};
 use crate::heap::{self, Closure, Heap, HostObj, HostVal, Key, Map, Obj, Ref, StrObj, Value};
 use crate::module::{Unit, UnitState};
@@ -514,9 +514,14 @@ pub(crate) fn internal<T>() -> Result<T, Exc> {
     Err(Exc::Fatal(ErrorKind::Internal, String::from("Interner Fehler der Skript-VM")))
 }
 
-/// the message of the fuel limit
-pub(crate) fn fuel_msg(limit: u64) -> String {
-    format!("Rechenzeit aufgebraucht: mehr als {} Schritte in einem Aufruf – eine Endlosschleife?", limit)
+/// the message of the fuel limit; waited: (S3) the invocation waited in await before (the
+/// limit holds for the stretch since its last wait)
+pub(crate) fn fuel_msg(limit: u64, waited: bool) -> String {
+    if waited {
+        format!("Rechenzeit aufgebraucht: mehr als {} Schritte seit dem letzten await – eine Endlosschleife?", limit)
+    } else {
+        format!("Rechenzeit aufgebraucht: mehr als {} Schritte in einem Aufruf – eine Endlosschleife?", limit)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -584,6 +589,9 @@ pub struct Vm {
     /// fuel of the current invocation before this run, and used in this run
     pub(crate) call_fuel: u64,
     pub(crate) used: u64,
+    /// (S3) the invocation's fuel (call_fuel + used) at which Limits::fuel is used up: the fuel
+    /// it had when its current stretch began (0, or where it woke from a wait) plus the limit
+    pub(crate) fuel_end: u64,
     last: u64,
     pub(crate) running: bool,
     pub(crate) in_native: bool,
@@ -646,6 +654,7 @@ impl Vm {
                 Const::Int(i) => Value::Int(*i),
                 Const::Float(f) => Value::Float(*f),
                 Const::Str(s) => Value::Str(heap.insert(Obj::Str(StrObj::new(s)))),
+                Const::Call(_) => Value::Nil,
             });
         }
         let tnames = TYPES.map(|t| Value::Str(heap.insert(Obj::Str(StrObj::new(t)))));
@@ -672,6 +681,7 @@ impl Vm {
             pin_free: Vec::new(),
             out: String::new(),
             call_fuel: 0,
+            fuel_end: limits.fuel,
             used: 0,
             last: 0,
             running: false,
@@ -731,6 +741,7 @@ impl Vm {
         self.stack.push(f);
         self.stack.extend_from_slice(args);
         self.call_fuel = 0;
+        self.fuel_end = self.lim.fuel;
         let code = self.code.clone();
         if let Err(e) = self.push_frame(&code, r, 0, args.len()) {
             let err = match e {
@@ -843,9 +854,16 @@ impl Vm {
         self.last
     }
 
-    /// fuel used by the current (or last) invocation so far
+    /// fuel used by the current (or last) invocation so far, (S3) over all its runs and waits
     pub fn call_fuel(&self) -> u64 {
         self.call_fuel
+    }
+
+    /// (S3) the fatal error of Limits::fuel, used up in the current stretch of the invocation
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn fuel_out(&self) -> Exc {
+        Exc::Fatal(ErrorKind::Fuel, fuel_msg(self.lim.fuel, self.tasks.current_is_some()))
     }
 
     /// the limits the VM was made with
@@ -1141,20 +1159,20 @@ impl Vm {
         if !self.valid(v) {
             return Err(invalid());
         }
-        let saved = (self.used, self.call_fuel);
-        (self.used, self.call_fuel) = (0, 0);
+        let saved = (self.used, self.call_fuel, self.fuel_end);
+        (self.used, self.call_fuel, self.fuel_end) = (0, 0, self.lim.fuel);
         let r = jsonlib::encode(self, v, indent);
-        (self.used, self.call_fuel) = saved;
+        (self.used, self.call_fuel, self.fuel_end) = saved;
         r.map_err(plain)
     }
 
     /// the value of a JSON text like json.decode (valid until the next run unless the script
     /// keeps it or it is pinned)
     pub fn json_decode(&mut self, text: &str) -> Result<Value, Error> {
-        let saved = (self.used, self.call_fuel);
-        (self.used, self.call_fuel) = (0, 0);
+        let saved = (self.used, self.call_fuel, self.fuel_end);
+        (self.used, self.call_fuel, self.fuel_end) = (0, 0, self.lim.fuel);
         let r = jsonlib::decode(self, text.as_bytes());
-        (self.used, self.call_fuel) = saved;
+        (self.used, self.call_fuel, self.fuel_end) = saved;
         r.map_err(plain)
     }
 
@@ -1454,6 +1472,15 @@ impl Vm {
                 let obj = self.object_of(r);
                 self.hook(host, name, |h, cx| h.set(cx, obj, name, v).map(|()| Value::Nil), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
                 self.stack.truncate(n - 2);
+            }
+            // (S3) {x, y} = a host object: its properties
+            Op::Key(s, k) => {
+                let name = name(k)?;
+                let base = self.frames.last().map_or(0, |f| f.base as usize);
+                let Value::Host(r) = self.stack[base + s as usize] else { return internal() };
+                let obj = self.object_of(r);
+                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                self.stack.push(v);
             }
             Op::Neg => {
                 let a = self.stack[n - 1];
@@ -2191,9 +2218,9 @@ impl Vm {
                     self.frames[fi].pc = pc as u32;
                     return Ok(Status::Yielded);
                 }
-                if self.call_fuel + self.used >= self.lim.fuel {
+                if self.call_fuel + self.used >= self.fuel_end {
                     self.frames[fi].pc = pc as u32 + 1;
-                    return Err(Exc::Fatal(ErrorKind::Fuel, fuel_msg(self.lim.fuel)));
+                    return Err(self.fuel_out());
                 }
                 let op = ops[pc];
                 pc += 1;
@@ -2506,6 +2533,29 @@ impl Vm {
                             _ => pc = t as usize,
                         }
                         Ok(())
+                    }
+                    // (S3) patterns, comprehensions, defaults, named arguments
+                    Op::Elem(s, i) => self.elem(base + s as usize, i as usize),
+                    Op::Rest(s, i) => self.rest(base + s as usize, i as usize),
+                    Op::Key(s, k) => self.key(base + s as usize, k),
+                    Op::Append(s) => self.append(base + s as usize),
+                    Op::SkipIfSet(s, t) => {
+                        if self.stack[base + s as usize] != Value::Nil {
+                            pc = t as usize;
+                        }
+                        Ok(())
+                    }
+                    Op::CallNamed(k) => {
+                        self.frames[fi].pc = pc as u32;
+                        match self.call_named(code, host, k) {
+                            Ok(Called::Frame) => continue 'frame,
+                            Ok(Called::Native) => Ok(()),
+                            Ok(Called::NewCode) => {
+                                self.relink = true;
+                                return Ok(Status::Yielded);
+                            }
+                            Err(e) => Err(e),
+                        }
                     }
                 };
                 if let Err(e) = r {
@@ -2880,6 +2930,253 @@ impl Vm {
         }
         self.stack.push(item);
         Ok(true)
+    }
+
+    // ---- (S3) patterns, comprehensions, named arguments
+
+    /// Op::Elem: item i of the list in stack slot `at` (nil past its end)
+    #[inline(never)]
+    fn elem(&mut self, at: usize, i: usize) -> Result<(), Exc> {
+        match self.stack[at] {
+            Value::List(l) => {
+                let v = self.heap.list(l).get(i).copied().unwrap_or(Value::Nil);
+                self.stack.push(v);
+                Ok(())
+            }
+            v => msg(format!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(v))),
+        }
+    }
+
+    /// Op::Rest: a new list of the items of the list in slot `at` from index i on
+    #[inline(never)]
+    fn rest(&mut self, at: usize, i: usize) -> Result<(), Exc> {
+        let Value::List(l) = self.stack[at] else {
+            return msg(format!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(self.stack[at])));
+        };
+        let items: Vec<Value> = self.heap.list(l).get(i..).unwrap_or(&[]).to_vec();
+        self.used += items.len() as u64 / 8;
+        let r = self.alloc(Obj::List(items))?;
+        self.stack.push(Value::List(r));
+        Ok(())
+    }
+
+    /// Op::Key: the entry of key k (constant) of the map in slot `at`, nil when missing; a host
+    /// object's property through Host::get (Exc::Hook: hook_op)
+    #[inline(never)]
+    fn key(&mut self, at: usize, k: u32) -> Result<(), Exc> {
+        let Value::Str(kr) = self.consts[k as usize] else { return internal() };
+        match self.stack[at] {
+            Value::Map(m) => {
+                let s = self.heap.str(kr);
+                let v = self.heap.map_find(m, Key::Str(&s.s, s.hash)).map_or(Value::Nil, |i| self.heap.map(m).entries[i].val);
+                self.stack.push(v);
+                Ok(())
+            }
+            Value::Host(_) => Err(Exc::Hook),
+            v => msg(format!("Das Muster {{..}} braucht eine Map oder ein Objekt des Hosts, nicht {}", self.type_of(v))),
+        }
+    }
+
+    /// Op::Append: the top onto the list in slot `at` (a comprehension's result)
+    #[inline(never)]
+    fn append(&mut self, at: usize) -> Result<(), Exc> {
+        let v = self.stack.pop().unwrap_or(Value::Nil);
+        let Value::List(l) = self.stack[at] else { return internal() };
+        // (v stays reachable from the stack while the collector may run)
+        self.stack.push(v);
+        self.reserve(16)?;
+        self.stack.pop();
+        self.heap.update(l, |o| {
+            if let Obj::List(items) = o {
+                items.push(v);
+            }
+        });
+        Ok(())
+    }
+
+    /// Op::CallNamed: the arguments placed in the parameter order of what is called (bind_*),
+    /// then the call as by position: Call, CallHost, CallMethod or CallHostMethod
+    #[inline(never)]
+    fn call_named(&mut self, code: &Code, host: &mut dyn Host, k: u32) -> Result<Called, Exc> {
+        let Const::Call(nc) = &code.consts[k as usize] else { return internal() };
+        let at = self.stack.len() - nc.positional as usize - nc.names.len();
+        match nc.kind {
+            CallKind::Value => {
+                self.bind_value(at - 1, nc)?;
+                let n = self.stack.len() - at;
+                self.call_at(code, host, at - 1, n)
+            }
+            CallKind::Host(h) => match self.hostv[h as usize] {
+                Some(v) => {
+                    self.stack.insert(at, v);
+                    self.bind_value(at, nc)?;
+                    let n = self.stack.len() - at - 1;
+                    self.call_at(code, host, at, n)
+                }
+                None => {
+                    let name = self.natives[h as usize].0.clone();
+                    self.bind_native(&name, at, nc.positional as usize, nc)?;
+                    self.call_native(host, h, at, at)
+                }
+            },
+            CallKind::Method(m) => {
+                self.bind_method(code, at - 1, m, nc)?;
+                let n = self.stack.len() - at;
+                self.method(code, host, m, n)
+            }
+            CallKind::HostMethod(h) => match code.hosts[h as usize].dotted {
+                Some((b, m)) => match self.hostv[b as usize] {
+                    Some(v) => {
+                        self.stack.insert(at, v);
+                        self.bind_method(code, at, m, nc)?;
+                        let n = self.stack.len() - at - 1;
+                        self.method(code, host, m, n)
+                    }
+                    None => {
+                        let name = self.natives[h as usize].0.clone();
+                        self.bind_native(&name, at, nc.positional as usize, nc)?;
+                        self.call_native(host, h, at, at)
+                    }
+                },
+                None => internal(),
+            },
+        }
+    }
+
+    /// the arguments above the callee at stack[fpos] for it: a script function's by its
+    /// parameters' names, a native's by its description
+    fn bind_value(&mut self, fpos: usize, nc: &NamedCall) -> Result<(), Exc> {
+        match self.stack[fpos] {
+            Value::Func(r) => {
+                let code = self.code.clone();
+                let p = &code.protos[self.heap.closure(r).proto as usize];
+                let who = if p.name == "fn" || p.name.is_empty() { String::from("Die Funktion") } else { p.name.clone() };
+                self.bind_script(&who, &p.pnames, fpos + 1, nc)
+            }
+            Value::Native(i) => {
+                let name = self.natives[i as usize].0.clone();
+                self.bind_native(&name, fpos + 1, nc.positional as usize, nc)
+            }
+            // (call_at throws)
+            _ => Ok(()),
+        }
+    }
+
+    /// a script function's arguments: the positional ones first (the extra ones are dropped, as
+    /// in any call), each named one in its parameter's place, nil in the gaps
+    fn bind_script(&mut self, who: &str, params: &[String], at: usize, nc: &NamedCall) -> Result<(), Exc> {
+        let p = nc.positional as usize;
+        let keep = p.min(params.len());
+        let mut out: Vec<Value> = self.stack[at..at + keep].to_vec();
+        for (j, name) in nc.names.iter().enumerate() {
+            let v = self.stack[at + p + j];
+            let Some(i) = params.iter().position(|x| x == name) else {
+                let mut m = format!("{} hat keinen Parameter {}", who, name);
+                if let Some(c) = crate::check::suggest_member(name, params.iter().map(|s| s.as_str()).filter(|s| !s.is_empty())) {
+                    m.push_str(&format!(" – meinst du {}?", c));
+                }
+                return msg(m);
+            };
+            if i < p {
+                return msg(format!("{}: der Parameter {} hat schon ein Argument", who, name));
+            }
+            if out.len() <= i {
+                out.resize(i + 1, Value::Nil);
+            }
+            out[i] = v;
+        }
+        self.stack.truncate(at);
+        self.stack.extend_from_slice(&out);
+        Ok(())
+    }
+
+    /// the arguments from stack[at] on (`positional` by position, then nc's names) for the
+    /// native of that name: the library's parameters (lsdoc.rs), else the host's forms in its
+    /// description (compile_api); in the form's parameter order, nil for what is left out
+    /// before the last one given, a rest parameter's in their place
+    fn bind_native(&mut self, name: &str, at: usize, positional: usize, nc: &NamedCall) -> Result<(), Exc> {
+        let api = self.code.strict.as_ref().and_then(|s| s.api.clone());
+        let lib = crate::lsdoc::sig(name);
+        let forms: Vec<&crate::api::Sig> = match (&lib, &api) {
+            (Some(s), _) => alloc::vec![s],
+            (None, Some(a)) => a.sigs(name),
+            (None, None) => return msg(format!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", name)),
+        };
+        self.bind_forms(name, &forms, at, positional, nc)
+    }
+
+    /// the arguments of obj.name(..) with obj at stack[opos]: a map's function as a call of it,
+    /// a host object's method by its type's forms (on / off: event, f), the library's method
+    /// with obj as its first argument
+    fn bind_method(&mut self, code: &Code, opos: usize, m: u32, nc: &NamedCall) -> Result<(), Exc> {
+        let Const::Str(name) = &code.consts[m as usize] else { return internal() };
+        let obj = self.stack[opos];
+        if let Some(f) = self.map_get_str(obj, name) {
+            if !matches!(f, Value::Func(_) | Value::Native(_)) {
+                // (method() throws)
+                return Ok(());
+            }
+            let saved = self.stack[opos];
+            self.stack[opos] = f;
+            let r = self.bind_value(opos, nc);
+            self.stack[opos] = saved;
+            return r;
+        }
+        match obj {
+            Value::Host(r) => {
+                let o = self.object_of(r);
+                let shown = format!("{}.{}", o.ty, name);
+                if name == "on" || name == "off" {
+                    let s = crate::api::Sig { params: crate::api::parse_params("event, f"), ret: String::new() };
+                    return self.bind_forms(&shown, &[&s], opos + 1, nc.positional as usize, nc);
+                }
+                let api = self.code.strict.as_ref().and_then(|s| s.api.clone());
+                let forms: Vec<&crate::api::Sig> = match (&api, api.as_ref().and_then(|a| a.get_type(o.ty))) {
+                    (Some(_), Some(t)) => t.sigs(name),
+                    _ => return msg(format!("{}: benannte Argumente gehen an Methoden des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", shown)),
+                };
+                self.bind_forms(&shown, &forms, opos + 1, nc.positional as usize, nc)
+            }
+            _ => {
+                let shown = format!("{}.{}", obj.type_name(), name);
+                match crate::lsdoc::sig(&shown) {
+                    // (the object is the method's first argument)
+                    Some(s) => self.bind_forms(&shown, &[&s], opos, nc.positional as usize + 1, nc),
+                    None => msg(format!("{}: benannte Argumente gehen nur an Funktionen, deren Parameter bekannt sind", shown)),
+                }
+            }
+        }
+    }
+
+    /// place the arguments from stack[at] on by the first form that takes them
+    /// (api::bind_lenient: the types as type(x) gives them)
+    fn bind_forms(&mut self, shown: &str, forms: &[&crate::api::Sig], at: usize, positional: usize, nc: &NamedCall) -> Result<(), Exc> {
+        let vals: Vec<Value> = self.stack[at..].to_vec();
+        let tys: Vec<&'static str> = vals.iter().map(|v| self.type_of(*v)).collect();
+        let args: Vec<crate::api::Arg> = (0..vals.len())
+            .map(|i| match i.checked_sub(positional) {
+                Some(j) => crate::api::Arg::named(&nc.names[j], tys[i]),
+                None => crate::api::Arg::pos(tys[i]),
+            })
+            .collect();
+        let b = match crate::api::bind_lenient(forms, &args) {
+            Ok(b) => b,
+            Err(Some(m)) => return msg(crate::api::named_message(shown, forms[0], &args, m)),
+            Err(None) => return msg(format!("{} nimmt keine benannten Argumente", shown)),
+        };
+        let mut out: Vec<Value> = Vec::with_capacity(vals.len());
+        if let Some(last) = b.params.iter().rposition(|v| !v.is_empty()) {
+            for (j, idx) in b.params[..=last].iter().enumerate() {
+                if b.sig.params[j].rest {
+                    out.extend(idx.iter().map(|&i| vals[i]));
+                } else {
+                    out.push(idx.first().map_or(Value::Nil, |&i| vals[i]));
+                }
+            }
+        }
+        self.stack.truncate(at);
+        self.stack.extend_from_slice(&out);
+        Ok(())
     }
 
     // ---- text of values

@@ -820,6 +820,13 @@ impl Vm {
                 self.ev_builtin(n, first)?
             }
             ExprKind::Method(..) | ExprKind::Fn(_) => return Err(no_calls()),
+            // (S3) c ? a : b; a named argument of len(x: ..) is its value
+            ExprKind::Cond(c, a, b) => {
+                let x = self.ev(fi, at, c)?;
+                return if x.truthy() { self.ev(fi, at, a) } else { self.ev(fi, at, b) };
+            }
+            ExprKind::Named(_, v) => self.ev(fi, at, v)?,
+            ExprKind::Comp(..) => return Err(String::from("Listen aus einer Schleife rechnet der Ausdruck nicht")),
         })
     }
 }

@@ -23,8 +23,13 @@
 //
 // (S3) Forms (overloads): the result of a call is the one all forms its arguments may bind to
 // share (Sig::bind with the types known here, also of the arguments of a call in a chain: an
-// argument whose type is not known fits every form), when none fits the one all forms share;
-// else not known.  A union type has members only as "T | nil" (T's).
+// argument whose type is not known fits every form; a named argument by its name), when none
+// fits the one all forms share; else not known.  A union type has members only as "T | nil"
+// (T's).  The syntax pass: the names of a pattern get the types of what they take where the
+// value's type tells them (the items of a list<T>, the properties of a host type: let {x, y} =
+// v of a vec), c ? a : b the type both branches share, [e for x in xs] list<T> when e's type T
+// is known; diagnostics warn about named arguments of a method of a known host type that fit
+// none of its forms (a host function's are errors: check.rs).
 
 use alloc::format;
 use alloc::string::String;
@@ -37,6 +42,10 @@ use crate::lex::{Tok, TokKind};
 use crate::ls::Index;
 use crate::vm::Operator;
 use crate::Diagnostic;
+
+/// (S3) an argument of a call as the services see it: the name of a named one, its type ("" not
+/// known)
+pub(crate) type ArgTy = (Option<String>, String);
 
 /// what the code before a dot is: a value of a type, or a namespace of the host
 pub(crate) enum Known {
@@ -102,12 +111,94 @@ impl Types<'_> {
     }
 
     fn func(&mut self, f: &FnDef) {
+        for p in &f.params {
+            self.pattern_walk(p);
+        }
         self.block(&f.body);
+    }
+
+    /// (S3) the expressions in a pattern (defaults, targets)
+    fn pattern_walk(&mut self, p: &Pattern) {
+        match &p.kind {
+            PatKind::Name(_) => {}
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.pattern_walk(x);
+                }
+                if let Some(r) = rest {
+                    self.pattern_walk(r);
+                }
+            }
+            PatKind::Map(entries) => entries.iter().for_each(|(_, x)| self.pattern_walk(x)),
+            PatKind::Default(x, e) => {
+                self.expr_walk(e);
+                self.pattern_walk(x);
+            }
+            PatKind::Target(e) => self.expr_walk(e),
+        }
+    }
+
+    /// (S3) the names of a pattern that takes a value of type ty: a name the type, the items of a
+    /// list<T> T (the rest a list<T>), the entries of a host type its properties' types
+    fn bind(&mut self, p: &Pattern, ty: &str) {
+        match &p.kind {
+            PatKind::Name(n) => {
+                let sym = self.decl(n.span.start);
+                self.set(sym, String::from(ty));
+            }
+            PatKind::Default(x, _) => self.bind(x, ty),
+            PatKind::List(items, rest) => {
+                let item = api::list_of(api::member_type(ty)).unwrap_or("");
+                for x in items {
+                    self.bind(x, item);
+                }
+                if let Some(r) = rest {
+                    let l = if item.is_empty() { String::from("list") } else { format!("list<{}>", item) };
+                    self.bind(r, &l);
+                }
+            }
+            PatKind::Map(entries) => {
+                let t = self.api.get_type(api::member_type(ty));
+                for (k, x) in entries {
+                    let pt = t.and_then(|t| t.find_prop(&k.text)).map_or(String::new(), |p| p.ty.clone());
+                    self.bind(x, &pt);
+                }
+            }
+            PatKind::Target(_) => {}
+        }
+    }
+
+    /// the variables of a for loop or a comprehension's clause: the item of a list<T> (with an
+    /// index: int), a range's int
+    fn for_vars(&mut self, a: &Pattern, b: Option<&Pattern>, src: &ForSrc) {
+        match src {
+            ForSrc::Each(e) => {
+                self.expr_walk(e);
+                let item = String::from(api::list_of(api::member_type(&self.expr(e))).unwrap_or(""));
+                match b {
+                    None => self.bind(a, &item),
+                    Some(b) => {
+                        // (an index of a list; a map's key is not known)
+                        self.bind(b, &item);
+                        self.bind(a, if item.is_empty() { "" } else { "int" });
+                    }
+                }
+            }
+            ForSrc::Range(lo, hi) => {
+                self.expr_walk(lo);
+                self.expr_walk(hi);
+                self.bind(a, "int");
+            }
+        }
+        self.pattern_walk(a);
+        if let Some(b) = b {
+            self.pattern_walk(b);
+        }
     }
 
     fn stmt(&mut self, s: &Stmt) {
         match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat, init } => {
                 let ty = match init {
                     Some(e) => {
                         self.expr_walk(e);
@@ -115,8 +206,12 @@ impl Types<'_> {
                     }
                     None => String::new(),
                 };
-                let sym = self.decl(name.span.start);
-                self.set(sym, ty);
+                self.pattern_walk(pat);
+                self.bind(pat, &ty);
+            }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr_walk(value);
+                self.pattern_walk(pat);
             }
             StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
@@ -133,27 +228,7 @@ impl Types<'_> {
                 self.block(body);
             }
             StmtKind::For { a, b, src, body } => {
-                match src {
-                    ForSrc::Each(e) => {
-                        self.expr_walk(e);
-                        let item = String::from(api::list_of(api::member_type(&self.expr(e))).unwrap_or(""));
-                        let (sa, sb) = (self.decl(a.span.start), b.as_ref().and_then(|b| self.decl(b.span.start)));
-                        match b {
-                            None => self.set(sa, item),
-                            Some(_) => {
-                                // (an index of a list; a map's key is not known)
-                                self.set(sb, item.clone());
-                                self.set(sa, if item.is_empty() { String::new() } else { String::from("int") });
-                            }
-                        }
-                    }
-                    ForSrc::Range(lo, hi) => {
-                        self.expr_walk(lo);
-                        self.expr_walk(hi);
-                        let sa = self.decl(a.span.start);
-                        self.set(sa, String::from("int"));
-                    }
-                }
+                self.for_vars(a, b.as_ref(), src);
                 self.block(body);
             }
             StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => self.expr_walk(e),
@@ -206,13 +281,27 @@ impl Types<'_> {
                     let ty = self.expr(obj);
                     let et = self.api.get_type(api::member_type(&ty)).and_then(|t| t.find_event(ev)).map(|x| x.ty.clone());
                     if let (Some(et), Some(p)) = (et, f.params.first()) {
-                        let sym = self.decl(p.span.start);
-                        self.set(sym, et);
+                        self.bind(p, &et);
                     }
                 }
                 args.iter().for_each(|x| self.expr_walk(x));
             }
-            _ => {}
+            ExprKind::Cond(c, a, b) => {
+                self.expr_walk(c);
+                self.expr_walk(a);
+                self.expr_walk(b);
+            }
+            ExprKind::Named(_, a) => self.expr_walk(a),
+            ExprKind::Comp(x, clauses) => {
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => self.for_vars(a, b.as_ref(), src),
+                        Clause::If(c) => self.expr_walk(c),
+                    }
+                }
+                self.expr_walk(x);
+            }
+            ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
         }
     }
 
@@ -242,14 +331,24 @@ impl Types<'_> {
 
     /// the result of a host function (namespaced or not); args: the types of the call's
     /// arguments when they are there
-    fn func_ret(&self, name: &str, args: Option<&[String]>) -> String {
+    fn func_ret(&self, name: &str, args: Option<&[ArgTy]>) -> String {
         self.ret_of(&self.api.sigs(name), args)
+    }
+
+    /// (S3) the arguments of a call as (name of a named one, type)
+    fn args_of(&self, args: &[Expr]) -> Vec<ArgTy> {
+        args.iter()
+            .map(|a| match &a.kind {
+                ExprKind::Named(n, v) => (Some(n.text.clone()), self.expr(v)),
+                _ => (None, self.expr(a)),
+            })
+            .collect()
     }
 
     /// (S3) the result of a call of one of these forms: the one all forms the arguments may bind
     /// to share (their types as far as known: an argument of a type not known fits every form,
     /// so that is no guess), else the one all forms share, else not known
-    fn ret_of(&self, forms: &[&Sig], args: Option<&[String]>) -> String {
+    fn ret_of(&self, forms: &[&Sig], args: Option<&[ArgTy]>) -> String {
         if forms.len() == 1 {
             return forms[0].ret.clone();
         }
@@ -258,7 +357,7 @@ impl Types<'_> {
             _ => String::new(),
         };
         if let Some(tys) = args {
-            let a: Vec<Arg> = tys.iter().map(|t| Arg::pos(t)).collect();
+            let a: Vec<Arg> = tys.iter().map(|(n, t)| Arg { name: n.as_deref(), ty: t }).collect();
             let fit: Vec<&Sig> = forms.iter().copied().filter(|s| s.bind(&a).is_ok()).collect();
             if !fit.is_empty() {
                 return same(&fit);
@@ -268,7 +367,7 @@ impl Types<'_> {
     }
 
     /// the type of a member (prop or method's result) of type ty
-    fn member(&self, ty: &str, name: &str, call: Option<Option<&[String]>>) -> String {
+    fn member(&self, ty: &str, name: &str, call: Option<Option<&[ArgTy]>>) -> String {
         let Some(t) = self.api.get_type(api::member_type(ty)) else { return String::new() };
         match call {
             Some(args) => self.ret_of(&t.sigs(name), args),
@@ -327,7 +426,7 @@ impl Types<'_> {
                 None => self.member(&self.expr(obj), &name.text, None),
             },
             ExprKind::Method(obj, name, args) => {
-                let tys: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                let tys = self.args_of(args);
                 match self.namespace(obj) {
                     Some(ns) => self.func_ret(&format!("{}.{}", ns, name.text), Some(&tys)),
                     None => self.member(&self.expr(obj), &name.text, Some(Some(&tys))),
@@ -335,7 +434,7 @@ impl Types<'_> {
             }
             ExprKind::Call(f, args) => match &f.kind {
                 ExprKind::Var(n) if self.idx.use_from(f.span.start).and_then(|u| u.sym).is_none() => {
-                    let tys: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                    let tys = self.args_of(args);
                     self.func_ret(n, Some(&tys))
                 }
                 _ => String::new(),
@@ -357,6 +456,16 @@ impl Types<'_> {
                 }
             }
             ExprKind::Unary(_, _) => String::from("bool"),
+            // (S3) the type both branches share; a named argument's value; a list from a loop
+            ExprKind::Cond(_, a, b) => {
+                let (x, y) = (self.expr(a), self.expr(b));
+                if x == y { x } else { String::new() }
+            }
+            ExprKind::Named(_, v) => self.expr(v),
+            ExprKind::Comp(x, _) => {
+                let t = self.expr(x);
+                if t.is_empty() { String::from("list") } else { format!("list<{}>", t) }
+            }
         }
     }
 
@@ -372,7 +481,7 @@ impl Types<'_> {
     fn chain_in(&self, src: &str, toks: &[Tok], r: usize, depth: u32) -> Option<Known> {
         enum Step {
             Member(String),
-            Call(String, Vec<String>),
+            Call(String, Vec<ArgTy>),
             Index,
         }
         let text = |t: &Tok| &src[t.start as usize..t.end as usize];
@@ -395,7 +504,7 @@ impl Types<'_> {
         let mut steps: Vec<Step> = Vec::new();
         let mut k = r;
         // the start: Ok((name, start, the arguments' types when called)) or a str literal
-        let start: Result<(String, u32, Option<Vec<String>>), ()> = loop {
+        let start: Result<(String, u32, Option<Vec<ArgTy>>), ()> = loop {
             let t = toks[k];
             match t.kind {
                 TokKind::Ident => {
@@ -469,11 +578,11 @@ impl Types<'_> {
     /// token end: those followed by a comma and, with last (a call that is closed at end), the one
     /// after the last comma; each a literal's ("int", "str", "list" ..), a name's or a chain's
     /// (`m`, `doc.page`, `cube(1)`), else "" (not known)
-    pub(crate) fn arg_types(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool) -> Vec<String> {
+    pub(crate) fn arg_types(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool) -> Vec<ArgTy> {
         self.args_in(src, toks, open, end, last, 0)
     }
 
-    fn args_in(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool, depth: u32) -> Vec<String> {
+    fn args_in(&self, src: &str, toks: &[Tok], open: usize, end: usize, last: bool, depth: u32) -> Vec<ArgTy> {
         let mut out = Vec::new();
         let mut seg: Vec<usize> = Vec::new();
         let (mut level, mut commas) = (0i32, 0usize);
@@ -498,8 +607,18 @@ impl Types<'_> {
         out
     }
 
-    /// the type of one argument, its tokens' indexes in seg (see arg_types)
-    fn arg_type(&self, src: &str, toks: &[Tok], seg: &[usize], depth: u32) -> String {
+    /// the type of one argument, its tokens' indexes in seg (see arg_types); (S3) a named one
+    /// (`width: 2`) with its name
+    fn arg_type(&self, src: &str, toks: &[Tok], seg: &[usize], depth: u32) -> ArgTy {
+        if seg.len() >= 2 && toks[seg[0]].kind == TokKind::Ident && toks[seg[1]].kind == TokKind::Colon {
+            let name = String::from(&src[toks[seg[0]].start as usize..toks[seg[0]].end as usize]);
+            return (Some(name), self.value_type(src, toks, &seg[2..], depth));
+        }
+        (None, self.value_type(src, toks, seg, depth))
+    }
+
+    /// the type of an argument's value from its tokens
+    fn value_type(&self, src: &str, toks: &[Tok], seg: &[usize], depth: u32) -> String {
         let kind = |i: usize| toks[seg[i]].kind;
         let lit = |k: TokKind| -> &'static str {
             match k {
@@ -580,7 +699,7 @@ pub(crate) fn check_names<'a>(prog: &Program, api: &'a Api, more: &[&'a str]) ->
             names.push(m);
         }
     }
-    crate::check::resolve_strict(prog, &crate::known_names(&names), &api.removed)
+    crate::check::resolve_strict(prog, &crate::known_names(&names), Some(api))
 }
 
 /// (S3) the description's warnings on a parsed script: diagnostics() over infer()
@@ -619,8 +738,18 @@ impl Diags<'_, '_> {
 
     fn stmt(&mut self, s: &Stmt) {
         match &s.kind {
-            StmtKind::Let { init: Some(e), .. } | StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => self.expr(e),
-            StmtKind::Fn(f) => self.block(&f.body),
+            StmtKind::Let { pat, init } => {
+                if let Some(e) = init {
+                    self.expr(e);
+                }
+                self.pattern(pat);
+            }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                self.pattern(pat);
+            }
+            StmtKind::Return(Some(e)) | StmtKind::Throw(e) | StmtKind::Expr(e) => self.expr(e),
+            StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
                 for (c, b) in arms {
                     self.expr(c);
@@ -634,13 +763,11 @@ impl Diags<'_, '_> {
                 self.expr(cond);
                 self.block(body);
             }
-            StmtKind::For { src, body, .. } => {
-                match src {
-                    ForSrc::Each(e) => self.expr(e),
-                    ForSrc::Range(a, b) => {
-                        self.expr(a);
-                        self.expr(b);
-                    }
+            StmtKind::For { a, b, src, body } => {
+                self.src(src);
+                self.pattern(a);
+                if let Some(b) = b {
+                    self.pattern(b);
                 }
                 self.block(body);
             }
@@ -663,6 +790,44 @@ impl Diags<'_, '_> {
         }
     }
 
+    fn func(&mut self, f: &FnDef) {
+        for p in &f.params {
+            self.pattern(p);
+        }
+        self.block(&f.body);
+    }
+
+    /// (S3) the expressions in a pattern
+    fn pattern(&mut self, p: &Pattern) {
+        match &p.kind {
+            PatKind::Name(_) => {}
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.pattern(x);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r);
+                }
+            }
+            PatKind::Map(entries) => entries.iter().for_each(|(_, x)| self.pattern(x)),
+            PatKind::Default(x, e) => {
+                self.expr(e);
+                self.pattern(x);
+            }
+            PatKind::Target(e) => self.expr(e),
+        }
+    }
+
+    fn src(&mut self, src: &ForSrc) {
+        match src {
+            ForSrc::Each(e) => self.expr(e),
+            ForSrc::Range(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+        }
+    }
+
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Interp(v) | ExprKind::List(v) => v.iter().for_each(|x| self.expr(x)),
@@ -670,8 +835,8 @@ impl Diags<'_, '_> {
                 self.expr(k);
                 self.expr(v);
             }),
-            ExprKind::Fn(f) => self.block(&f.body),
-            ExprKind::Unary(_, a) => self.expr(a),
+            ExprKind::Fn(f) => self.func(f),
+            ExprKind::Unary(_, a) | ExprKind::Named(_, a) => self.expr(a),
             ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -690,7 +855,27 @@ impl Diags<'_, '_> {
                 self.call(f, args);
                 args.iter().for_each(|x| self.expr(x));
             }
-            _ => {}
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Comp(x, clauses) => {
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.src(src);
+                            self.pattern(a);
+                            if let Some(b) = b {
+                                self.pattern(b);
+                            }
+                        }
+                        Clause::If(c) => self.expr(c),
+                    }
+                }
+                self.expr(x);
+            }
+            ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
         }
     }
 
@@ -698,7 +883,8 @@ impl Diags<'_, '_> {
     fn call(&mut self, f: &Expr, args: &[Expr]) {
         let api = self.t.api;
         let ExprKind::Var(n) = &f.kind else { return };
-        if !api.check_calls || self.t.idx.use_from(f.span.start).and_then(|u| u.sym).is_some() {
+        // (named arguments: check.rs binds them)
+        if !api.check_calls || self.t.idx.use_from(f.span.start).and_then(|u| u.sym).is_some() || args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {
             return;
         }
         if let Some(m) = api::count_warning(n, &api.sigs(n), args.len()) {
@@ -733,6 +919,7 @@ impl Diags<'_, '_> {
                 self.warn(name, m);
             } else if let Use::Call(args) = how
                 && api.check_calls
+                && !args.iter().any(|a| matches!(a.kind, ExprKind::Named(..)))
                 && let Some(m) = api::count_warning(&full, &api.sigs(&full), args.len())
             {
                 self.warn(name, m);
@@ -785,6 +972,21 @@ impl Diags<'_, '_> {
                     } else {
                         let m = unknown("Methode");
                         self.warn(name, m);
+                    }
+                } else if args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {
+                    // (S3) named arguments: one of the forms must take them
+                    let a: Vec<Arg> = args.iter().map(crate::check::arg_of).collect();
+                    let forms = t.sigs(n);
+                    if let Err(Some(m)) = api::bind_lenient(&forms, &a) {
+                        let msg = api::named_message(&format!("{}.{}", t.name, n), forms[0], &a, m);
+                        let at = match m {
+                            api::Mismatch::NoParam { arg } | api::Mismatch::Twice { arg, .. } => match &args[arg].kind {
+                                ExprKind::Named(x, _) => x.clone(),
+                                _ => name.clone(),
+                            },
+                            _ => name.clone(),
+                        };
+                        self.warn(&at, msg);
                     }
                 } else if api.check_calls
                     && let Some(m) = api::count_warning(&format!("{}.{}", t.name, n), &t.sigs(n), args.len())

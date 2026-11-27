@@ -55,7 +55,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::code::{Code, Const, HostName, Op};
+use crate::code::{CallKind, Code, Const, HostName, Op};
 use crate::heap::{self, Obj, Value};
 use crate::vm::{builtin_of, msg, Cx, ErrorKind, Exc, Frame, Host, TraceLine, Vm, Warning, MAX_WARNINGS};
 use crate::{Diagnostic, Program};
@@ -142,6 +142,8 @@ fn reloc(op: Op, pb: u32, kb: u32, g: &[u32], h: &[u32]) -> Op {
         Op::GetField(k) => Op::GetField(k + kb),
         Op::SetField(k) => Op::SetField(k + kb),
         Op::CallMethod(k, a) => Op::CallMethod(k + kb, a),
+        Op::Key(s, k) => Op::Key(s, k + kb),
+        Op::CallNamed(k) => Op::CallNamed(k + kb),
         Op::GetGlobal(x) => Op::GetGlobal(g[x as usize]),
         Op::SetGlobal(x) => Op::SetGlobal(g[x as usize]),
         Op::GetHost(x) => Op::GetHost(h[x as usize]),
@@ -312,10 +314,24 @@ impl Vm {
                         return Err(e);
                     }
                 },
+                Const::Call(_) => Value::Nil,
             };
             self.consts.push(v);
         }
-        code.consts.extend(m.consts.iter().cloned());
+        // (S3) a call with named arguments names host entries and constants of its own
+        code.consts.extend(m.consts.iter().map(|c| match c {
+            Const::Call(n) => {
+                let mut n = n.clone();
+                n.kind = match n.kind {
+                    CallKind::Value => CallKind::Value,
+                    CallKind::Host(h) => CallKind::Host(hmap[h as usize]),
+                    CallKind::Method(k) => CallKind::Method(k + kbase),
+                    CallKind::HostMethod(h) => CallKind::HostMethod(hmap[h as usize]),
+                };
+                Const::Call(n)
+            }
+            c => c.clone(),
+        }));
         for (i, p) in m.protos.iter().enumerate() {
             let mut p = p.clone();
             p.unit = unit;
@@ -368,6 +384,7 @@ impl Vm {
         self.stack.push(Value::Nil);
         self.frames.push(Frame { proto: self.units[u].pbase, closure: None, base: 1, pc: 0 });
         self.call_fuel = 0;
+        self.fuel_end = self.lim.fuel;
         Ok(())
     }
 

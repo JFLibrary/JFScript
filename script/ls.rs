@@ -153,8 +153,12 @@ pub struct Use {
 #[derive(Clone, Debug, Default)]
 pub struct Index {
     pub symbols: Vec<Symbol>,
-    /// by position
+    /// by position; (S3) a named argument of a call of the script's fn is a use of its
+    /// parameter (one of another call a use without a symbol)
     pub uses: Vec<Use>,
+    /// (S3) where a shorthand {a} names a variable (map literals and patterns), sorted: a rename
+    /// writes {a: new} there
+    pub(crate) shorthand: Vec<u32>,
 }
 
 impl Index {
@@ -484,6 +488,11 @@ fn prev_sig(toks: &[Tok], k: usize) -> Option<usize> {
     (0..k.min(toks.len())).rev().find(|&j| !matches!(toks[j].kind, TokKind::Space | TokKind::Newline | TokKind::Comment | TokKind::Eof))
 }
 
+/// the significant token after index k of the full list
+fn next_sig(toks: &[Tok], k: usize) -> Option<usize> {
+    (k + 1..toks.len()).find(|&j| !matches!(toks[j].kind, TokKind::Space | TokKind::Newline | TokKind::Comment | TokKind::Eof))
+}
+
 /// a line break between token j and token k (j < k)
 fn break_between(toks: &[Tok], src: &str, j: usize, k: usize) -> bool {
     toks[j + 1..k].iter().any(|t| t.kind == TokKind::Newline || (t.kind == TokKind::Comment && src[t.start as usize..t.end as usize].contains('\n')))
@@ -512,6 +521,11 @@ struct Res<'a> {
     /// the fn symbols around, innermost last
     parents: Vec<Option<usize>>,
     next_scope: u32,
+    /// (S3) named arguments of calls of a fn of the script: (the name, the fn's symbol); they
+    /// become uses of its parameter when the index is complete
+    links: Vec<(Span, String, usize)>,
+    /// (S3) the shorthands {a} of map literals and patterns: the name's start
+    shorthand: Vec<u32>,
 }
 
 /// see the module comment
@@ -521,22 +535,49 @@ pub fn index(src: &str) -> Index {
 }
 
 pub(crate) fn index_of(prog: &Program, src: &str) -> Index {
-    let mut r = Res { src, lines: Lines::new(src), syms: Vec::new(), uses: Vec::new(), top: Vec::new(), scopes: Vec::new(), parents: Vec::new(), next_scope: 1 };
+    let mut r = Res {
+        src,
+        lines: Lines::new(src),
+        syms: Vec::new(),
+        uses: Vec::new(),
+        top: Vec::new(),
+        scopes: Vec::new(),
+        parents: Vec::new(),
+        next_scope: 1,
+        links: Vec::new(),
+        shorthand: Vec::new(),
+    };
     let all = (0, src.len() as u32);
     // the top level: its lets and fns first (visible in every function)
     let mut ids: Vec<Option<usize>> = Vec::with_capacity(prog.body.len());
     for s in &prog.body {
+        let mut new: Vec<usize> = Vec::new();
         let id = match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat: Pattern { kind: PatKind::Name(name), .. }, init } => {
                 let id = r.add(name, SymKind::Global, s.span, all, s.span.end, 0, None);
                 r.let_info(id, init.as_ref());
+                new.push(id);
                 Some(id)
             }
-            StmtKind::Fn(f) => f.name.as_ref().map(|n| r.add_fn(n, f, all, 0)),
+            StmtKind::Let { pat, .. } => {
+                // (S3) every name of a pattern is a global
+                let mut names = Vec::new();
+                pat.names(&mut names);
+                for n in names {
+                    let id = r.add(n, SymKind::Global, s.span, all, s.span.end, 0, None);
+                    new.push(id);
+                }
+                None
+            }
+            StmtKind::Fn(f) => f.name.as_ref().map(|n| {
+                let id = r.add_fn(n, f, all, 0);
+                new.push(id);
+                id
+            }),
             _ => None,
         };
         // (a name declared twice: the first one, as check)
-        if let Some(id) = id {
+        for id in new {
             if !r.top.iter().any(|&t| r.syms[t].name == r.syms[id].name) {
                 r.top.push(id);
             }
@@ -555,13 +596,19 @@ pub(crate) fn index_of(prog: &Program, src: &str) -> Index {
             _ => r.stmt(s),
         }
     }
+    // (S3) the named arguments of calls of the script's fns: uses of their parameters
+    for (sp, name, f) in core::mem::take(&mut r.links) {
+        let p = r.syms.iter().position(|x| x.kind == SymKind::Param && x.parent == Some(f) && x.name == name);
+        r.uses.push(Use { span: sp, sym: p, write: false });
+    }
     r.uses.sort_by_key(|u| u.span.start);
-    Index { symbols: r.syms, uses: r.uses }
+    r.shorthand.sort_unstable();
+    Index { symbols: r.syms, uses: r.uses, shorthand: r.shorthand }
 }
 
 impl Res<'_> {
     #[allow(clippy::too_many_arguments)]
-    fn add(&mut self, n: &Name, kind: SymKind, decl: Span, scope: (u32, u32), from: u32, scope_id: u32, params: Option<&[Name]>) -> usize {
+    fn add(&mut self, n: &Name, kind: SymKind, decl: Span, scope: (u32, u32), from: u32, scope_id: u32, params: Option<&[Pattern]>) -> usize {
         let doc = if matches!(kind, SymKind::Global | SymKind::Fn | SymKind::Local) { self.doc_before(decl.line) } else { String::new() };
         let parent = self.parents.last().copied().flatten();
         self.syms.push(Symbol {
@@ -571,7 +618,7 @@ impl Res<'_> {
             decl,
             scope,
             from,
-            params: params.map_or(Vec::new(), |p| p.iter().map(|x| x.text.clone()).collect()),
+            params: params.map_or(Vec::new(), |p| p.iter().map(param_label).collect()),
             doc,
             parent,
             import: None,
@@ -593,7 +640,7 @@ impl Res<'_> {
         let s = &mut self.syms[id];
         s.ty = type_of(e);
         match &e.kind {
-            ExprKind::Fn(f) => s.params = f.params.iter().map(|p| p.text.clone()).collect(),
+            ExprKind::Fn(f) => s.params = f.params.iter().map(param_label).collect(),
             ExprKind::Call(f, args) if matches!(&f.kind, ExprKind::Var(n) if n == "import") => {
                 if let [Expr { kind: ExprKind::Str(p), .. }] = args.as_slice() {
                     s.import = Some(p.clone());
@@ -657,6 +704,42 @@ impl Res<'_> {
         self.uses.push(Use { span, sym, write });
     }
 
+    /// (S3) the names of a pattern as symbols of `kind` visible in `range` (from its start, or
+    /// from `from`), declared in the innermost scope; its defaults read before the names after
+    /// them, an assignment's targets written
+    fn bind(&mut self, p: &Pattern, kind: SymKind, decl: Option<Span>, range: (u32, u32), from: Option<u32>, sid: u32) {
+        match &p.kind {
+            PatKind::Name(n) => {
+                let id = self.add(n, kind, decl.unwrap_or(n.span), range, from.unwrap_or(range.0), sid, None);
+                self.declare(id);
+            }
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.bind(x, kind, decl, range, from, sid);
+                }
+                if let Some(r) = rest {
+                    self.bind(r, kind, decl, range, from, sid);
+                }
+            }
+            PatKind::Map(entries) => {
+                for (k, x) in entries {
+                    if matches!(&x.inner().kind, PatKind::Name(n) if n.span == k.span) {
+                        self.shorthand.push(k.span.start);
+                    }
+                    self.bind(x, kind, decl, range, from, sid);
+                }
+            }
+            PatKind::Default(x, e) => {
+                self.expr(e);
+                self.bind(x, kind, decl, range, from, sid);
+            }
+            PatKind::Target(t) => match &t.kind {
+                ExprKind::Var(n) => self.use_name(n, t.span, true),
+                _ => self.expr(t),
+            },
+        }
+    }
+
     fn block(&mut self, b: &Block) {
         let sid = self.scope_push();
         let range = (b.span.start, b.span.end);
@@ -674,7 +757,7 @@ impl Res<'_> {
                     let id = self.scopes.last().and_then(|(_, v)| v.iter().copied().find(|&i| self.syms[i].span == f.name.as_ref().map_or(Span::default(), |n| n.span)));
                     self.func(f, id);
                 }
-                StmtKind::Let { name, init } => {
+                StmtKind::Let { pat: Pattern { kind: PatKind::Name(name), .. }, init } => {
                     let id = self.add(name, SymKind::Local, s.span, (s.span.end, b.span.end), s.span.end, sid, None);
                     self.let_info(id, init.as_ref());
                     if let Some(e) = init {
@@ -686,6 +769,12 @@ impl Res<'_> {
                     }
                     self.declare(id);
                 }
+                StmtKind::Let { pat, init } => {
+                    if let Some(e) = init {
+                        self.expr(e);
+                    }
+                    self.bind(pat, SymKind::Local, Some(s.span), (s.span.end, b.span.end), None, sid);
+                }
                 _ => self.stmt(s),
             }
         }
@@ -696,23 +785,40 @@ impl Res<'_> {
         let around = self.parents.last().copied().flatten();
         self.parents.push(sym.or(around));
         let sid = self.scope_push();
+        // (S3) a default sees the parameters before it
         for p in &f.params {
-            let id = self.add(p, SymKind::Param, p.span, (f.span.start, f.span.end), f.span.start, sid, None);
-            self.declare(id);
+            self.bind(p, SymKind::Param, None, (f.span.start, f.span.end), Some(f.span.start), sid);
         }
         self.block(&f.body);
         self.scopes.pop();
         self.parents.pop();
     }
 
+    /// the variables of a for loop or a comprehension's for clause, visible in range
+    fn for_vars(&mut self, a: &Pattern, b: Option<&Pattern>, decl: Span, range: (u32, u32), sid: u32) {
+        for p in [Some(a), b].into_iter().flatten() {
+            self.bind(p, SymKind::Loop, Some(decl), range, None, sid);
+        }
+    }
+
+    fn src(&mut self, src: &ForSrc) {
+        match src {
+            ForSrc::Each(e) => self.expr(e),
+            ForSrc::Range(lo, hi) => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+        }
+    }
+
     fn stmt(&mut self, s: &Stmt) {
         match &s.kind {
-            StmtKind::Let { name, init } => {
-                // (a let outside a block: the top level, handled by index_of)
+            StmtKind::Let { pat, init } => {
+                // (a let outside a block: the top level, declared by index_of)
                 if let Some(e) = init {
                     self.expr(e);
                 }
-                let _ = name;
+                self.top_pattern(pat);
             }
             StmtKind::Fn(f) => self.func(f, None),
             StmtKind::If { arms, els } => {
@@ -729,19 +835,10 @@ impl Res<'_> {
                 self.block(body);
             }
             StmtKind::For { a, b, src, body } => {
-                match src {
-                    ForSrc::Each(e) => self.expr(e),
-                    ForSrc::Range(lo, hi) => {
-                        self.expr(lo);
-                        self.expr(hi);
-                    }
-                }
+                self.src(src);
                 let sid = self.scope_push();
                 let range = (a.span.start, body.span.end);
-                for n in [Some(a), b.as_ref()].into_iter().flatten() {
-                    let id = self.add(n, SymKind::Loop, s.span, range, range.0, sid, None);
-                    self.declare(id);
-                }
+                self.for_vars(a, b.as_ref(), s.span, range, sid);
                 self.block(body);
                 self.scopes.pop();
             }
@@ -769,7 +866,40 @@ impl Res<'_> {
                 }
                 self.expr(value);
             }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                let sid = self.scopes.last().map_or(0, |s| s.0);
+                self.bind(pat, SymKind::Local, None, (0, 0), None, sid);
+            }
             StmtKind::Block(b) => self.block(b),
+        }
+    }
+
+    /// (S3) a top-level let's pattern: its names are declared (index_of), its defaults read, its
+    /// shorthands noted
+    fn top_pattern(&mut self, p: &Pattern) {
+        match &p.kind {
+            PatKind::Name(_) | PatKind::Target(_) => {}
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.top_pattern(x);
+                }
+                if let Some(r) = rest {
+                    self.top_pattern(r);
+                }
+            }
+            PatKind::Map(entries) => {
+                for (k, x) in entries {
+                    if matches!(&x.inner().kind, PatKind::Name(n) if n.span == k.span) {
+                        self.shorthand.push(k.span.start);
+                    }
+                    self.top_pattern(x);
+                }
+            }
+            PatKind::Default(x, e) => {
+                self.expr(e);
+                self.top_pattern(x);
+            }
         }
     }
 
@@ -784,7 +914,12 @@ impl Res<'_> {
             }
             ExprKind::Map(kv) => {
                 for (k, v) in kv {
-                    self.expr(k);
+                    if k.span == v.span {
+                        // (S3) {a}: the key is the name's use
+                        self.shorthand.push(v.span.start);
+                    } else {
+                        self.expr(k);
+                    }
                     self.expr(v);
                 }
             }
@@ -796,15 +931,76 @@ impl Res<'_> {
             }
             ExprKind::Call(f, args) | ExprKind::Method(f, _, args) => {
                 self.expr(f);
+                // (S3) a named argument of a call of a fn of the script names its parameter
+                let callee = match (&e.kind, &f.kind) {
+                    (ExprKind::Call(..), ExprKind::Var(n)) => self.lookup(n).filter(|&i| self.syms[i].kind == SymKind::Fn || self.syms[i].ty == "fn"),
+                    _ => None,
+                };
                 for x in args {
+                    if let ExprKind::Named(n, _) = &x.kind {
+                        match callee {
+                            Some(c) => self.links.push((n.span, n.text.clone(), c)),
+                            None => self.uses.push(Use { span: n.span, sym: None, write: false }),
+                        }
+                    }
                     self.expr(x);
                 }
+            }
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Named(_, v) => self.expr(v),
+            ExprKind::Comp(x, clauses) => {
+                // (S3) a scope per for clause; its variables are visible in the whole list
+                let n = self.scopes.len();
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.src(src);
+                            let sid = self.scope_push();
+                            self.for_vars(a, b.as_ref(), a.span, (e.span.start, e.span.end), sid);
+                        }
+                        Clause::If(c) => self.expr(c),
+                    }
+                }
+                self.expr(x);
+                self.scopes.truncate(n);
             }
         }
     }
 }
 
-/// the type of a value as far as a literal or a call tells it
+/// a parameter as the signature shows it: "a", "b = 2", "[x, y]" (the default's text when it
+/// is short and simple, else "…")
+fn param_label(p: &Pattern) -> String {
+    match (&p.kind, p.default()) {
+        (PatKind::Default(x, _), Some(d)) => match short_text(d) {
+            Some(t) => format!("{} = {}", x.label(), t),
+            None => format!("{} = …", x.label()),
+        },
+        _ => p.label(),
+    }
+}
+
+/// a literal or a name as written (a parameter's default in a signature)
+fn short_text(e: &Expr) -> Option<String> {
+    Some(match &e.kind {
+        ExprKind::Int(v) => format!("{}", v),
+        ExprKind::Float(v) => format!("{:?}", v),
+        ExprKind::Bool(b) => String::from(if *b { "true" } else { "false" }),
+        ExprKind::Nil => String::from("nil"),
+        ExprKind::Str(s) if s.chars().count() <= 16 && !s.contains(['"', '\\', '\n']) => format!("\"{}\"", s),
+        ExprKind::Var(n) => n.clone(),
+        ExprKind::Unary(UnOp::Neg, a) => format!("-{}", short_text(a)?),
+        ExprKind::List(v) if v.is_empty() => String::from("[]"),
+        ExprKind::Map(v) if v.is_empty() => String::from("{}"),
+        _ => return None,
+    })
+}
+
+// the type of a value as far as a literal or a call tells it
 fn type_of(e: &Expr) -> &'static str {
     match &e.kind {
         ExprKind::Str(_) | ExprKind::Interp(_) => "str",
@@ -930,13 +1126,31 @@ pub fn rename(src: &str, pos: u32, new: &str) -> Result<Vec<Edit>, String> {
         return Err(format!("{} ist hier schon deklariert (Zeile {})", new, o.span.line));
     }
     let spans = refs_of(&idx, sym);
-    let edits: Vec<Edit> = spans.iter().map(|sp| Edit { start: sp.start, end: sp.end, text: String::from(new) }).collect();
+    // (S3) a shorthand {a} keeps its key: {a: new}
+    let short = |at: u32| idx.shorthand.binary_search(&at).is_ok();
+    let edits: Vec<Edit> = spans
+        .iter()
+        .map(|sp| {
+            let text = if short(sp.start) { format!("{}: {}", s.name, new) } else { String::from(new) };
+            Edit { start: sp.start, end: sp.end, text }
+        })
+        .collect();
     // the new text must mean the same: every renamed name the symbol, every other use what it
     // meant before (a declaration of `new` closer to a use, or a use of `new` that the renamed
     // one would hide, clash)
     let after = apply(src, &edits);
-    let d = new.len() as i64 - s.name.len() as i64;
-    let moved = |b: u32| -> u32 { (b as i64 + d * spans.iter().filter(|sp| sp.start < b).count() as i64) as u32 };
+    // where the name at byte b is afterwards (after a shorthand's new key)
+    let moved = |b: u32| -> u32 {
+        let mut at = b as i64;
+        for e in &edits {
+            if e.start < b {
+                at += e.text.len() as i64 - (e.end - e.start) as i64;
+            } else if e.start == b && short(b) {
+                at += s.name.len() as i64 + 2;
+            }
+        }
+        at as u32
+    };
     let (prog2, errs) = crate::parse_partial("", &after);
     if !errs.is_empty() {
         return Err(format!("{} lässt sich hier nicht verwenden", new));
@@ -1068,6 +1282,8 @@ pub fn complete<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Completi
             }
         }
         None => {
+            // (S3) at an argument's start: the parameters still to name ("width:")
+            param_items(src, pos, start, cx, &mut c);
             let mut bodies = Vec::new();
             walk_fns(&prog.body, &mut |f: &FnDef| bodies.push((f.body.span.start, f.body.span.end)));
             names(src, &toks, &idx, &bodies, start, prev, cx, &mut c)
@@ -1124,86 +1340,76 @@ fn visible(idx: &Index, bodies: &[(u32, u32)], pos: u32) -> Vec<usize> {
     best
 }
 
+/// (S3) the arguments before the word at `start` inside the parentheses of a call, when the
+/// word begins an argument (after `(` or a comma): (the number by position, the names given)
+fn args_before(src: &str, start: u32) -> Option<(usize, Vec<String>)> {
+    let (all, _) = lex::lex(src);
+    let toks = lex::significant(&all, src);
+    let k = toks.partition_point(|t| t.end <= start);
+    let p = toks[..k].iter().rposition(|t| t.kind != TokKind::Eof)?;
+    if !matches!(toks[p].kind, TokKind::LParen | TokKind::Comma) {
+        return None;
+    }
+    // back to the call's ( : the starts of the arguments before the one at `start`
+    let (mut depth, mut starts) = (0i32, Vec::new());
+    let mut open = (toks[p].kind == TokKind::LParen).then_some(p);
+    if open.is_none() {
+        for j in (0..p).rev() {
+            match toks[j].kind {
+                TokKind::RParen | TokKind::RBracket | TokKind::RBrace | TokKind::StrTail => depth += 1,
+                TokKind::LParen if depth == 0 => {
+                    open = Some(j);
+                    break;
+                }
+                TokKind::LBracket | TokKind::LBrace | TokKind::StrHead | TokKind::StrMid if depth == 0 => return None,
+                TokKind::LParen | TokKind::LBracket | TokKind::LBrace | TokKind::StrHead => depth -= 1,
+                TokKind::Comma if depth == 0 => starts.push(j + 1),
+                _ => {}
+            }
+        }
+    }
+    let o = open?;
+    o.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Ident)?;
+    if p != o {
+        starts.push(o + 1);
+    }
+    let (mut positional, mut names) = (0usize, Vec::new());
+    for s in starts {
+        match (toks.get(s), toks.get(s + 1)) {
+            (Some(a), Some(c)) if a.kind == TokKind::Ident && c.kind == TokKind::Colon => names.push(String::from(text_of(src, a))),
+            (Some(a), _) if a.kind != TokKind::Comma => positional += 1,
+            _ => {}
+        }
+    }
+    Some((positional, names))
+}
+
+/// (S3) at an argument's start in a call: the parameters of its forms that no argument fills
+/// yet, as "width:" (a script fn's, the host's description's, the library's)
+fn param_items(src: &str, pos: u32, start: u32, cx: &Context, c: &mut Vec<Cand>) {
+    let Some((positional, given)) = args_before(src, start) else { return };
+    let Some(sig) = signature(src, pos, *cx) else { return };
+    let mut seen: Vec<String> = Vec::new();
+    for f in &sig.forms {
+        for (i, &(a, b)) in f.params.iter().enumerate() {
+            let part = &f.label[a as usize..b as usize];
+            let n = part_name(part);
+            if n.is_empty() || part.trim_start().starts_with("...") || i < positional || given.iter().any(|g| g == n) || seen.iter().any(|s| s == n) {
+                continue;
+            }
+            seen.push(String::from(n));
+            c.push(Cand { item: Item { label: format!("{}:", n), kind: ItemKind::Param, detail: String::from(part), doc: f.doc.clone() }, rank: 0 });
+        }
+    }
+}
+
 /// every FnDef in statements (declarations and literals, nested ones too)
 fn walk_fns(stmts: &[Stmt], f: &mut dyn FnMut(&FnDef)) {
-    for s in stmts {
-        walk_stmt(s, f);
-    }
-}
-
-/// visit the fns of a statement
-fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&FnDef)) {
-    let blk = |b: &Block, f: &mut dyn FnMut(&FnDef)| {
-        for s in &b.stmts {
-            walk_stmt(s, f);
-        }
-    };
-    match &s.kind {
-        StmtKind::Let { init: Some(e), .. } | StmtKind::Throw(e) | StmtKind::Expr(e) | StmtKind::Return(Some(e)) => walk_expr(e, f),
-        StmtKind::Fn(d) => {
-            f(d);
-            blk(&d.body, f);
-        }
-        StmtKind::If { arms, els } => {
-            for (c, b) in arms {
-                walk_expr(c, f);
-                blk(b, f);
-            }
-            if let Some(b) = els {
-                blk(b, f);
-            }
-        }
-        StmtKind::While { cond, body } => {
-            walk_expr(cond, f);
-            blk(body, f);
-        }
-        StmtKind::For { src, body, .. } => {
-            match src {
-                ForSrc::Each(e) => walk_expr(e, f),
-                ForSrc::Range(a, b) => {
-                    walk_expr(a, f);
-                    walk_expr(b, f);
-                }
-            }
-            blk(body, f);
-        }
-        StmtKind::Try { body, catch, .. } => {
-            blk(body, f);
-            blk(catch, f);
-        }
-        StmtKind::Assign { target, value, .. } => {
-            walk_expr(target, f);
-            walk_expr(value, f);
-        }
-        StmtKind::Block(b) => blk(b, f),
+    visit(stmts, &mut |n| match n {
+        Node::Stmt(Stmt { kind: StmtKind::Fn(d), .. }) => f(d),
+        Node::Expr(Expr { kind: ExprKind::Fn(d), .. }) => f(d),
         _ => {}
-    }
-}
-
-fn walk_expr(e: &Expr, f: &mut dyn FnMut(&FnDef)) {
-    match &e.kind {
-        ExprKind::Interp(v) | ExprKind::List(v) => v.iter().for_each(|x| walk_expr(x, f)),
-        ExprKind::Map(kv) => kv.iter().for_each(|(k, v)| {
-            walk_expr(k, f);
-            walk_expr(v, f);
-        }),
-        ExprKind::Fn(d) => {
-            f(d);
-            for s in &d.body.stmts {
-                walk_stmt(s, f);
-            }
-        }
-        ExprKind::Unary(_, a) | ExprKind::Field(a, _) => walk_expr(a, f),
-        ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
-            walk_expr(a, f);
-            walk_expr(b, f);
-        }
-        ExprKind::Call(g, args) | ExprKind::Method(g, _, args) => {
-            walk_expr(g, f);
-            args.iter().for_each(|x| walk_expr(x, f));
-        }
-        _ => {}
-    }
+    });
 }
 
 /// the names at a word that is no member: symbols in scope, the host's, the library's,
@@ -1474,6 +1680,18 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
         let (sig, kind, doc) = member_doc(src, &toks, &idx, r, name, cx, types.as_ref())?;
         return Some(Hover { span, sig, kind, doc });
     }
+    // (S3) the name of a named argument to the host or the library: its parameter (one to a fn of
+    // the script is a use of its parameter: below)
+    if idx.use_from(t.start).is_some_and(|u| u.sym.is_none())
+        && let Some(c) = next_sig(&toks, k).filter(|&c| toks[c].kind == TokKind::Colon)
+        && prev_sig(&toks, k).is_some_and(|p| matches!(toks[p].kind, TokKind::LParen | TokKind::Comma))
+    {
+        let s = signature(src, toks[c].end, *cx)?;
+        let f = &s.forms[s.form];
+        let &(a, b) = f.params.get(f.active)?;
+        let callee = f.label.split('(').next().unwrap_or("");
+        return Some(Hover { span, sig: String::from(&f.label[a as usize..b as usize]), kind: format!("Parameter von {}", callee), doc: f.doc.clone() });
+    }
     if let Some(s) = idx.sym_of(name, t.start) {
         let s2 = &idx.symbols[s];
         let mut sig = sig_of(s2);
@@ -1638,6 +1856,8 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
     let mut depth = 0i32;
     let mut commas = 0usize;
     let mut open = None;
+    // the comma before the argument at pos (or the parenthesis)
+    let mut sep = None;
     for j in (0..end).rev() {
         match toks[j].kind {
             TokKind::RParen | TokKind::RBracket | TokKind::RBrace | TokKind::StrTail => depth += 1,
@@ -1649,11 +1869,20 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
             }
             TokKind::LBracket | TokKind::LBrace | TokKind::StrHead if depth == 0 => return None,
             TokKind::LParen | TokKind::LBracket | TokKind::LBrace | TokKind::StrHead => depth -= 1,
-            TokKind::Comma if depth == 0 => commas += 1,
+            TokKind::Comma if depth == 0 => {
+                commas += 1;
+                sep.get_or_insert(j);
+            }
             _ => {}
         }
     }
     let o = open?;
+    // (S3) a named argument at pos (`width: |`): its parameter is the active one
+    let s0 = sep.unwrap_or(o);
+    let named = match (toks.get(s0 + 1), toks.get(s0 + 2)) {
+        (Some(a), Some(c)) if a.kind == TokKind::Ident && c.kind == TokKind::Colon && c.end <= pos => Some(text_of(src, a)),
+        _ => None,
+    };
     let f = o.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Ident)?;
     let name = text_of(src, &toks[f]);
     let dot = f.checked_sub(1).filter(|&j| toks[j].kind == TokKind::Dot);
@@ -1709,15 +1938,23 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
         if s.arity().1.is_some_and(|m| commas >= m.max(1)) {
             return false;
         }
-        let rest = s.params.iter().position(|p| p.rest);
-        !typed
-            || given.iter().enumerate().all(|(i, t)| {
-                let p = match rest {
-                    Some(r) if r <= i => s.params.get(r),
-                    _ => s.params.get(i),
-                };
-                p.is_none_or(|p| crate::api::fits(t, &p.ty) || (t == "nil" && p.optional))
-            })
+        if named.is_some_and(|n| !s.params.iter().any(|p| p.name == n && !p.rest)) {
+            return false;
+        }
+        if !typed {
+            return true;
+        }
+        // the finished arguments by position and (S3) by name, their types where known
+        let a: Vec<crate::api::Arg> = given.iter().map(|(n, t)| crate::api::Arg { name: n.as_deref(), ty: t }).collect();
+        match s.bind_names(&a) {
+            Ok(filled) => filled.iter().enumerate().all(|(j, args)| {
+                args.iter().all(|&i| {
+                    let t = given[i].1.as_str();
+                    crate::api::fits(t, &s.params[j].ty) || (t == "nil" && s.params[j].optional)
+                })
+            }),
+            Err(_) => false,
+        }
     };
     let pick = |typed: bool| found.iter().position(|f| f.2.is_none_or(|s| takes(s, typed)));
     let form = pick(true).or_else(|| pick(false)).unwrap_or(0);
@@ -1726,12 +1963,24 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
         .map(|(label, doc, _)| {
             let params = param_ranges(label);
             let variadic = label.contains("..");
-            let active = if commas >= params.len() && variadic && !params.is_empty() { params.len() - 1 } else { commas.min(params.len()) };
+            let active = match named {
+                Some(n) => params.iter().position(|&(a, b)| part_name(&label[a as usize..b as usize]) == n).unwrap_or(params.len()),
+                None if commas >= params.len() && variadic && !params.is_empty() => params.len() - 1,
+                None => commas.min(params.len()),
+            };
             Form { label: label.clone(), params, active, doc: doc.clone() }
         })
         .collect();
     let cur = forms[form].clone();
     Some(Signature { label: cur.label, params: cur.params, active: cur.active, doc: cur.doc, forms, form })
+}
+
+/// (S3) the name of a parameter as a label writes it: "width" of "width: float = 1", "z?: T",
+/// "b = 2"; "" for a pattern ([x, y])
+fn part_name(part: &str) -> &str {
+    let p = part.trim().trim_start_matches("...");
+    let n = p.find(|c: char| !is_ident_char(c)).unwrap_or(p.len());
+    &p[..n]
 }
 
 /// the bytes of the parameters inside the parentheses of a label "f(a, b, ..)" (commas inside
@@ -1788,9 +2037,7 @@ pub fn folding(src: &str) -> Vec<Fold> {
         }
     };
     let mut blocks: Vec<(u32, u32, FoldKind)> = Vec::new();
-    for s in &prog.body {
-        fold_stmt(s, src, &mut blocks);
-    }
+    fold_all(&prog.body, src, &mut blocks);
     for (a, z, k) in blocks {
         add(a, z, k, &mut v);
     }
@@ -1837,84 +2084,51 @@ pub fn folding(src: &str) -> Vec<Fold> {
     v
 }
 
-fn fold_block(b: &Block, src: &str, out: &mut Vec<(u32, u32, FoldKind)>) {
-    out.push((b.span.start, b.span.end, FoldKind::Block));
-    for s in &b.stmts {
-        fold_stmt(s, src, out);
-    }
-}
-
-fn fold_stmt(s: &Stmt, src: &str, out: &mut Vec<(u32, u32, FoldKind)>) {
-    match &s.kind {
-        StmtKind::Let { init: Some(e), .. } | StmtKind::Throw(e) | StmtKind::Expr(e) | StmtKind::Return(Some(e)) => fold_expr(e, src, out),
-        StmtKind::Fn(f) => fold_block(&f.body, src, out),
-        StmtKind::If { arms, els } => {
-            for (c, b) in arms {
-                fold_expr(c, src, out);
-                fold_block(b, src, out);
-            }
-            if let Some(b) = els {
-                fold_block(b, src, out);
-            }
-        }
-        StmtKind::While { cond, body } => {
-            fold_expr(cond, src, out);
-            fold_block(body, src, out);
-        }
-        StmtKind::For { src: fs, body, .. } => {
-            if let ForSrc::Each(e) = fs {
-                fold_expr(e, src, out);
-            }
-            fold_block(body, src, out);
-        }
-        StmtKind::Try { body, catch, .. } => {
-            fold_block(body, src, out);
-            fold_block(catch, src, out);
-        }
-        StmtKind::Assign { value, .. } => fold_expr(value, src, out),
-        StmtKind::Block(b) => fold_block(b, src, out),
-        _ => {}
-    }
-}
-
-fn fold_expr(e: &Expr, src: &str, out: &mut Vec<(u32, u32, FoldKind)>) {
-    match &e.kind {
-        ExprKind::List(v) => {
-            out.push((e.span.start, e.span.end, FoldKind::Literal));
-            v.iter().for_each(|x| fold_expr(x, src, out));
-        }
-        ExprKind::Map(kv) => {
-            out.push((e.span.start, e.span.end, FoldKind::Literal));
-            for (k, v) in kv {
-                fold_expr(k, src, out);
-                fold_expr(v, src, out);
-            }
-        }
-        ExprKind::Interp(v) => v.iter().for_each(|x| fold_expr(x, src, out)),
-        ExprKind::Fn(f) => fold_block(&f.body, src, out),
-        ExprKind::Unary(_, a) | ExprKind::Field(a, _) => fold_expr(a, src, out),
-        ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
-            fold_expr(a, src, out);
-            fold_expr(b, src, out);
-        }
-        ExprKind::Call(f, args) | ExprKind::Method(f, _, args) => {
-            fold_expr(f, src, out);
-            // the argument list from its ( on
-            let from = match &e.kind {
-                ExprKind::Method(_, n, _) => n.span.end,
-                _ => f.span.end,
-            };
-            if let Some(k) = src.get(from as usize..e.span.end as usize).and_then(|t| t.find('(')) {
-                let z = e.span.end;
-                if src.as_bytes().get(z as usize - 1) == Some(&b')') {
-                    out.push((from + k as u32, z, FoldKind::Literal));
+/// the blocks, lists, maps, (S3) comprehensions and argument lists of every statement and
+/// expression: (the opener's byte, the closer's end, kind)
+fn fold_all(stmts: &[Stmt], src: &str, out: &mut Vec<(u32, u32, FoldKind)>) {
+    let block = |b: &Block, out: &mut Vec<(u32, u32, FoldKind)>| out.push((b.span.start, b.span.end, FoldKind::Block));
+    visit(stmts, &mut |n| match n {
+        Node::Stmt(s) => match &s.kind {
+            StmtKind::Fn(f) => block(&f.body, out),
+            StmtKind::If { arms, els } => {
+                for (_, b) in arms {
+                    block(b, out);
+                }
+                if let Some(b) = els {
+                    block(b, out);
                 }
             }
-            args.iter().for_each(|x| fold_expr(x, src, out));
-        }
-        _ => {}
-    }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } => block(body, out),
+            StmtKind::Try { body, catch, .. } => {
+                block(body, out);
+                block(catch, out);
+            }
+            StmtKind::Block(b) => block(b, out),
+            _ => {}
+        },
+        Node::Expr(e) => match &e.kind {
+            ExprKind::List(_) | ExprKind::Map(_) | ExprKind::Comp(..) => out.push((e.span.start, e.span.end, FoldKind::Literal)),
+            ExprKind::Fn(f) => block(&f.body, out),
+            ExprKind::Call(f, _) | ExprKind::Method(f, _, _) => {
+                // the argument list from its ( on
+                let from = match &e.kind {
+                    ExprKind::Method(_, n, _) => n.span.end,
+                    _ => f.span.end,
+                };
+                if let Some(k) = src.get(from as usize..e.span.end as usize).and_then(|t| t.find('(')) {
+                    let z = e.span.end;
+                    if src.as_bytes().get(z as usize - 1) == Some(&b')') {
+                        out.push((from + k as u32, z, FoldKind::Literal));
+                    }
+                }
+            }
+            _ => {}
+        },
+        Node::Pattern(_) => {}
+    });
 }
+
 
 /// see the module comment
 pub fn symbols(src: &str) -> Vec<DocSymbol> {
@@ -1923,13 +2137,18 @@ pub fn symbols(src: &str) -> Vec<DocSymbol> {
     let mut out: Vec<DocSymbol> = Vec::new();
     for s in &prog.body {
         match &s.kind {
-            StmtKind::Let { name, init } => {
-                let Some(sym) = idx.symbols.iter().find(|x| x.span == name.span) else { continue };
-                let mut d = DocSymbol { name: name.text.clone(), kind: SymKind::Global, detail: sig_of(sym), span: name.span, range: s.span, children: Vec::new() };
-                if let Some(e) = init {
-                    nested_expr(e, &idx, &mut d.children);
+            StmtKind::Let { pat, init } => {
+                // (S3) a pattern: each of its names, the fns of the value under the first
+                let mut names = Vec::new();
+                pat.names(&mut names);
+                for (i, name) in names.into_iter().enumerate() {
+                    let Some(sym) = idx.symbols.iter().find(|x| x.span == name.span) else { continue };
+                    let mut d = DocSymbol { name: name.text.clone(), kind: SymKind::Global, detail: sig_of(sym), span: name.span, range: s.span, children: Vec::new() };
+                    if let (0, Some(e)) = (i, init) {
+                        nested_expr(e, &idx, &mut d.children);
+                    }
+                    out.push(d);
                 }
-                out.push(d);
             }
             StmtKind::Fn(f) => {
                 if let Some(d) = fn_symbol(f, &idx) {
@@ -1979,7 +2198,7 @@ fn nested(stmts: &[Stmt], idx: &Index, out: &mut Vec<DocSymbol>) {
                 nested(&body.stmts, idx, out);
                 nested(&catch.stmts, idx, out);
             }
-            StmtKind::Assign { value, .. } => nested_expr(value, idx, out),
+            StmtKind::Assign { value, .. } | StmtKind::AssignPat { value, .. } => nested_expr(value, idx, out),
             StmtKind::Block(b) => nested(&b.stmts, idx, out),
             _ => {}
         }
@@ -2003,7 +2222,22 @@ fn nested_expr(e: &Expr, idx: &Index, out: &mut Vec<DocSymbol>) {
             nested_expr(g, idx, out);
             args.iter().for_each(|x| nested_expr(x, idx, out));
         }
-        _ => {}
+        ExprKind::Cond(c, a, b) => {
+            nested_expr(c, idx, out);
+            nested_expr(a, idx, out);
+            nested_expr(b, idx, out);
+        }
+        ExprKind::Named(_, a) => nested_expr(a, idx, out),
+        ExprKind::Comp(x, clauses) => {
+            for c in clauses {
+                match c {
+                    Clause::For { src: ForSrc::Each(s), .. } | Clause::If(s) => nested_expr(s, idx, out),
+                    Clause::For { .. } => {}
+                }
+            }
+            nested_expr(x, idx, out);
+        }
+        ExprKind::Nil | ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Var(_) => {}
     }
 }
 
@@ -2030,7 +2264,7 @@ pub fn check<'a>(src: &str, cx: impl Into<Context<'a>>) -> Vec<Diagnostic> {
             d.extend(lsapi::check_members(&prog, src, api));
         }
         None if roots.is_empty() => d.extend(crate::check::resolve(&prog, crate::GLOBALS)),
-        None => d.extend(crate::check::resolve_strict(&prog, &crate::known_names(&roots), &[])),
+        None => d.extend(crate::check::resolve_strict(&prog, &crate::known_names(&roots), None)),
     }
     d.sort_by_key(|x| (x.line, x.col));
     d

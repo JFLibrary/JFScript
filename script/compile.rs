@@ -26,6 +26,21 @@
 // at their condition), its named locals with their slots and the instructions where they are
 // visible (a let from the instruction after its store to the end of its block, parameters
 // everywhere) and the names of its upvalues.
+//
+// (S3) The syntax pass.  A pattern reads its value from a slot: Elem(slot, i), Rest(slot, i)
+// and Key(slot, k) push an item, the rest of a list or an entry, which goes into a name (or a
+// nested pattern, whose value then has a slot of its own: the top of the stack); a default is
+// Coalesce over the value.  A let's names get their slots with the block's other declarations;
+// a pattern parameter's value has the parameter's slot and its names slots after the
+// parameters, filled before the body runs (a captured one gets a fresh cell, as a loop
+// variable's).  A parameter's default: SkipIfSet over the default's code, before the next
+// parameter.  c ? a : b is two jumps.  A list comprehension compiles in line, in the slots
+// above the stack's height where it starts: the new list, then each for clause's hidden slots
+// and variables as a for loop's, Append(list) for each value.  A call with named arguments
+// pushes the callee, the positional values and the named ones in source order and ends with
+// CallNamed: its constant (Const::Call) holds what is called and the names; the VM binds them
+// (vm.rs).  The slots of a comprehension's variables and of the names of patterns are named
+// locals for the debugger.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
@@ -34,7 +49,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ast::*;
-use crate::code::{Code, Const, Handler, HostName, Op, Proto, Up, Var};
+use crate::code::{CallKind, Code, Const, Handler, HostName, NamedCall, Op, Proto, Up, Var};
 
 // ---- analysis
 
@@ -74,7 +89,13 @@ fn analyze<'a>(p: &'a Program, shared: &'a [String]) -> Analysis {
         z.top.insert(n, g);
     }
     for s in &p.body {
-        if let StmtKind::Let { name, .. } | StmtKind::Fn(FnDef { name: Some(name), .. }) = &s.kind {
+        let mut names: Vec<&Name> = Vec::new();
+        match &s.kind {
+            StmtKind::Let { pat, .. } => pat.names(&mut names),
+            StmtKind::Fn(FnDef { name: Some(name), .. }) => names.push(name),
+            _ => {}
+        }
+        for name in names {
             match z.top.get(name.text.as_str()) {
                 // a name of a script before: the same variable
                 Some(&g) if (g as usize) < shared.len() => {
@@ -134,20 +155,59 @@ impl<'a> Analyzer<'a> {
         self.depth += 1;
         self.scopes.push((Vec::new(), self.depth));
         for p in &f.params {
-            self.declare(p);
+            self.bind(p);
         }
         self.block(&f.body);
         self.scopes.pop();
         self.depth -= 1;
     }
 
+    /// (S3) a pattern's names into the innermost scope, its defaults before the names after
+    /// them (as check::resolve); a Target leaf is a use
+    fn bind(&mut self, p: &'a Pattern) {
+        match &p.kind {
+            PatKind::Name(n) => self.declare(n),
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.bind(x);
+                }
+                if let Some(r) = rest {
+                    self.bind(r);
+                }
+            }
+            PatKind::Map(entries) => {
+                for (_, x) in entries {
+                    self.bind(x);
+                }
+            }
+            PatKind::Default(x, e) => {
+                self.expr(e);
+                self.bind(x);
+            }
+            PatKind::Target(t) => match &t.kind {
+                ExprKind::Var(n) => self.use_name(n, t.span.start),
+                _ => self.expr(t),
+            },
+        }
+    }
+
+    fn src(&mut self, src: &'a ForSrc) {
+        match src {
+            ForSrc::Each(e) => self.expr(e),
+            ForSrc::Range(lo, hi) => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+        }
+    }
+
     fn stmt(&mut self, s: &'a Stmt) {
         match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat, init } => {
                 if let Some(e) = init {
                     self.expr(e);
                 }
-                self.declare(name);
+                self.bind(pat);
             }
             StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
@@ -164,17 +224,11 @@ impl<'a> Analyzer<'a> {
                 self.block(body);
             }
             StmtKind::For { a, b, src, body } => {
-                match src {
-                    ForSrc::Each(e) => self.expr(e),
-                    ForSrc::Range(lo, hi) => {
-                        self.expr(lo);
-                        self.expr(hi);
-                    }
-                }
+                self.src(src);
                 self.scopes.push((Vec::new(), self.depth));
-                self.declare(a);
+                self.bind(a);
                 if let Some(b) = b {
-                    self.declare(b);
+                    self.bind(b);
                 }
                 self.block(body);
                 self.scopes.pop();
@@ -202,6 +256,10 @@ impl<'a> Analyzer<'a> {
                 }
                 self.expr(value);
             }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                self.bind(pat);
+            }
             StmtKind::Block(b) => self.block(b),
         }
     }
@@ -222,7 +280,7 @@ impl<'a> Analyzer<'a> {
                 }
             }
             ExprKind::Fn(f) => self.func(f),
-            ExprKind::Unary(_, a) | ExprKind::Field(a, _) => self.expr(a),
+            ExprKind::Unary(_, a) | ExprKind::Field(a, _) | ExprKind::Named(_, a) => self.expr(a),
             ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -233,11 +291,44 @@ impl<'a> Analyzer<'a> {
                     self.expr(x);
                 }
             }
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c);
+                self.expr(a);
+                self.expr(b);
+            }
+            ExprKind::Comp(x, clauses) => {
+                // a scope per for clause, at this function's depth
+                let n = self.scopes.len();
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.src(src);
+                            self.scopes.push((Vec::new(), self.depth));
+                            self.bind(a);
+                            if let Some(b) = b {
+                                self.bind(b);
+                            }
+                        }
+                        Clause::If(c) => self.expr(c),
+                    }
+                }
+                self.expr(x);
+                self.scopes.truncate(n);
+            }
         }
     }
 }
 
 // ---- code generation
+
+/// (S3) how a pattern's name gets its value: a declaration of a block (store_decl: its cell or
+/// global), or a slot that gets a fresh cell when captured (parameters, loop and comprehension
+/// variables: SetLocal, BoxLocal)
+#[derive(Clone, Copy, PartialEq)]
+enum Store {
+    Decl,
+    Fresh,
+}
 
 struct Loop {
     /// where continue jumps to
@@ -403,7 +494,7 @@ impl Gen<'_> {
         let t = self.here();
         match &mut self.f().p.code[at] {
             Op::Jump(x) | Op::JumpIfFalse(x) | Op::And(x) | Op::Or(x) | Op::Coalesce(x) => *x = t,
-            Op::IterNext(_, x) | Op::IterNext2(_, x) | Op::RangeNext(_, x) => *x = t,
+            Op::IterNext(_, x) | Op::IterNext2(_, x) | Op::RangeNext(_, x) | Op::SkipIfSet(_, x) => *x = t,
             _ => {}
         }
     }
@@ -601,19 +692,52 @@ impl Gen<'_> {
     #[inline(never)]
     fn function(&mut self, f: &FnDef, name: String) -> u32 {
         self.fns.push(new_fn(name, f.params.len() as u32));
+        // a parameter's slot is its name's declaration; (S3) a pattern's value has a slot without
+        // a name
         for p in &f.params {
-            self.names.insert(p.span.start, p.text.clone());
-            self.declare(p.span.start);
-            self.var_start(p.span.start);
+            match p.name() {
+                Some(n) => {
+                    self.names.insert(n.span.start, n.text.clone());
+                    self.declare(n.span.start);
+                    self.var_start(n.span.start);
+                }
+                None => self.f().locals += 1,
+            }
+            let pn = p.name().map_or(String::new(), |n| n.text.clone());
+            self.f().p.pnames.push(pn);
         }
         let n = f.params.len() as u32;
         let st = self.f();
         st.height = n;
         st.p.max_stack = n;
-        for p in &f.params {
-            if self.captured(p.span.start) {
-                let s = self.slot(p.span.start);
-                self.emit(Op::BoxLocal(s), p.span.start);
+        // (S3) the names of pattern parameters: slots after the parameters
+        let mut inner: Vec<&Name> = Vec::new();
+        for p in f.params.iter().filter(|p| p.name().is_none()) {
+            p.names(&mut inner);
+        }
+        for x in &inner {
+            self.names.insert(x.span.start, x.text.clone());
+            self.declare(x.span.start);
+        }
+        if !inner.is_empty() {
+            self.emit(Op::Reserve(inner.len() as u32), f.span.start);
+        }
+        // in order: a default, then the cell of a captured name or the pattern's names
+        for (i, p) in f.params.iter().enumerate() {
+            let i = i as u32;
+            if let Some(d) = p.default() {
+                let j = self.emit(Op::SkipIfSet(i, 0), d.span.start);
+                self.expr(d);
+                self.emit(Op::SetLocal(i), d.span.start);
+                self.patch(j);
+            }
+            match p.name() {
+                Some(n) => {
+                    if self.captured(n.span.start) {
+                        self.emit(Op::BoxLocal(i), n.span.start);
+                    }
+                }
+                None => self.unpack(p.inner(), i, Store::Fresh),
             }
         }
         self.block(&f.body);
@@ -621,7 +745,12 @@ impl Gen<'_> {
         self.emit(Op::Nil, end);
         self.emit(Op::Return, end);
         for p in &f.params {
-            self.var_end(p.span.start);
+            if let Some(n) = p.name() {
+                self.var_end(n.span.start);
+            }
+        }
+        for x in &inner {
+            self.var_end(x.span.start);
         }
         let st = self.fns.pop().expect("function");
         self.protos.push(st.p);
@@ -634,7 +763,13 @@ impl Gen<'_> {
         let base = self.f().locals;
         let mut decls: Vec<u32> = Vec::new();
         for s in &b.stmts {
-            if let StmtKind::Let { name, .. } | StmtKind::Fn(FnDef { name: Some(name), .. }) = &s.kind {
+            let mut names: Vec<&Name> = Vec::new();
+            match &s.kind {
+                StmtKind::Let { pat, .. } => pat.names(&mut names),
+                StmtKind::Fn(FnDef { name: Some(name), .. }) => names.push(name),
+                _ => {}
+            }
+            for name in names {
                 decls.push(name.span.start);
                 self.names.insert(name.span.start, name.text.clone());
             }
@@ -679,7 +814,7 @@ impl Gen<'_> {
             self.mark_stmt(s.span.line);
         }
         match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat: Pattern { kind: PatKind::Name(name), .. }, init } => {
                 match init {
                     Some(e) => self.value(e, &name.text),
                     None => {
@@ -688,6 +823,24 @@ impl Gen<'_> {
                 }
                 self.store_decl(name.span.start, at);
                 self.var_start(name.span.start);
+            }
+            StmtKind::Let { pat, init } => {
+                // (S3) let [a, b] = e: the value in a slot, the names from it
+                match init {
+                    Some(e) => self.expr(e),
+                    None => {
+                        self.emit(Op::Nil, at);
+                    }
+                }
+                let t = self.f().height - 1;
+                self.unpack(pat, t, Store::Decl);
+                self.emit(Op::Pop, at);
+            }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value);
+                let t = self.f().height - 1;
+                self.unpack(pat, t, Store::Decl);
+                self.emit(Op::Pop, at);
             }
             StmtKind::Fn(_) => {}
             StmtKind::If { arms, els } => self.if_stmt(arms, els.as_ref()),
@@ -755,7 +908,31 @@ impl Gen<'_> {
     }
 
     #[inline(never)]
-    fn for_stmt(&mut self, a: &Name, b: Option<&Name>, src: &ForSrc, body: &Block) {
+    fn for_stmt(&mut self, a: &Pattern, b: Option<&Pattern>, src: &ForSrc, body: &Block) {
+        let base = self.f().locals;
+        let (top, next, names) = self.for_head(a, b, src, true);
+        let height = self.f().locals;
+        self.f().loops.push(Loop { cont: top, height, breaks: Vec::new() });
+        self.block(body);
+        self.emit(Op::Jump(top), body.span.end.saturating_sub(1));
+        self.patch(next);
+        let lp = self.f().loops.pop().expect("loop");
+        for b in lp.breaks {
+            self.patch(b);
+        }
+        for d in names {
+            self.var_end(d);
+        }
+        let n = self.f().locals - base;
+        self.emit(Op::PopN(n), body.span.end.saturating_sub(1));
+        self.f().locals = base;
+    }
+
+    /// the head of a for loop or of a comprehension's for clause, with the stack's height at
+    /// self.f().locals: the source and its hidden slots, the variables' slots, the instruction
+    /// that gets the next item (each round) and stores it -> (the round's start, that
+    /// instruction to patch with the end, the variables' declarations)
+    fn for_head(&mut self, a: &Pattern, b: Option<&Pattern>, src: &ForSrc, stmt: bool) -> (u32, usize, Vec<u32>) {
         let base = self.f().locals;
         let (hidden, at) = match src {
             ForSrc::Each(e) => {
@@ -772,53 +949,162 @@ impl Gen<'_> {
             }
         };
         self.f().locals = base + hidden;
-        self.names.insert(a.span.start, a.text.clone());
+        let mut names: Vec<&Name> = Vec::new();
+        a.names(&mut names);
         if let Some(b) = b {
-            self.names.insert(b.span.start, b.text.clone());
+            b.names(&mut names);
         }
-        let sa = self.declare(a.span.start);
-        let sb = b.map(|b| self.declare(b.span.start));
-        self.emit(Op::Reserve(1 + sb.is_some() as u32), a.span.start);
+        for n in &names {
+            self.names.insert(n.span.start, n.text.clone());
+            self.declare(n.span.start);
+        }
+        if !names.is_empty() {
+            self.emit(Op::Reserve(names.len() as u32), a.span.start);
+        }
         let top = self.here();
-        let line = self.pos(at).0;
-        self.mark_stmt(line);
-        let next = match (src, sb) {
+        // (a loop's head is where the debugger stops each round; a comprehension is an
+        // expression)
+        if stmt {
+            let line = self.pos(at).0;
+            self.mark_stmt(line);
+        }
+        let next = match (src, b) {
             (ForSrc::Range(..), _) => Op::RangeNext(base, 0),
             (_, Some(_)) => Op::IterNext2(base, 0),
             _ => Op::IterNext(base, 0),
         };
         let next = self.emit(next, at);
-        if let Some(sb) = sb {
-            self.emit(Op::SetLocal(sb), at);
+        match (&a.kind, b.map(|b| &b.kind)) {
+            // names: the item(s) go straight into their slots
+            (PatKind::Name(na), None | Some(PatKind::Name(_))) => {
+                let sa = self.slot(na.span.start);
+                let nb = b.and_then(|b| b.name());
+                let sb = nb.map(|n| self.slot(n.span.start));
+                if let Some(sb) = sb {
+                    self.emit(Op::SetLocal(sb), at);
+                }
+                self.emit(Op::SetLocal(sa), at);
+                for (n, s) in [(Some(na), Some(sa)), (nb, sb)] {
+                    if let (Some(n), Some(s)) = (n, s) {
+                        if self.captured(n.span.start) {
+                            self.emit(Op::BoxLocal(s), n.span.start);
+                        }
+                    }
+                }
+                self.var_start(na.span.start);
+                if let Some(n) = nb {
+                    self.var_start(n.span.start);
+                }
+            }
+            // (S3) patterns: from the item(s) on the stack
+            _ => {
+                let two = b.is_some() as u32;
+                let t = self.f().height - 1 - two;
+                self.unpack(a, t, Store::Fresh);
+                if let Some(b) = b {
+                    self.unpack(b, t + 1, Store::Fresh);
+                }
+                self.emit(Op::PopN(1 + two), at);
+            }
         }
-        self.emit(Op::SetLocal(sa), at);
-        for (n, s) in [(Some(a), Some(sa)), (b, sb)] {
-            if let (Some(n), Some(s)) = (n, s) {
-                if self.captured(n.span.start) {
-                    self.emit(Op::BoxLocal(s), n.span.start);
+        (top, next, names.iter().map(|n| n.span.start).collect())
+    }
+
+    /// (S3) the names of pattern p from the value in slot `slot`, in source order: a list's
+    /// items, its rest, a map's entries; a name (also with a default) or a target from the value
+    /// itself
+    fn unpack(&mut self, p: &Pattern, slot: u32, mode: Store) {
+        match &p.kind {
+            PatKind::List(items, rest) => {
+                for (i, x) in items.iter().enumerate() {
+                    let i = i as u32;
+                    self.store_into(x, mode, &mut |g: &mut Self| {
+                        g.emit(Op::Elem(slot, i), p.span.start);
+                    });
+                }
+                if let Some(r) = rest {
+                    let n = items.len() as u32;
+                    self.store_into(r, mode, &mut |g: &mut Self| {
+                        g.emit(Op::Rest(slot, n), r.span.start);
+                    });
+                }
+            }
+            PatKind::Map(entries) => {
+                for (k, x) in entries {
+                    let kc = self.kstr(&k.text);
+                    self.store_into(x, mode, &mut |g: &mut Self| {
+                        g.emit(Op::Key(slot, kc), k.span.start);
+                    });
+                }
+            }
+            _ => self.store_into(p, mode, &mut |g: &mut Self| {
+                g.emit(Op::GetLocal(slot), p.span.start);
+            }),
+        }
+    }
+
+    /// (S3) the value that `value` pushes into pattern p: a name, a default over the value, a
+    /// target of an assignment (its object and index first), a nested pattern (the value in a
+    /// slot of its own)
+    fn store_into(&mut self, p: &Pattern, mode: Store, value: &mut dyn FnMut(&mut Self)) {
+        match &p.kind {
+            PatKind::Name(n) => {
+                value(self);
+                self.store_name(n, mode);
+            }
+            PatKind::Default(x, e) => {
+                let mut with = |g: &mut Self| {
+                    value(g);
+                    let j = g.emit(Op::Coalesce(0), e.span.start);
+                    g.expr(e);
+                    g.patch(j);
+                };
+                self.store_into(x, mode, &mut with);
+            }
+            PatKind::Target(t) => match &t.kind {
+                ExprKind::Var(n) => {
+                    value(self);
+                    self.store_var(t.span.start, n, t.span.start);
+                }
+                ExprKind::Field(obj, name) => {
+                    self.expr(obj);
+                    value(self);
+                    let k = self.kstr(&name.text);
+                    self.emit(Op::SetField(k), name.span.start);
+                }
+                ExprKind::Index(obj, idx) => {
+                    let at = self.skip(obj.span.end);
+                    self.expr(obj);
+                    self.expr(idx);
+                    value(self);
+                    self.emit(Op::SetIndex, at);
+                }
+                _ => {}
+            },
+            PatKind::List(..) | PatKind::Map(..) => {
+                value(self);
+                let t = self.f().height - 1;
+                self.unpack(p, t, mode);
+                self.emit(Op::Pop, p.span.start);
+            }
+        }
+    }
+
+    /// (S3) the top into a pattern's name: a block's declaration (its cell or global), or a slot
+    /// that gets a fresh cell when captured
+    fn store_name(&mut self, n: &Name, mode: Store) {
+        let d = n.span.start;
+        match mode {
+            Store::Decl => self.store_decl(d, d),
+            Store::Fresh => {
+                let s = self.slot(d);
+                self.emit(Op::SetLocal(s), d);
+                if self.captured(d) {
+                    self.emit(Op::BoxLocal(s), d);
                 }
             }
         }
-        self.var_start(a.span.start);
-        if let Some(b) = b {
-            self.var_start(b.span.start);
-        }
-        let height = self.f().locals;
-        self.f().loops.push(Loop { cont: top, height, breaks: Vec::new() });
-        self.block(body);
-        self.emit(Op::Jump(top), body.span.end.saturating_sub(1));
-        self.patch(next);
-        let lp = self.f().loops.pop().expect("loop");
-        for b in lp.breaks {
-            self.patch(b);
-        }
-        self.var_end(a.span.start);
-        if let Some(b) = b {
-            self.var_end(b.span.start);
-        }
-        let n = self.f().locals - base;
-        self.emit(Op::PopN(n), body.span.end.saturating_sub(1));
-        self.f().locals = base;
+        self.var_start(d);
     }
 
     /// break (pop to the loop, jump to its end) or continue (pop, jump to its next round)
@@ -996,6 +1282,68 @@ impl Gen<'_> {
                 self.expr(i);
                 self.emit(Op::GetIndex, at);
             }
+            ExprKind::Cond(c, a, b) => self.cond(c, a, b),
+            // (only as an argument: call_named)
+            ExprKind::Named(_, v) => self.expr(v),
+            ExprKind::Comp(x, clauses) => self.comp(e, x, clauses),
+        }
+    }
+
+    /// (S3) c ? a : b
+    #[inline(never)]
+    fn cond(&mut self, c: &Expr, a: &Expr, b: &Expr) {
+        let at = self.skip(c.span.end);
+        self.expr(c);
+        let j = self.emit(Op::JumpIfFalse(0), at);
+        self.expr(a);
+        let end = self.emit(Op::Jump(0), at);
+        // (the other branch starts without a's value)
+        self.f().height -= 1;
+        self.patch(j);
+        self.expr(b);
+        self.patch(end);
+    }
+
+    /// (S3) [x for a in src if c ..] in the slots from the stack's height on (see the module
+    /// comment)
+    #[inline(never)]
+    fn comp(&mut self, e: &Expr, x: &Expr, clauses: &[Clause]) {
+        let saved = self.f().locals;
+        let list = self.f().height;
+        self.emit(Op::MakeList(0), e.span.start);
+        self.f().locals = list + 1;
+        let mut names = Vec::new();
+        self.clauses(e, x, clauses, list, 0, &mut names);
+        for d in names {
+            self.var_end(d);
+        }
+        self.f().locals = saved;
+    }
+
+    /// the clauses of a comprehension from the first of `cs` on; cont: the round's start of the
+    /// innermost for clause (where an if clause that fails goes on)
+    fn clauses(&mut self, e: &Expr, x: &Expr, cs: &[Clause], list: u32, cont: u32, names: &mut Vec<u32>) {
+        match cs.split_first() {
+            None => {
+                self.expr(x);
+                self.emit(Op::Append(list), e.span.start);
+            }
+            Some((Clause::If(c), rest)) => {
+                self.expr(c);
+                self.emit(Op::JumpIfFalse(cont), c.span.start);
+                self.clauses(e, x, rest, list, cont, names);
+            }
+            Some((Clause::For { a, b, src }, rest)) => {
+                let base = self.f().locals;
+                let (top, next, decls) = self.for_head(a, b.as_ref(), src, false);
+                names.extend(decls);
+                self.clauses(e, x, rest, list, top, names);
+                self.emit(Op::Jump(top), e.span.start);
+                self.patch(next);
+                let n = self.f().locals - base;
+                self.emit(Op::PopN(n), e.span.start);
+                self.f().locals = base;
+            }
         }
     }
 
@@ -1045,8 +1393,49 @@ impl Gen<'_> {
         self.emit(Op::MakeMap(kv.len() as u32), e.span.start);
     }
 
+    /// (S3) a call or method call with named arguments (see the module comment)
+    #[inline(never)]
+    fn call_named(&mut self, obj: &Expr, method: Option<&Name>, args: &[Expr]) {
+        let names: Vec<String> = args
+            .iter()
+            .filter_map(|a| match &a.kind {
+                ExprKind::Named(n, _) => Some(n.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let positional = (args.len() - names.len()) as u32;
+        let (kind, at) = match (method, &obj.kind) {
+            (None, ExprKind::Var(n)) if self.is_host(obj.span.start) => (CallKind::Host(self.host(n)), obj.span.start),
+            (None, _) => {
+                self.expr(obj);
+                (CallKind::Value, obj.span.start)
+            }
+            (Some(m), ExprKind::Var(h)) if self.is_host(obj.span.start) => (CallKind::HostMethod(self.host_field(h, &m.text)), m.span.start),
+            (Some(m), _) => {
+                self.expr(obj);
+                (CallKind::Method(self.kstr(&m.text)), m.span.start)
+            }
+        };
+        for a in args {
+            self.expr(a);
+        }
+        let k = self.consts.len() as u32;
+        self.consts.push(Const::Call(NamedCall { kind, positional, names }));
+        self.emit(Op::CallNamed(k), at);
+        // the callee (or object) and the arguments become the result
+        let argc = args.len() as u32;
+        let f = self.f();
+        f.height = match kind {
+            CallKind::Host(_) | CallKind::HostMethod(_) => f.height + 1 - argc,
+            CallKind::Value | CallKind::Method(_) => f.height - argc,
+        };
+    }
+
     #[inline(never)]
     fn call(&mut self, f: &Expr, args: &[Expr]) {
+        if args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {
+            return self.call_named(f, None, args);
+        }
         let argc = args.len() as u32;
         if let ExprKind::Var(n) = &f.kind {
             if self.is_host(f.span.start) {
@@ -1067,6 +1456,9 @@ impl Gen<'_> {
 
     #[inline(never)]
     fn method(&mut self, obj: &Expr, name: &Name, args: &[Expr]) {
+        if args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {
+            return self.call_named(obj, Some(name), args);
+        }
         let argc = args.len() as u32;
         if let ExprKind::Var(h) = &obj.kind {
             if self.is_host(obj.span.start) {

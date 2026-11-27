@@ -73,71 +73,36 @@ impl Marks {
 fn mark_block(b: &Block, m: &mut Marks) {
     m.blocks.push((b.span.start, b.span.end.saturating_sub(1)));
     m.closes.push(b.span.end.saturating_sub(1));
-    for s in &b.stmts {
-        mark_stmt(s, m);
-    }
 }
 
-fn mark_stmt(s: &Stmt, m: &mut Marks) {
-    m.stmts.push(s.span.start);
-    match &s.kind {
-        StmtKind::Let { init: Some(e), .. } | StmtKind::Throw(e) | StmtKind::Expr(e) | StmtKind::Return(Some(e)) => mark_expr(e, m),
-        StmtKind::Fn(f) => mark_block(&f.body, m),
-        StmtKind::If { arms, els } => {
-            for (c, b) in arms {
-                mark_expr(c, m);
-                mark_block(b, m);
-            }
-            if let Some(b) = els {
-                mark_block(b, m);
-            }
-        }
-        StmtKind::While { cond, body } => {
-            mark_expr(cond, m);
-            mark_block(body, m);
-        }
-        StmtKind::For { src, body, .. } => {
-            match src {
-                ForSrc::Each(e) => mark_expr(e, m),
-                ForSrc::Range(a, b) => {
-                    mark_expr(a, m);
-                    mark_expr(b, m);
+/// the statement starts and the blocks of every statement and expression (fn literals in
+/// arguments, (S3) defaults and comprehensions included)
+fn mark(stmts: &[Stmt], m: &mut Marks) {
+    visit(stmts, &mut |n| match n {
+        Node::Stmt(s) => {
+            m.stmts.push(s.span.start);
+            match &s.kind {
+                StmtKind::Fn(f) => mark_block(&f.body, m),
+                StmtKind::If { arms, els } => {
+                    for (_, b) in arms {
+                        mark_block(b, m);
+                    }
+                    if let Some(b) = els {
+                        mark_block(b, m);
+                    }
                 }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } => mark_block(body, m),
+                StmtKind::Try { body, catch, .. } => {
+                    mark_block(body, m);
+                    mark_block(catch, m);
+                }
+                StmtKind::Block(b) => mark_block(b, m),
+                _ => {}
             }
-            mark_block(body, m);
         }
-        StmtKind::Try { body, catch, .. } => {
-            mark_block(body, m);
-            mark_block(catch, m);
-        }
-        StmtKind::Assign { target, value, .. } => {
-            mark_expr(target, m);
-            mark_expr(value, m);
-        }
-        StmtKind::Block(b) => mark_block(b, m),
+        Node::Expr(Expr { kind: ExprKind::Fn(f), .. }) => mark_block(&f.body, m),
         _ => {}
-    }
-}
-
-fn mark_expr(e: &Expr, m: &mut Marks) {
-    match &e.kind {
-        ExprKind::Interp(v) | ExprKind::List(v) => v.iter().for_each(|x| mark_expr(x, m)),
-        ExprKind::Map(kv) => kv.iter().for_each(|(k, v)| {
-            mark_expr(k, m);
-            mark_expr(v, m);
-        }),
-        ExprKind::Fn(f) => mark_block(&f.body, m),
-        ExprKind::Unary(_, a) | ExprKind::Field(a, _) => mark_expr(a, m),
-        ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
-            mark_expr(a, m);
-            mark_expr(b, m);
-        }
-        ExprKind::Call(f, args) | ExprKind::Method(f, _, args) => {
-            mark_expr(f, m);
-            args.iter().for_each(|x| mark_expr(x, m));
-        }
-        _ => {}
-    }
+    });
 }
 
 /// a token that may end an operand (a `-` after it is binary)
@@ -197,9 +162,7 @@ impl Out<'_> {
 pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
     let prog = crate::parse("", src)?;
     let mut m = Marks { stmts: Vec::new(), blocks: Vec::new(), closes: Vec::new() };
-    for s in &prog.body {
-        mark_stmt(s, &mut m);
-    }
+    mark(&prog.body, &mut m);
     m.stmts.sort_unstable();
     m.stmts.dedup();
     m.blocks.sort_unstable();
@@ -207,6 +170,9 @@ pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
     let (toks, _) = lex::lex(src);
     let mut o = Out { src, unit, s: String::with_capacity(src.len() + src.len() / 8), bol: true, level: 0 };
     let mut stack: Vec<(Open, usize)> = Vec::new();
+    // (S3) the ? of conditionals not yet met by their : at each bracket level (the top first):
+    // that : gets blanks around it, a map's or a named argument's only one after it
+    let mut conds: Vec<u32> = alloc::vec![0];
     // the last significant token written and whether it was a unary operator, the line breaks
     // since what was written last, a // comment that ends the line, a comment written last
     let mut prev: Option<Tok> = None;
@@ -247,6 +213,20 @@ pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
         }
         let k = t.kind;
         let is_stmt = m.stmt(t.start);
+        let cond_colon = k == TokKind::Colon && conds.last().is_some_and(|c| *c > 0);
+        match k {
+            TokKind::Question => {
+                if let Some(c) = conds.last_mut() {
+                    *c += 1;
+                }
+            }
+            TokKind::Colon if cond_colon => {
+                if let Some(c) = conds.last_mut() {
+                    *c -= 1;
+                }
+            }
+            _ => {}
+        }
         let p_open = prev.is_some_and(|p| p.kind == TokKind::LBrace && m.open(p.start));
         let t_close = k == TokKind::RBrace && m.close(t.start);
         let empty = t_close && prev.is_some_and(|p| m.open_of(t.start) == Some(p.start));
@@ -287,7 +267,7 @@ pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
                 inner + cont as usize
             };
             o.start(level);
-        } else if after_comment || prev.is_some_and(|p| space(&p, t, &m, prev_unary, interp, empty)) {
+        } else if after_comment || cond_colon || prev.is_some_and(|p| space(&p, t, &m, prev_unary, interp, empty)) {
             o.put(" ");
         }
         force_nl = false;
@@ -304,6 +284,13 @@ pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
             TokKind::StrHead => stack.push((Open::Interp, o.level)),
             TokKind::RBrace | TokKind::RParen | TokKind::RBracket | TokKind::StrTail => {
                 stack.pop();
+            }
+            _ => {}
+        }
+        match k {
+            TokKind::LBrace | TokKind::LParen | TokKind::LBracket | TokKind::StrHead => conds.push(0),
+            TokKind::RBrace | TokKind::RParen | TokKind::RBracket | TokKind::StrTail if conds.len() > 1 => {
+                conds.pop();
             }
             _ => {}
         }
@@ -350,7 +337,7 @@ fn space(p: &Tok, t: &Tok, m: &Marks, p_unary: bool, interp: bool, empty: bool) 
     if matches!(tk, Comma | RParen | RBracket | Dot | Colon | DotDot) || (tk == RBrace && !t_close) {
         return false;
     }
-    if matches!(pk, LParen | LBracket | Dot | DotDot) || (pk == LBrace && !p_block_open) || p_unary {
+    if matches!(pk, LParen | LBracket | Dot | DotDot | DotDotDot) || (pk == LBrace && !p_block_open) || p_unary {
         return false;
     }
     if t_block_open {

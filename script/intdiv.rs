@@ -7,12 +7,15 @@
 //
 // Certainly an int (never a false warning): int literals; len(..) and int(..) where the name is
 // the built-in (not a variable of the script); -a and a + b, a - b, a * b, a / b, a % b of such
-// values; a ?? b when both are; variables whose every assignment in the file is such a value
+// values; a ?? b and (S3) c ? a : b when both are; variables whose every assignment in the file
+// is such a value
 // (let, =, +=, -=, *=, /=, %=, in nested functions too) and the variable of a for loop over a
 // range a..b.  A variable may also be nil (before its let ran, a let without a value): that
 // throws in arithmetic, so a division that gives a value has two ints.  Parameters, for
 // variables over lists, catch variables, fields, indexes and calls of functions are never
-// certain.  A division of two literals that is exact (6 / 2) or by 0 gets no warning.  The file
+// certain; (S3) nor are the names of patterns (destructured items, keys and parameters, their
+// defaults or not) and the variables of a comprehension over a list (one over a range a..b is,
+// as a for loop's).  A division of two literals that is exact (6 / 2) or by 0 gets no warning.  The file
 // is the unit, as for all of check: a later script of Vm::add_script or a host's set_global
 // could change a top-level variable unseen.
 //
@@ -42,6 +45,8 @@ enum K {
     Arith(Box<K>, Box<K>),
     /// a ?? b
     Coalesce(Box<K>, Box<K>),
+    /// (S3) c ? a : b
+    Either(Box<K>, Box<K>),
     Unknown,
 }
 
@@ -72,6 +77,11 @@ impl K {
                 Is::Int => Is::Int,
                 Is::IntOrNil => b.eval(int),
             },
+            K::Either(a, b) => match (a.eval(int), b.eval(int)) {
+                (Is::Any, _) | (_, Is::Any) => Is::Any,
+                (Is::Int, Is::Int) => Is::Int,
+                _ => Is::IntOrNil,
+            },
             K::Unknown => Is::Any,
         }
     }
@@ -81,7 +91,7 @@ impl K {
         match self {
             K::Var(d) => out.push(*d),
             K::Neg(a) => a.vars(out),
-            K::Arith(a, b) | K::Coalesce(a, b) => {
+            K::Arith(a, b) | K::Coalesce(a, b) | K::Either(a, b) => {
                 a.vars(out);
                 b.vars(out);
             }
@@ -120,10 +130,16 @@ pub(crate) fn warnings(prog: &Program) -> Vec<Diagnostic> {
     let mut w = Walk { top: Vec::new(), scopes: Vec::new(), decls: Vec::new(), divs: Vec::new() };
     for s in &prog.body {
         match &s.kind {
-            StmtKind::Let { name, .. } => {
-                if !w.top.iter().any(|t| t.0 == name.text) {
-                    let d = w.decl(true);
-                    w.top.push((name.text.as_str(), d));
+            StmtKind::Let { pat, .. } => {
+                // (S3) a destructured name is never certain
+                let mut names = Vec::new();
+                pat.names(&mut names);
+                let cand = matches!(pat.kind, PatKind::Name(_));
+                for name in names {
+                    if !w.top.iter().any(|t| t.0 == name.text) {
+                        let d = w.decl(cand);
+                        w.top.push((name.text.as_str(), d));
+                    }
                 }
             }
             StmtKind::Fn(FnDef { name: Some(name), .. }) => {
@@ -303,15 +319,81 @@ impl<'a> Walk<'a> {
     fn func(&mut self, f: &'a FnDef) {
         self.scopes.push(Vec::new());
         for p in &f.params {
-            self.declare(&p.text, false);
+            self.pattern(p, false);
         }
         self.block(&f.body);
         self.scopes.pop();
     }
 
+    /// (S3) a pattern's defaults and names: never certain (top: a top-level let's, declared
+    /// already: they get an unknown value)
+    fn pattern(&mut self, p: &'a Pattern, top: bool) {
+        match &p.kind {
+            PatKind::Name(n) => {
+                let d = if top { self.resolve(&n.text) } else { Some(self.declare(&n.text, false)) };
+                if let Some(d) = d {
+                    self.decls[d].values.push(K::Unknown);
+                }
+            }
+            PatKind::List(items, rest) => {
+                for x in items {
+                    self.pattern(x, top);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r, top);
+                }
+            }
+            PatKind::Map(entries) => {
+                for (_, x) in entries {
+                    self.pattern(x, top);
+                }
+            }
+            PatKind::Default(x, e) => {
+                self.expr(e, false);
+                self.pattern(x, top);
+            }
+            PatKind::Target(t) => match &t.kind {
+                ExprKind::Var(n) => {
+                    if let Some(d) = self.resolve(n) {
+                        self.decls[d].values.push(K::Unknown);
+                    }
+                }
+                _ => {
+                    self.expr(t, false);
+                }
+            },
+        }
+    }
+
+    /// the variables of a for loop or clause (a scope is open): over a range one name is
+    /// certainly an int
+    fn for_vars(&mut self, a: &'a Pattern, b: Option<&'a Pattern>, src: &'a ForSrc) {
+        let range = match src {
+            ForSrc::Each(e) => {
+                self.expr(e, false);
+                false
+            }
+            ForSrc::Range(lo, hi) => {
+                self.expr(lo, false);
+                self.expr(hi, false);
+                true
+            }
+        };
+        match (&a.kind, range && b.is_none()) {
+            (PatKind::Name(n), true) => {
+                let d = self.declare(&n.text, true);
+                self.decls[d].values.push(K::Int);
+            }
+            _ => self.pattern(a, false),
+        }
+        if let Some(b) = b {
+            self.pattern(b, false);
+        }
+    }
+
     fn stmt(&mut self, s: &'a Stmt, top: bool) {
         match &s.kind {
-            StmtKind::Let { name, init } => {
+            StmtKind::Let { pat: Pattern { kind: PatKind::Name(name), .. }, init } => {
                 let k = match init {
                     Some(e) => self.expr(e, false),
                     None => K::Nil,
@@ -320,6 +402,16 @@ impl<'a> Walk<'a> {
                 if let Some(d) = d {
                     self.decls[d].values.push(k);
                 }
+            }
+            StmtKind::Let { pat, init } => {
+                if let Some(e) = init {
+                    self.expr(e, false);
+                }
+                self.pattern(pat, top);
+            }
+            StmtKind::AssignPat { pat, value } => {
+                self.expr(value, false);
+                self.pattern(pat, false);
             }
             StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {
@@ -336,26 +428,9 @@ impl<'a> Walk<'a> {
                 self.block(body);
             }
             StmtKind::For { a, b, src, body } => {
-                let range = match src {
-                    ForSrc::Each(e) => {
-                        self.expr(e, false);
-                        false
-                    }
-                    ForSrc::Range(lo, hi) => {
-                        self.expr(lo, false);
-                        self.expr(hi, false);
-                        true
-                    }
-                };
+                // (the source is walked before the variables are declared)
                 self.scopes.push(Vec::new());
-                let one = range && b.is_none();
-                let d = self.declare(&a.text, one);
-                if one {
-                    self.decls[d].values.push(K::Int);
-                }
-                if let Some(b) = b {
-                    self.declare(&b.text, false);
-                }
+                self.for_vars(a, b.as_ref(), src);
                 self.block(body);
                 self.scopes.pop();
             }
@@ -467,6 +542,30 @@ impl<'a> Walk<'a> {
                 self.expr(b, false);
                 K::Unknown
             }
+            // (S3) c ? a : b is certainly an int when both are
+            ExprKind::Cond(c, a, b) => {
+                self.expr(c, false);
+                let (ka, kb) = (self.expr(a, false), self.expr(b, false));
+                K::Either(Box::new(ka), Box::new(kb))
+            }
+            ExprKind::Named(_, v) => self.expr(v, quiet),
+            ExprKind::Comp(x, clauses) => {
+                let n = self.scopes.len();
+                for c in clauses {
+                    match c {
+                        Clause::For { a, b, src } => {
+                            self.scopes.push(Vec::new());
+                            self.for_vars(a, b.as_ref(), src);
+                        }
+                        Clause::If(c) => {
+                            self.expr(c, false);
+                        }
+                    }
+                }
+                self.expr(x, false);
+                self.scopes.truncate(n);
+                K::Unknown
+            }
         }
     }
 }
@@ -480,6 +579,7 @@ fn copy(k: &K) -> K {
         K::Neg(a) => K::Neg(Box::new(copy(a))),
         K::Arith(a, b) => K::Arith(Box::new(copy(a)), Box::new(copy(b))),
         K::Coalesce(a, b) => K::Coalesce(Box::new(copy(a)), Box::new(copy(b))),
+        K::Either(a, b) => K::Either(Box::new(copy(a)), Box::new(copy(b))),
         K::Unknown => K::Unknown,
     }
 }

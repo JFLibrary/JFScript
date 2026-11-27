@@ -8,8 +8,8 @@
 // settled; an event handler and other calls while an invocation waits; slices of size 1 against
 // an uninterrupted run; a clone that goes on with another value; the collector under pressure
 // while invocations wait; the debugger's step across an await; await in a native's callback
-// (an error with its position); add_script; fuel over the wait; cancel_waiting; the invocation's
-// own promise that another one awaits
+// (an error with its position); add_script; fuel per stretch between two waits (the invocation's
+// count goes on); cancel_waiting; the invocation's own promise that another one awaits
 
 use alloc::format;
 use alloc::string::String;
@@ -619,19 +619,50 @@ fn scripts_and_modules(t: &mut T) {
 }
 
 fn fuel_and_cancel(t: &mut T) {
-    // the fuel of an invocation counts on after its wait
+    // (S3, the user's decision of 2026-11-27) Limits::fuel holds for each stretch between two
+    // waits; the invocation's own count goes on over the waits
     let mut h = Ops::default();
-    let mut vm = vm_of("let s = 0\nfor i in 0..20 { s += i }\nawait later(\"x\")\nfor i in 0..200 { s += i }", Limits { fuel: 500, ..Limits::default() });
+    let src = "let s = 0\nfor i in 0..40 { s += i }\nawait later(\"x\")\nfor i in 0..40 { s += i }\nawait later(\"y\")\nwhile true { s += 1 }";
+    let mut vm = vm_of(src, Limits { fuel: 500, ..Limits::default() });
     t.check("fuel: waits", matches!(go(&mut vm, &mut h, u64::MAX), Status::Done(_)));
     let before = vm.call_fuel();
-    t.check("fuel: used some", before > 50 && before < 500);
+    t.check(&format!("fuel: the first stretch ({})", before), before > 250 && before < 500);
     vm.resolve(job(&h, "x"), Value::Nil);
     vm.wake();
     t.eq("fuel: after the wake", vm.call_fuel(), before);
+    t.check("fuel: waits again", matches!(go(&mut vm, &mut h, u64::MAX), Status::Done(_)));
+    let second = vm.call_fuel();
+    t.check(&format!("fuel: more than the limit in all, not ended ({})", second), second > 500 && second < 1000);
+    vm.resolve(job(&h, "y"), Value::Nil);
+    vm.wake();
     match go(&mut vm, &mut h, u64::MAX) {
-        Status::Error(e) => t.eq("fuel: the limit holds over the wait", e.kind, ErrorKind::Fuel),
+        Status::Error(e) => {
+            t.eq("fuel: an endless stretch ends", e.kind, ErrorKind::Fuel);
+            t.eq("fuel: its message", e.msg.as_str(), "Rechenzeit aufgebraucht: mehr als 500 Schritte seit dem letzten await – eine Endlosschleife?");
+            let last = vm.call_fuel() - second;
+            t.check(&format!("fuel: the last stretch has the whole limit ({})", last), (500..510).contains(&last));
+        }
         s => t.check(&format!("fuel: {:?}", s), false),
     }
+    // without a wait: the limit of the invocation as before, sliced or not
+    for slice in [u64::MAX, 7] {
+        let mut vm = vm_of("let s = 0\nwhile true { s += 1 }", Limits { fuel: 500, ..Limits::default() });
+        match go(&mut vm, &mut h, slice) {
+            Status::Error(e) => t.eq(&format!("fuel: no wait ({})", slice), (e.kind, e.msg.as_str(), vm.call_fuel() >= 500 && vm.call_fuel() < 510), (ErrorKind::Fuel, "Rechenzeit aufgebraucht: mehr als 500 Schritte in einem Aufruf – eine Endlosschleife?", true)),
+            s => t.check(&format!("fuel: no wait {:?}", s), false),
+        }
+    }
+    // the library's long work counts in its stretch too: a json text after a wait, when the
+    // stretch before used most of the limit
+    let mut h = Ops::default();
+    let mut vm = vm_of("let s = 0\nfor i in 0..125 { s += i }\nawait later(\"j\")\nlet t = json.encode(list.range(0, 2000))\nlog(len(t))", Limits { fuel: 1000, ..Limits::default() });
+    t.check("fuel: json waits", matches!(go(&mut vm, &mut h, u64::MAX), Status::Done(_)));
+    let first = vm.call_fuel();
+    vm.resolve(job(&h, "j"), Value::Nil);
+    vm.wake();
+    t.check("fuel: json after the wake", matches!(go(&mut vm, &mut h, u64::MAX), Status::Done(_)));
+    t.check(&format!("fuel: json over the limit in all ({} + {})", first, vm.call_fuel() - first), first > 800 && vm.call_fuel() > 1000);
+    t.eq("fuel: json log", h.log.clone(), vec![String::from("8891")]);
     // cancel_waiting: the invocation is gone, its promise rejected
     let mut h = Ops::default();
     let mut vm = vm_of("fn w() { await later(\"w\"); log(\"never\") }", Limits::default());

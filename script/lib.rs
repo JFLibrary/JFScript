@@ -271,9 +271,9 @@ pub fn outline(src: &str) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     for s in &prog.body {
         match &s.kind {
-            ast::StmtKind::Let { name, .. } => out.push((format!("let {}", name.text), s.span.line)),
+            ast::StmtKind::Let { pat, .. } => out.push((format!("let {}", pat.label()), s.span.line)),
             ast::StmtKind::Fn(f) => {
-                let params: Vec<&str> = f.params.iter().map(|p| p.text.as_str()).collect();
+                let params: Vec<String> = f.params.iter().map(|p| p.label()).collect();
                 let name = f.name.as_ref().map_or("", |n| n.text.as_str());
                 out.push((format!("fn {}({})", name, params.join(", ")), s.span.line));
             }
@@ -304,7 +304,7 @@ pub fn compile_named(name: &str, src: &str) -> Result<Program, Vec<Diagnostic>> 
 pub fn compile_with(name: &str, src: &str, globals: &[&str]) -> Result<Program, Vec<Diagnostic>> {
     let known = known_names(globals);
     let (prog, mut d) = parse::parse_program(name, src);
-    d.extend(check::resolve_strict(&prog, &known, &[]));
+    d.extend(check::resolve_strict(&prog, &known, None));
     let strict = code::Strict { names: globals.iter().map(|g| String::from(*g)).collect(), api: None };
     finish(&prog, src, d, Some(strict), &[])
 }
@@ -388,7 +388,7 @@ pub(crate) fn compile_shared(name: &str, src: &str, strict: Option<&code::Strict
             let g: Vec<&str> = s.names.iter().map(|s| s.as_str()).collect();
             let mut known = known_names(&g);
             known.extend_from_slice(&names);
-            d.extend(check::resolve_strict(&prog, &known, &[]));
+            d.extend(check::resolve_strict(&prog, &known, None));
         }
         None => {
             let mut known = names;

@@ -45,8 +45,8 @@ fn char_at(s: &StrObj, b: usize) -> usize {
 
 /// fail before the work when the invocation cannot pay `fuel` (spend charges afterwards)
 fn afford(vm: &Vm, fuel: u64) -> Result<(), Exc> {
-    if vm.call_fuel + vm.used + fuel > vm.lim.fuel {
-        return Err(Exc::Fatal(crate::ErrorKind::Fuel, crate::vm::fuel_msg(vm.lim.fuel)));
+    if vm.call_fuel + vm.used + fuel > vm.fuel_end {
+        return Err(vm.fuel_out());
     }
     Ok(())
 }

@@ -29,8 +29,13 @@
 // Rules that keep it deterministic and safe:
 //   * Order: ready tasks wake in the order their promises settled; the waiters of one promise in
 //     the order they began to wait.  Nothing runs by itself: the host calls wake().
-//   * Fuel and limits: a waiting invocation is still the same invocation, so Limits::fuel holds
-//     for all of its runs together, before and after the await (call_fuel() goes on counting).
+//   * Fuel and limits: Limits::fuel holds for each stretch of an invocation between two waits
+//     (the user's decision of 2026-11-27): one that waits often -- a dialog, the network, a host
+//     operation per shape -- is not ended only because it is long, while an endless loop without
+//     a wait still ends with ErrorKind::Fuel.  The invocation's own count goes on over the waits:
+//     call_fuel() and cx.fuel() count from its start (a host that turns fuel into time, as
+//     JFNetworker does, sees one clock), and the stretch's limit is that count at the wake plus
+//     Limits::fuel (Vm::fuel_end).  The other limits hold as for any invocation.
 //   * Slices: the wait begins at the await instruction however a run is split; the await costs
 //     1 fuel, and 1 again when it runs after the wake.
 //   * Callbacks: code a native runs through Cx::call (list.map, list.sort, a host's own) cannot
@@ -249,6 +254,8 @@ impl Vm {
         self.stack = t.stack;
         self.frames = t.frames;
         self.call_fuel = t.fuel;
+        // a new stretch: Limits::fuel from here on (call_fuel counts on)
+        self.fuel_end = t.fuel.saturating_add(self.lim.fuel);
         self.tasks.current = Some((id, t.promise));
         if let Some(s) = t.step {
             self.dbg_mut().set_step(s);
