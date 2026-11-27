@@ -84,6 +84,26 @@
 //   suggestions                  "meinst du x?" only for really close names (check::suggest);
 //                                Api / Type::removed("geom.move", "m.translate") names what to
 //                                take instead of a removed name
+//   (S3) the syntax pass (docs/LANGUAGE.md "The syntax of S3"):
+//   c ? a : b                    loosest of all operators, right-associative: a ?? b ? c : d is
+//                                (a ?? b) ? c : d; a line that starts with ? or : continues
+//   fn f(a, b = 2)               a default for a missing argument and for nil, evaluated at each
+//                                call in the function's scope (the parameters before it)
+//   f(x, width: 2)               named arguments after the positional ones: a script function's
+//                                by its parameters' names, a host's function or method by its
+//                                description (api::bind_lenient; Host::call gets the values by
+//                                position, nil in the gaps), the library's by its parameters
+//                                (lsdoc.rs); a name that fits no parameter throws (or is an
+//                                error at compile time where the callee is known)
+//   let [x, y, ...r] = l         destructuring in let, parameters, for and the for clauses of
+//   let {a, b: c, d = 1} = m     comprehensions, nested, with defaults; a missing item or key is
+//   [a, b] = [b, a]              nil; a value of the wrong type throws; {..} reads a host
+//                                object's properties; an assignment through a list pattern
+//   {a, b}                       a map literal's shorthand for {a: a, b: b}
+//   [e for x in xs if c]         a list from a loop (several for and if clauses), its variables
+//                                local to it
+//   fuel per stretch             (S3) Limits::fuel holds for each stretch of an invocation
+//                                between two waits in await; call_fuel() counts on over them
 //
 // Files: Diagnostic::file, Error::file and TraceLine::file name the file of a position (the
 // name given to parse / compile_named / compile_with, or a module's path).
@@ -92,12 +112,14 @@
 // fn (closures).  Statements: let x = e, fn name(a, b) { }, if c { } else if c { } else { },
 // while c { }, for x in list { }, for k, v in map { }, for i in 0..n { }, break, continue,
 // return [e], try { } catch e { }, throw e, assignments = += -= *= /= %= to names, fields
-// (m.k) and indexes (a[i]), expression statements.  Expressions: literals (1_000, 0xFF,
+// (m.k) and indexes (a[i]), expression statements; (S3) patterns after let, in parameters
+// (with defaults) and after for, [a, b] = v.  Expressions: literals (1_000, 0xFF,
 // 0b101, 1.5e3, "text" with \n \t \r \0 \" \\ \$ \u{..} and ${expr}, true, false, nil),
-// [a, b], {k: v, "s": v, 1: v, [e]: v}, fn(a) { }, calls, .field, [index], methods
-// s.split(","), unary - ! and (S3) await, binary operators from loose to tight: ?? || &&
-// (== !=) (< <= > >=) (+ -) (* / %).  `await e` gives the value of a promise once it is there
-// (any other value as it is), in any function and at the top level.  Comments // and /* */.  A line break ends a statement once
+// [a, b], {k: v, "s": v, 1: v, [e]: v, (S3) a}, fn(a) { }, calls (S3 with named arguments),
+// .field, [index], methods s.split(","), unary - ! and (S3) await, (S3) [e for x in xs if c],
+// operators from loose to tight: (S3) c ? a : b, ?? || && (== !=) (< <= > >=) (+ -) (* / %).
+// `await e` gives the value of a promise once it is there (any other value as it is), in any
+// function and at the top level.  Comments // and /* */.  A line break ends a statement once
 // its expression is complete (parse.rs has the details); a string stays on one line.
 // Positions: lines and columns from 1, columns count characters, end_col is exclusive.
 // The messages are German.  The scope rules are in ast.rs.

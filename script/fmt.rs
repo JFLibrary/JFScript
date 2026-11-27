@@ -13,8 +13,13 @@
 // opened it) and one more level for a line that continues a statement (`.map(f)`, `&& b`,
 // the value after `=`).  Blanks: around binary operators and `=`, after `,` and the `:` of a
 // map, between words; none inside ( ) [ ] and map braces, around `.` and `..`, after a unary
-// operator, before the ( of a call and the [ of an index.  Inside expressions the line
-// breaks of the source stay (they are where the author broke a long list or chain).
+// operator, before the ( of a call and the [ of an index.  (S3) Around the ? and the : of a
+// conditional (a : is the conditional's when a ? at its bracket level waits for one; the : of
+// a named argument and of a map pattern get one blank after them), none after the ... of a
+// rest; patterns, defaults (`b = 2`), named arguments and comprehensions are laid out like
+// the expressions they look like.  Inside expressions the line breaks of the source stay
+// (they are where the author broke a long list or chain); a line that starts with ? or : is
+// one more level in, as a continued statement.
 // Comments stay where they are: a comment after code on its line one blank after it, a
 // comment on its own line at the level of the code around it, /* */ over several lines as
 // written; blank lines stay, at most one in a row (none at the start of a block or the file,

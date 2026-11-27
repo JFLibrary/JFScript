@@ -1,0 +1,45 @@
+# (S3) the syntax pass: c ? a : b, defaults, named arguments to the script's functions and to
+# the library, destructuring in let, parameters, for and an assignment, {a, b}, lists from a
+# loop (one that waits); a named argument that names no parameter throws
+args: --virtual-time {dir}/syntax_s3.jfs
+--- stdout
+1 a
+2 b
+3 10
+Hallo Anna! Hallo Ben? Hi Cem!
+3 [1, 2] 80 x 2 1
+{a: 2, b: 1, port: 80}
+[4] ["p"]
+mehrere 5
+greet hat keinen Parameter nme – meinst du name?
+[0, 1, 2] 30.0
+===
+# --check warns where a named argument names no parameter of a fn of the file
+args: --check {dir}/syntax_s3.jfs
+--- stdout
+{dir}/syntax_s3.jfs:20:13: Warnung: greet hat keinen Parameter nme – meinst du name?
+===
+# the runner has no description of its names: a named argument to timer is an error
+args: -e "timer.after(10, f: 1)"
+exit: 1
+--- stderr
+-e:1:7: Fehler: timer.after: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)
+    timer.after(10, f: 1)
+          ^^^^^
+===
+# a pattern of the wrong type: an error at the pattern
+args: -e "let [a, b] = 5"
+exit: 1
+--- stderr
+-e:1:5: Fehler: Das Muster [..] braucht eine Liste, nicht int
+    let [a, b] = 5
+        ^
+  im Hauptprogramm (1:5)
+===
+# syntax errors of the new forms
+args: -e "let x = c ? 1"
+exit: 1
+--- stderr
+-e:1:14: Fehler: Hier fehlt : mit dem Wert für den anderen Fall (c ? a : b)
+    let x = c ? 1
+                 ^

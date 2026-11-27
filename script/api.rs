@@ -22,7 +22,8 @@
 //   (S3) bind(&forms, &args) -> Binding   which form fits a call and which parameter each
 //                          argument fills (Sig::bind for one form; see "Binding" below);
 //                          Sig::arity() the fewest and most arguments, count_warning(..) the
-//                          message for a number that fits no form
+//                          message for a number that fits no form; bind_lenient and
+//                          named_message for calls with named arguments (the VM's binding)
 //   (S3) .removed(name, hint)   a name that is gone and what to take instead (Api and Type):
 //                          "geom.move wurde entfernt – nimm m.translate"
 //   (S3) .check_calls()    the signatures name every form a call may take: the language
@@ -54,9 +55,14 @@
 //      list<T>, a union takes each of its types, "" and any fit all; nil fits an optional
 //      parameter, nil being what a left-out argument is): else Type
 // bind() takes the first form, in the order the host declared them, that fits; Err gives each
-// form's first mismatch.  The VM does not bind: a host function still gets the values as the
-// script passed them, and a host binds when it wants to (to pick an overload, to read a named
-// argument by its parameter's name: Binding::arg("width")).
+// form's first mismatch.  A call by position reaches a host function as the script wrote it,
+// and a host binds when it wants to (to pick an overload: Binding::arg("width")).  (S3) A call
+// with named arguments (`box(1, d: 3)`) is bound by the VM: bind_lenient takes the first form
+// that fits (bind), else the first that takes the arguments by position and name alone
+// (Sig::bind_names: rules 1 and 2), and Host::call gets the values by position in that form's
+// order, nil for a parameter left out before the last one given, a rest parameter's in their
+// place (box(w: 2) is box(2), box(1, d: 3) is box(1, nil, 3)); named_message says why none
+// fits.  The compiler checks the same where it sees the callee (check.rs).
 
 use alloc::format;
 use alloc::string::{String, ToString};

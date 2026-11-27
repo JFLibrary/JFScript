@@ -126,7 +126,8 @@ impl Host for MyHost {
 * Fuel: one per instruction, more for copying (string and list concatenation, literals, map
   iteration). `run(host, fuel)` stops before the next instruction once `fuel` is used (it may
   use a little more: `last_fuel()`). `Limits::fuel` caps one invocation over all its runs, so
-  an endless loop ends with `ErrorKind::Fuel` ("Rechenzeit aufgebraucht …"). JFNetworker turns
+  an endless loop ends with `ErrorKind::Fuel` ("Rechenzeit aufgebraucht …"); (S3) an invocation
+  that waits in `await` gets it for each stretch between two waits (below). JFNetworker turns
   fuel into simulated CPU time.
 * Limits (`Limits`): heap bytes (accounted the same way on every target), stack values, call
   depth, fuel per invocation, print output. Crossing one ends the invocation at once; scripts
@@ -143,13 +144,16 @@ impl Host for MyHost {
   lists, maps and functions by identity, (S2) host objects by identity and a host value type's
   objects by their data (below: Host objects); maps keep insertion order, keys are `str`, `int` or
   `bool`, a missing key reads `nil`; `for k, v in map` visits the keys present at its start;
-  missing arguments are `nil`, extra ones are dropped; closures capture variables (a loop
-  variable afresh each round).
+  missing arguments are `nil` ((S3) or the parameter's default), extra ones are dropped;
+  closures capture variables (a loop variable afresh each round).
 * Testing: `coretest --only script` (parser), `coretest --only scriptvm` (compiler, VM,
   collector, fuel, yield at every instruction against an uninterrupted run, soft float against
   the hardware) and `coretest --only scriptlib` (the standard library); (S3) `scripttest --only
   scriptawait` (await: the syntax, waiting invocations, their order, slices, clones, the
-  collector, the debugger); `program.disasm()` prints the bytecode.
+  collector, the debugger, fuel per stretch) and `scripttest --only scriptsyn` (the syntax pass:
+  parsing and recovery, scopes, semantics, errors, named arguments to script functions, the
+  host and the library, slices, the debugger, the language services, the formatter, the
+  int-division warning); `program.disasm()` prints the bytecode.
 
 **The standard library** ([`stdlib.rs`](../script/stdlib.rs) and its neighbours) is part of
 every VM, whatever the host. Methods take the value first, so `s.split(",")` and
@@ -403,9 +407,13 @@ try {
   position), and `check` warns where it sees it (a `fn` literal or a top-level function given to
   `.map(..)` and the like). A `for` loop can wait. Event listeners (`obj.on`) and timer callbacks
   are invocations of their own: they can wait.
-* Fuel: a waiting invocation is still one invocation; `Limits::fuel` holds for all of it, before
-  and after the wait. A run split into slices of any size gives the same as one run, waits
-  included.
+* Fuel (the user's decision of 2026-11-27): `Limits::fuel` holds for each stretch of an
+  invocation between two waits, so a macro that waits often -- for dialogs, the network, a host
+  operation per shape -- is not ended only because it is long in all; an endless loop without a
+  wait still ends with `ErrorKind::Fuel` ("… seit dem letzten await …" once it waited). The
+  invocation's own count goes on over the waits: `vm.call_fuel()` and `cx.fuel()` count from
+  its start (JFNetworker turns them into simulated time). A run split into slices of any size
+  gives the same as one run, waits included.
 * `type(p)` is `"promise"`; `print(p)` shows `<promise 3 ausstehend>`, `<promise 3 erfüllt: 42>`
   or `<promise 3 abgelehnt: "…">`. Promises come from the host (the language has no constructor
   for them yet).
@@ -414,6 +422,99 @@ try {
 
 How a host makes promises and lets waiting code go on: [HOST.md](HOST.md#long-operations-promises-and-await).
 The runner `jfs` has `timer.sleep(ms, value)` for it.
+
+## The syntax of S3
+
+(S3) A pass over the syntax after the model of known languages (G1 d of
+[RICHTUNG.md](RICHTUNG.md)); the forms are the user's of 2026-11-27, the details below. Every
+script of before means what it meant: `?` alone, `name:` inside the parentheses of a call and
+`for` inside a list literal were syntax errors.
+
+```js
+let size = w > 100 ? "groß" : "klein"         // a conditional expression
+fn box(w, h = w, d = 1) { return w * h * d }  // defaults
+print(box(2, d: 3))                           // 12: a named argument
+let [x, y] = point                            // destructuring a list
+let {width, height: h = 1} = opts             // .. a map (or a host object)
+for [i, name] in pairs { print(i, name) }
+for {name, age} in people { print(name, age) }
+[a, b] = [b, a]                               // an assignment through a pattern
+let m = {width, h}                            // {width: width, h: h}
+let squares = [x * x for x in xs if x > 0]    // a list from a loop
+```
+
+* **The conditional** `c ? a : b`: `c` counts as for `if` (`nil` and `false` are falsy), and only
+  the branch it picks runs. It binds loosest of all operators (only assignment, a statement, is
+  looser): `a ?? b ? c : d` is `(a ?? b) ? c : d` and `a || b ? 1 : 2` is `(a || b) ? 1 : 2`, as
+  in JavaScript. The branches are whole expressions and it is right-associative: `a ? b : c ? d
+  : e` is `a ? b : (c ? d : e)`, `a ? b ? 1 : 2 : 3` works. A line that starts with `?` or `:`
+  continues the one above, so long ones can be laid out on lines of their own.
+* **Defaults** `fn f(a, b = 2, c = a + b)`, also in `fn` literals and inside patterns. A
+  default applies when the argument is `nil`: left out or passed as `nil` (decision: JFScript
+  has no `undefined` -- a left-out argument has always been `nil` and a function could not tell
+  them apart, and a function that passes on what it got, `fn g(x, b) { return f(x, b) }`, should
+  give `f` its default; JavaScript's `undefined` plays that part there). `false` and `0` stay.
+  A default is evaluated at each call (a new `[]` every time) in the function's scope: it sees
+  the parameters before it and the names around the function; a later parameter's name means
+  what it means outside.
+* **Named arguments** `f(x, width: 2)` come after the positional ones (decision: as in Python a
+  positional argument after a named one is a syntax error -- the order stays readable and
+  nothing has to guess); the same name twice is an error; the arguments are evaluated in the
+  order they are written.
+  * A function of the script binds them at run time by its parameters' names (the callee is a
+  value): the positional ones first (extra ones are dropped, as always), each named one into its
+  parameter, `nil` (so the default) in the gaps. A name that is no parameter, or one whose
+  parameter already has a positional argument, throws a catchable error at the call with its
+  position ("f hat keinen Parameter widht – meinst du width?", "f: der Parameter a hat schon
+  ein Argument"). A parameter that is a pattern has no name. `check` warns already where the
+  callee is a `fn` of the file that nothing assigns to.
+  * A function or method of the host binds them by the host's description (`script::Api`,
+  [HOST.md](HOST.md#named-arguments-s3)): a program of `compile_api` keeps it; the host gets
+  the values by position. Without a description a named argument to a host function is an
+  error -- at compile time where the call names it (`box(w: 1)`), else at run time.
+  * The standard library binds them by the parameters of its descriptions (`ls::library_doc`, a
+  method's object first): `math.clamp(x, lo: 0, hi: 1)`, `s.split(sep: ",", n: 2)`,
+  `list.range(0, 10, step: 2)`, `json.encode(v, indent: 2)`, `l.sort(cmp: f)`, `m.get(k,
+  default: 0)`, `len(x: l)`. So these names are part of the library now. A rest parameter
+  (`math.min(a, ..)`) takes positional ones only. Where the call names the function, the
+  compiler checks them ("math.clamp hat keinen Parameter low – meinst du lo?"), else the run.
+* **Destructuring** in `let`, in parameters (`fn f([x, y], {w, h})`), in `for` (both variables:
+  `for k, [a, b] in m`) and in the `for` clauses of a comprehension, nested to any depth:
+  `[a, b, ...rest]` (the rest a new list of the items after them, last and a name), `{a, b: c,
+  "k": d, e = 1}` (`b: c` renames, a key in quotes is any key, `= 1` a default; defaults work in
+  list items too). Decisions: a missing item or key is `nil`, as a missing map key, and extra
+  items are left (JavaScript's way; Python would throw); a value of the wrong type throws a
+  catchable error at the pattern ("Das Muster [..] braucht eine Liste, nicht int", "Das Muster
+  {..} braucht eine Map oder ein Objekt des Hosts, nicht str"); `{..}` reads a host object's
+  properties through the host (`let {x, y} = v` of a vector); `[..]` takes lists only, an empty
+  pattern is an error, a rest in a map pattern is not in S3. The names of a top-level pattern
+  are globals; a default sees the names of the pattern before it.
+  An assignment through a pattern without `let`: `[a, b] = [b, a]`, also into fields and
+  indexes (`[m.x, l[i]] = v`) and nested lists, without rest and defaults; there is no `{a, b} =
+  m` (a `{` at a statement's start is a block, as in JavaScript).
+* **The shorthand** `{a, b}` is `{a: a, b: b}`, mixable with `k: v`; it takes names only.
+* **Lists from a loop** `[e for x in xs if c]` as in Python: `if` clauses keep the rounds whose
+  condition is truthy, several `for` clauses nest (`[a + b for a in xs for b in ys]`: the first
+  is the outer loop), the clauses come in any order after the first `for`. A `for` clause takes
+  what a `for` loop takes -- lists, maps (`for k, v in m`), ranges (`for i in 0..n`), strings,
+  bytes -- and patterns. Its variables belong to the expression: the first source is read
+  outside it (`[x for x in x]`), later ones see the variables before them, a closure in it
+  keeps each round's value. No map comprehensions (not decided). It is compiled in line (no
+  function): it can `await`, and it costs what a `for` loop with a `push` costs.
+
+**Tools**: `tokens` marks `?` and `...` as operators; `parse_partial` keeps the tree of the rest
+after a broken form; `check` resolves the names of patterns and comprehensions in their scopes
+(duplicates are errors, a comprehension's variable used after it is unknown) and checks named
+arguments as above; the int-division warning stays never wrong (a destructured name, a
+parameter with a default and a comprehension's variable over a list are never certain ints, one
+over a range is, as is `c ? 7 : 3`); the language services know the names of patterns and
+comprehensions (hover, definition, references, rename: the rename of a shorthand `{a}` writes
+`{a: new}`, the rename of a parameter its named arguments at the calls of its function), offer
+the parameters still to name after `(` and `,` (`width:`, from a function of the script, the
+host's description or the library), make a named argument's parameter the active one in
+signature help and infer types through destructuring (`let {x} = v` of a `vec` is a `float`)
+and comprehensions (`[box(i) for ..]` is a `list<mesh>`); the formatter lays out every form and
+keeps the comments; the debugger shows destructured names as locals.
 
 **The runner `jfs`** ([`apps/jfs`](../jfs/README.md)) runs scripts on the command line:
 
@@ -500,7 +601,9 @@ let tidy = script::fmt::format(src)?;                    // or the syntax errors
 * `fmt::format` (two blanks per level; `format_with(src, "    ")`): one statement per line, the
   `{` of a block on its line, `else` / `catch` after the `}`, indentation by the open brackets
   plus one level for a continued statement, blanks around operators and after `,` and `:`,
-  none inside brackets; the line breaks inside expressions, comments and up to one blank line
+  none inside brackets; (S3) blanks around the `?` and `:` of a conditional (a line that starts
+  with one is a continued one), none after the `...` of a rest, `{a, b}` stays a shorthand; the
+  line breaks inside expressions, comments and up to one blank line
   stay. It refuses code with syntax errors, and it checks that the tree of its result equals
   the original's (`Program::sexpr`) -- so the compiled program is the same. Idempotent.
 * Tests: `coretest --only scriptls` (definitions and references with shadowing, closures, loops;

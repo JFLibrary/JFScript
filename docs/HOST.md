@@ -7,7 +7,8 @@ by name through `Host::call`, maps as objects, `HostItem` lists for the editor -
 ([LANGUAGE.md](LANGUAGE.md)); everything here is added on top, and a host that does not use it
 compiles and behaves as before. What stage S3 added for the gaps the first such host (JFLib's
 modeltool) found is marked (S3): forms, optional parameters and unions in signatures, binding a
-call, `compile_api`, the host's type names in messages, closer suggestions and removed names.
+call, `compile_api`, the host's type names in messages, closer suggestions and removed names; and
+the named arguments of the syntax pass, which reach a host's functions through its description.
 
 What the script sees is in [LANGUAGE.md](LANGUAGE.md#host-objects). The checks of all of it are
 the group `scripthost` of `scripttest` ([`scripthostt.rs`](../scripttest/src/scripthostt.rs)), a
@@ -251,9 +252,13 @@ while let Some(p) = vm.wake() {                              // p: the promise D
 * Listeners: `vm.emit` runs them as before; one that waits counts as handled (`Handled { fuel,
   error: None }`) and goes on through `wake()`. Inside a native (`cx.call`, `cx.emit`) a callback
   runs to its end and cannot wait: `await` of a promise that is not settled throws there.
-* Fuel and limits per invocation (G5.5): a waiting invocation is still the same invocation, its
-  fuel counts on over the wait (`vm.call_fuel()`); the frame budget is the host's, as before, per
-  `run()`. Splitting into slices of any size gives the same result, waits included.
+* Fuel and limits (G5.5; the user's decision of 2026-11-27): `Limits::fuel` holds for each
+  stretch of an invocation between two waits, so an invocation that waits often (dialogs, the
+  network, one host operation per shape) is not ended only because it is long in all, while an
+  endless loop without a wait still ends with `ErrorKind::Fuel`. Its count goes on over the
+  waits: `vm.call_fuel()` and `cx.fuel()` count from its start, so a host that turns fuel into
+  time sees one clock. The frame budget is the host's, as before, per `run()`. Splitting into
+  slices of any size gives the same result, waits included.
 * The collector keeps what a waiting invocation holds (its stack, its closures, its promise) and
   every promise that is not settled. `Vm: Clone` copies waiting invocations and promises with
   their ids; the host settles them in each copy it lets go on. Drops of host objects come when an
@@ -341,9 +346,9 @@ let api = Api::new("modeltool")
 ### Binding a call (S3)
 
 `api::bind(&forms, &args)` says which form a call fits and which parameter each argument fills;
-the VM does not bind (a host function gets the values as the script passed them), a host binds
-when it wants to: to pick an overload, to warn about extra arguments, and with the named
-arguments S3 adds next, to read an argument by its parameter's name.
+a call by position reaches a host function as the script wrote it, and a host binds when it wants
+to: to pick an overload, to warn about extra arguments, to read an argument by its parameter's
+name. A call with named arguments the VM binds itself ([below](#named-arguments-s3)).
 
 ```rust
 use script::api::{self, Arg};
@@ -381,10 +386,41 @@ host lists the more specific forms first. `Sig::arity()` gives the fewest and th
 of a form, `api::count_warning(shown, &forms, n)` the warning `ls::check` gives for a number
 that fits none: a host's own run-time warning about extra arguments can use either.
 
-Named arguments (`f(x, width: 2)`) come next in S3; the parser will hand a host the names with
-the values, `Arg::named("width", ty)` takes them as they are, and `b.arg("width")` finds the
-value whether the script passed it by position or by name. That is why the description's
-parameter names are part of the interface (G9.3: English) and should not change lightly.
+### Named arguments (S3)
+
+A script may name arguments: `box(1, d: 3)`, `m.bevel(width: 0.1)`, `geom.cyl(h: 2, r: 1)`
+([LANGUAGE.md](LANGUAGE.md#the-syntax-of-s3)). The host's functions and methods get them through
+its description, and **`Host::call` and `Host::method` keep getting values by position**, so an
+existing host needs no change:
+
+* A program of `script::compile_api(name, src, &api)` keeps its description (also for the
+  modules it imports and the scripts of `add_script`). At a call with named arguments the VM
+  takes the forms of the function (`api.sigs("box")`) or of the method of the object's type
+  (`api.get_type("mesh").sigs("bevel")`), binds the arguments with `api::bind_lenient` -- the
+  first form that fits (`bind`, the types as `type(x)` gives them), else the first that takes
+  them by position and name alone (`Sig::bind_names`: a parameter left out and the types are the
+  host's matter, as for a call by position) -- and calls the host with the values in that form's
+  parameter order: `nil` for a parameter left out before the last one given, nothing after it, a
+  rest parameter's values in their place. With `box(w: float, h: float = 1, d?: float)`,
+  `box(1, d: 3)` arrives as `box(1, nil, 3)`, `box(w: 2)` as `box(2)`, `box(d: 1, w: 2)` as
+  `box(2, nil, 1)`; with the forms `vec(x, y, z?)` and `vec(v: list)`, `vec(v: l)` arrives as
+  `vec(l)`. A host that binds positionally (above) picks the same form for these.
+* A name no form takes is an error with the call's position, the same text as `api::named_message`
+  gives: at compile time where the call names a described function ("box hat keinen Parameter
+  dd", "box: der Parameter w hat schon ein Argument"), a warning of `ls::check` / `compile_api`
+  for a method of a type the services know ("mesh.bevel hat keinen Parameter widht – meinst du
+  width?"), else a catchable error at run time.
+* Without a description (`compile`, `compile_with`) a named argument to a host function is an
+  error: at compile time where the call names the host's function (`box(w: 1)`: "box: benannte
+  Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api,
+  compile_api)"), at run time where it comes as a value or is a host object's method. A map a
+  host set with `set_global` (`config`) counts as the host's name there.
+* `obj.on(..)` and `obj.off(..)` take `event:` and `f:`; the library takes the names of its
+  descriptions; a script function its parameters' names.
+* What a host may change: nothing. The parameter names of the description are part of its
+  interface now (G9.3: English) and should not change lightly; a host that wants the names
+  itself binds as above with `Arg::named` -- the VM gives it the values only (to hand it the
+  names too would cost a second calling convention; not in S3).
 
 ### Compiling with the description (S3)
 

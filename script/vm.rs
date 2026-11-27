@@ -126,7 +126,19 @@
 // before.  A promise that is not settled returns Exc::Wait from exec (not inside Cx::call: an
 // error there); run() moves the stack and the frames into a Task with the await's pc (it runs
 // again after the wake) and returns Done with the invocation's promise.  The tasks' stacks and
-// closures and the promises not settled yet are roots of the collector.
+// closures and the promises not settled yet are roots of the collector.  Limits::fuel holds for
+// each stretch of an invocation between two waits (fuel_end: the count at the stretch's start
+// plus the limit; wake() starts a new one), call_fuel counts on over all of them.
+//
+// The syntax pass (S3): Elem, Rest and Key read a pattern's items, its rest and its entries
+// from a slot (a host object's property through Host::get, as obj.k), Append fills a
+// comprehension's list, SkipIfSet keeps a parameter that has a value; all of them out of line
+// (elem, rest, key, append), so the loop's code stays as it was.  CallNamed (call_named) places
+// the arguments of a call with named arguments in its callee's parameter order -- a script
+// function's names (Proto::pnames), a native's by the library's parameters (lsdoc::sig) or the
+// forms of the program's description (Code::strict, compile_api), a host object's method by its
+// type's forms -- and then calls as Call, CallHost, CallMethod or CallHostMethod do: hosts get
+// values by position, nil in the gaps.  A name no parameter has throws with the call's position.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

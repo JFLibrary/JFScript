@@ -57,6 +57,15 @@
 //                                    library_doc(name) the parameters and description of a
 //                                    built-in or library name (lsdoc.rs)
 //
+// The syntax pass (S3): the names of patterns are symbols (globals, locals, parameters, loop
+// variables; a comprehension's variables Loop symbols visible in it), a named argument of a call
+// of the script's own fn is a use of that parameter (references and rename go to the call
+// sites; a rename of a shorthand {a} writes {a: new}), one of another call a use without a
+// symbol; hover on it shows the parameter, completion at an argument's start offers the
+// parameters still to name ("width:", from a script fn, the description or the library),
+// signature help makes a named argument's parameter the active one; the parameters' labels
+// show defaults ("b = 2", "b = …") and patterns ("[x, y]").
+//
 // With an Api (S2, lsapi.rs): completion after a dot lists the members of the type the code
 // before it has (a host value such as `doc`, a host function's result, a property, a chain
 // such as `doc.page.shapes[0]`, a let of one of those, the item of a list<T> in a for, the
@@ -598,7 +607,9 @@ pub(crate) fn index_of(prog: &Program, src: &str) -> Index {
     }
     // (S3) the named arguments of calls of the script's fns: uses of their parameters
     for (sp, name, f) in core::mem::take(&mut r.links) {
-        let p = r.syms.iter().position(|x| x.kind == SymKind::Param && x.parent == Some(f) && x.name == name);
+        // (its own parameters, not those of a fn literal inside it: they end where it ends)
+        let end = r.syms[f].decl.end;
+        let p = r.syms.iter().position(|x| x.kind == SymKind::Param && x.parent == Some(f) && x.name == name && x.scope.1 == end);
         r.uses.push(Use { span: sp, sym: p, write: false });
     }
     r.uses.sort_by_key(|u| u.span.start);

@@ -8,7 +8,9 @@
 //                        await passed there (when nothing else in the file has that name)
 //
 // "Directly": not inside a further fn literal or declaration (that one runs when it is called,
-// maybe elsewhere).  The methods are taken by their name whatever the receiver is: a host's
+// maybe elsewhere); (S3) the defaults of its parameters and patterns count, and so does a list
+// comprehension in it (it runs in line: one outside a callback can wait).  A named argument
+// (`xs.map(f: fn(x) { .. })`) is an argument like the others.  The methods are taken by their name whatever the receiver is: a host's
 // method of that name runs its function the same way.  Other functions of a host that take
 // one may run it through Cx::call (no wait) or later as an invocation of its own (await works),
 // so they get no warning; neither does obj.on(..), whose listeners are invocations.

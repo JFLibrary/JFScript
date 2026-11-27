@@ -582,6 +582,10 @@ fn services(t: &mut T) {
     t.eq("rename from a named argument", e.as_deref(), Ok("fn f(width, height = 1) { return width * height }\nprint(f(width: 2), f(1, height: 3))"));
     let d = ls::definition(src, at(src, "width: 2", 0, 1), &cx);
     t.eq("definition of a named argument", d.map(|l| (l.span.line, l.span.col)), Some((1, 6)));
+    // not the parameter of a fn literal inside it; a let of a fn literal is its fn
+    let src = "fn f(a) { return g(fn(width) { return width }) }\nf(width: 1)\nlet h = fn(size) { return size }\nh(size: 2)";
+    t.eq("refs of an inner literal's parameter", ls::references(src, at(src, "width", 0, 0)).len(), 2);
+    t.eq("refs of a let fn's parameter", ls::references(src, at(src, "size", 0, 0)).iter().map(|s| s.line).collect::<Vec<_>>(), vec![3, 3, 4]);
     // hover
     let src = "let [a, b] = [1, 2]\nlet l = [x * 2 for x in [a]]\nprint(math.clamp(1, lo: 0))";
     t.eq("hover destructured", ls::hover(src, at(src, "a", 0, 0), &cx).map(|h| (h.sig, h.kind)), Some((String::from("let a"), String::from("globale Variable"))));

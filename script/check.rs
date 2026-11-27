@@ -528,9 +528,10 @@ impl<'a> Resolver<'a> {
             }
         }
         // the function: a name of the host or of the library (f, ns.f), or a fn of the file
-        let (full, at) = match &call.kind {
+        // (the message's place: the name of the function or method as written)
+        let (full, shown) = match &call.kind {
             ExprKind::Call(f, _) => match &f.kind {
-                ExprKind::Var(n) if !self.declared(n) => (n.clone(), f.span),
+                ExprKind::Var(n) if !self.declared(n) => (n.clone(), Name { text: n.clone(), span: f.span }),
                 ExprKind::Var(n) => {
                     if let Some(d) = self.decl_of(n)
                         && !self.assigned.contains(n.as_str())
@@ -542,12 +543,11 @@ impl<'a> Resolver<'a> {
                 _ => return,
             },
             ExprKind::Method(obj, name, _) => match &obj.kind {
-                ExprKind::Var(ns) if !self.declared(ns) => (format!("{}.{}", ns, name.text), name.span),
+                ExprKind::Var(ns) if !self.declared(ns) => (format!("{}.{}", ns, name.text), name.clone()),
                 _ => return,
             },
             _ => return,
         };
-        let shown = Name { text: full.clone(), span: at };
         let forms: Vec<api::Sig> = match (crate::lsdoc::sig(&full), self.api) {
             (Some(s), _) => alloc::vec![s],
             (None, Some(a)) => a.sigs(&full).into_iter().cloned().collect(),
