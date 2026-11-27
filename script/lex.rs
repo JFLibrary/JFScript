@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 
 use crate::Diagnostic;
 
-/// the kind of a token; the keywords are Let .. Nil, the other names are the punctuation
+/// the kind of a token; the keywords are Let .. Await, the other names are the punctuation
 /// and operator characters
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokKind {
@@ -35,6 +35,7 @@ pub enum TokKind {
     StrTail,        // }.." (lex() only)
     Interp,         // the ${ or } of an interpolation (tokens() only)
     Let, Fn, If, Else, While, For, In, Break, Continue, Return, Try, Catch, Throw, True, False, Nil,
+    Await,          // (S3) await e
     LParen, RParen, LBracket, RBracket, LBrace, RBrace, Comma, Dot, Colon, Semi,
     DotDot,         // ..
     Plus, Minus, Star, Slash, Percent, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
@@ -57,12 +58,12 @@ pub enum TokClass {
     Number, Str, Ident, Op, Punct, Error,
 }
 
-const KEYWORDS: [(&str, TokKind); 16] = [
+const KEYWORDS: [(&str, TokKind); 17] = [
     ("let", TokKind::Let), ("fn", TokKind::Fn), ("if", TokKind::If), ("else", TokKind::Else),
     ("while", TokKind::While), ("for", TokKind::For), ("in", TokKind::In), ("break", TokKind::Break),
     ("continue", TokKind::Continue), ("return", TokKind::Return), ("try", TokKind::Try),
     ("catch", TokKind::Catch), ("throw", TokKind::Throw), ("true", TokKind::True),
-    ("false", TokKind::False), ("nil", TokKind::Nil),
+    ("false", TokKind::False), ("nil", TokKind::Nil), ("await", TokKind::Await),
 ];
 
 impl TokKind {
@@ -82,7 +83,7 @@ impl TokKind {
             _ => TokClass::Op,
         }
     }
-    /// let, fn, .. nil
+    /// let, fn, .. nil, await
     pub fn is_keyword(self) -> bool {
         KEYWORDS.iter().any(|&(_, k)| k == self)
     }

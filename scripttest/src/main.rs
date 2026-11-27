@@ -3,10 +3,11 @@
 // fuel, the heap and its collector (scriptvmt.rs), the standard library and its math
 // (scriptlibt.rs), the language services and the formatter (scriptlst.rs), modules, the debug
 // interface and the test functions (scriptmodt.rs), (S2) the host interface's second version:
-// host objects, properties, operators, events, descriptions and the catalogue (scripthostt.rs).
+// host objects, properties, operators, events, descriptions and the catalogue (scripthostt.rs),
+// (S3) await with promises of the host and waiting invocations (scriptawaitt.rs).
 // They came from JFLib's coretest.  Console program; exit code 1 when a check fails.
 //
-//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost
+//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost, scriptawait
 //   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs), what host objects cost (scripthostt.rs)
 //   cargo run -p scripttest -- --math FILE     answers for tools/script_math_check.py
 //   (cargo jflib test -p scripttest runs it through tests/all.uis; --script is ignored)
@@ -19,6 +20,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 
+mod scriptawaitt;
 mod scripthostt;
 mod scriptlibt;
 mod scriptlst;
@@ -62,13 +64,14 @@ fn run() -> i32 {
         scripthostt::bench();
         return 0;
     }
-    let groups: [(&'static str, fn(&mut T)); 6] = [
+    let groups: [(&'static str, fn(&mut T)); 7] = [
         ("script", scriptt::run),
         ("scriptvm", scriptvmt::run),
         ("scriptlib", scriptlibt::run),
         ("scriptls", scriptlst::run),
         ("scriptmod", scriptmodt::run),
         ("scripthost", scripthostt::run),
+        ("scriptawait", scriptawaitt::run),
     ];
     let mut failed = 0;
     let mut total = 0;

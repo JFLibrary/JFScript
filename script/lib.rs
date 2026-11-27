@@ -56,6 +56,17 @@
 //                                with properties, methods, events, operators; the language
 //                                services use it (ls::Context, ls::check; lsapi.rs infers the
 //                                types), Api::markdown / catalogue make the object catalogue
+//   (S3) await (task.rs, docs/HOST.md "Long operations"):
+//   promises                     Cx::promise() -> Promise { id, value } for a long operation of
+//                                the host (a dialog, a download); Vm::resolve / reject /
+//                                reject_msg(id, ..) settle it, Vm::promise_state tells; type(p) is
+//                                "promise"; Api types "promise<T>"
+//   waiting invocations          `await p` of a promise that is not settled: the invocation waits
+//                                with its stack, run() gives Status::Done(its own promise) and the
+//                                VM is idle (call, emit, add_script go on); Vm::wake() continues
+//                                the ones whose promise settled, in that order; is_waiting(p),
+//                                waiting(), ready(), cancel_waiting(p); check warns about await
+//                                in a callback of list.map .. (awaitchk.rs): it cannot wait there
 //
 // Files: Diagnostic::file, Error::file and TraceLine::file name the file of a position (the
 // name given to parse / compile_named / compile_with, or a module's path).
@@ -67,8 +78,9 @@
 // (m.k) and indexes (a[i]), expression statements.  Expressions: literals (1_000, 0xFF,
 // 0b101, 1.5e3, "text" with \n \t \r \0 \" \\ \$ \u{..} and ${expr}, true, false, nil),
 // [a, b], {k: v, "s": v, 1: v, [e]: v}, fn(a) { }, calls, .field, [index], methods
-// s.split(","), unary - !, binary operators from loose to tight: ?? || && (== !=)
-// (< <= > >=) (+ -) (* / %).  Comments // and /* */.  A line break ends a statement once
+// s.split(","), unary - ! and (S3) await, binary operators from loose to tight: ?? || &&
+// (== !=) (< <= > >=) (+ -) (* / %).  `await e` gives the value of a promise once it is there
+// (any other value as it is), in any function and at the top level.  Comments // and /* */.  A line break ends a statement once
 // its expression is complete (parse.rs has the details); a string stays on one line.
 // Positions: lines and columns from 1, columns count characters, end_col is exclusive.
 // The messages are German.  The scope rules are in ast.rs.
@@ -102,6 +114,10 @@ mod lsapi;
 pub mod fmt;
 mod module;
 pub mod debug;
+// (S3) await: promises and the invocations that wait for them (task.rs), the warning of check
+// for an await that cannot wait (awaitchk.rs)
+pub mod task;
+mod awaitchk;
 
 use alloc::format;
 use alloc::string::String;
@@ -118,6 +134,7 @@ pub use vm::{Cx, Error, ErrorKind, Fail, Handled, Host, Limits, Object, Operator
 pub use code::LineEntry;
 pub use api::Api;
 pub use debug::{Breakpoint, FrameInfo, Pause, PauseReason, Step};
+pub use task::{Promise, PromiseState};
 
 /// a message for the editor: position (1-based; columns count characters, end_col is
 /// exclusive and on the same line), error or warning, German text; file: the name given to

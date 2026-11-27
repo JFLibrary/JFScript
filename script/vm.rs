@@ -47,6 +47,15 @@
 //                                                          as an invocation of its own
 //   cx.emit(..) / remove_listeners(obj) / take_dropped()   inside a native; when the host's
 //                                                          object is gone; the drops polled
+//   (S3) await (task.rs):
+//   cx.promise() -> Promise { id, value }                  a promise for a long operation;
+//   vm.resolve(id, v) / reject(id, e) / reject_msg(id, m)  settled later by its id
+//   Status::Done(p)                                        the invocation waits in await for a
+//                                                          promise: p is its own promise, the
+//                                                          VM is idle
+//   vm.wake() / waiting() / ready() / cancel_waiting(p)    continue the next one whose promise
+//   vm.is_waiting(p)                                       settled (then run()), count, drop;
+//                                                          p is a waiting one's promise
 //
 // Fuel is virtual CPU time: one unit per instruction, more for instructions that copy (string
 // and list concatenation, literals, iterating a map), plus what natives charge.  run(host,
@@ -111,6 +120,13 @@
 // Errors and traces name the file of every position.  The debugger (debug.rs) costs nothing
 // while it has no breakpoint, step or pause request: run() uses exec as it is; with one, run()
 // drives exec one instruction at a time (exec_debug) and checks between them where to stop.
+//
+// await (S3, task.rs): Op::Await leaves every value but a host object as it is; for a promise
+// it leaves the loop through a cold function (await_value), so code without await runs as
+// before.  A promise that is not settled returns Exc::Wait from exec (not inside Cx::call: an
+// error there); run() moves the stack and the frames into a Task with the await's pc (it runs
+// again after the wake) and returns Done with the invocation's promise.  The tasks' stacks and
+// closures and the promises not settled yet are roots of the collector.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -125,6 +141,7 @@ use crate::code::{Code, Const, Op, Program, Up};
 use crate::debug::{Dbg, Pause};
 use crate::heap::{self, Closure, Heap, HostObj, HostVal, Key, Map, Obj, Ref, StrObj, Value};
 use crate::module::{Unit, UnitState};
+use crate::task::Tasks;
 use crate::{jsonlib, num, stdlib};
 
 /// the limits of a VM; crossing one ends the invocation (scripts cannot catch it)
@@ -247,7 +264,11 @@ pub const MAX_WARNINGS: usize = 1000;
 /// the outcome of run()
 #[derive(Clone, PartialEq, Debug)]
 pub enum Status {
-    /// the invocation returned this value (valid until the next run)
+    /// the invocation returned this value (valid until the next run); (S3) or it waits in
+    /// await for a promise of the host that is not settled yet: then the value is the
+    /// invocation's own promise (Vm::promise_state is Waiting), the VM is idle, and Vm::wake
+    /// continues it once its promise settled (task.rs).  A host that makes no promises never
+    /// gets that.
     Done(Value),
     /// fuel used up, or a native asked to yield; run() again continues
     Yielded,
@@ -479,6 +500,9 @@ pub(crate) enum Exc {
     /// (S2) the instruction met a host object: exec's callers ask the host (Vm::hooked) and
     /// call exec again; never leaves run() or Cx::call
     Hook,
+    /// (S3) await of a promise that is not settled: run() lets the invocation wait (task.rs);
+    /// never inside Cx::call (await throws there)
+    Wait,
 }
 
 pub(crate) fn msg<T>(s: String) -> Result<T, Exc> {
@@ -573,8 +597,8 @@ pub struct Vm {
     /// exec returns Done when a Return brings the frames down to this many (0, or where a
     /// native's Cx::call started)
     floor: usize,
-    /// Cx::call inside Cx::call ..
-    nest: u32,
+    /// Cx::call inside Cx::call .. (S3: await cannot wait while it is above 0)
+    pub(crate) nest: u32,
     /// the kind of a fatal error inside Cx::call, for the Fail::Fatal it becomes
     pub(crate) fatal_kind: Option<ErrorKind>,
     /// where an exception (Some) or a fatal error (None) left a callback of a native: the
@@ -603,6 +627,8 @@ pub struct Vm {
     dropped: Vec<HostObj>,
     /// (S2) the functions of obj.on(event, f) in the order they came
     listeners: Vec<Listener>,
+    /// (S3) promises and the invocations that wait in await (task.rs)
+    pub(crate) tasks: Tasks,
 }
 
 const WRITE_CAP: usize = 4 << 20; // bytes of one value text (shared nodes print once per use)
@@ -669,6 +695,7 @@ impl Vm {
             objects: BTreeMap::new(),
             dropped: Vec::new(),
             listeners: Vec::new(),
+            tasks: Tasks::default(),
         }
     }
 
@@ -737,6 +764,7 @@ impl Vm {
         }
         // a breakpoint, a step or a pause request: one instruction at a time (debug.rs)
         let debugging = self.dbg.as_ref().is_some_and(|d| d.active);
+        let mut parked = false;
         let st = loop {
             let r = if debugging { self.exec_debug(host, fuel) } else { self.exec(host, fuel) };
             let e = match r {
@@ -747,6 +775,15 @@ impl Vm {
                 Err(Exc::Hook) => match self.hooked(host) {
                     Ok(false) => continue,
                     Ok(true) => break Status::Yielded,
+                    Err(e) => e,
+                },
+                // (S3) await of a promise that is not settled: the invocation waits (task.rs),
+                // the VM is idle; Done gives the invocation's promise
+                Err(Exc::Wait) => match self.park() {
+                    Ok(p) => {
+                        parked = true;
+                        break Status::Done(p);
+                    }
                     Err(e) => e,
                 },
                 Err(e) => e,
@@ -763,6 +800,10 @@ impl Vm {
         // slice: the host must hear of them at the same point however the run is split)
         if !self.dropped.is_empty() && matches!(st, Status::Done(_) | Status::Error(_)) {
             self.deliver(host);
+        }
+        // (S3) an invocation that had waited ended: its promise settles
+        if !parked && matches!(st, Status::Done(_) | Status::Error(_)) && self.tasks.current_is_some() {
+            self.task_ends(&st);
         }
         match st {
             Status::Done(v) => {
@@ -788,9 +829,11 @@ impl Vm {
     }
 
     /// drop the pending invocation (a yielded callback of a device that was switched off, say);
-    /// globals keep what it changed so far
+    /// globals keep what it changed so far; (S3) one that had waited rejects its promise
+    /// (cancel_waiting drops one that waits)
     pub fn cancel(&mut self) {
         self.abort();
+        self.task_cancelled();
     }
 
     /// fuel used by the last run()
@@ -879,7 +922,7 @@ impl Vm {
                         | (Value::List(_), Some(Obj::List(_)))
                         | (Value::Map(_), Some(Obj::Map(_)))
                         | (Value::Func(_), Some(Obj::Func(_)))
-                        | (Value::Host(_), Some(Obj::Host(_) | Obj::HostValue(_)))
+                        | (Value::Host(_), Some(Obj::Host(_) | Obj::HostValue(_) | Obj::Promise(_)))
                 ),
             },
         }
@@ -1227,7 +1270,8 @@ impl Vm {
     /// listener (Handled::error), the next one runs.  Only while the VM is idle; a pause of the
     /// debugger does not stop it (a host with a debugger runs listeners() through call_value
     /// itself).  Bubbling is the host's: it calls emit for the object, then for its parent ..
-    /// while its event object does not say stop.
+    /// while its event object does not say stop.  (S3) A listener that waits in await counts as
+    /// handled (no error, its fuel so far); it goes on through Vm::wake.
     pub fn emit(&mut self, host: &mut dyn Host, obj: Value, event: &str, args: &[Value]) -> Result<Vec<Handled>, Error> {
         if self.busy() {
             return Err(usage(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
@@ -1289,6 +1333,8 @@ impl Vm {
         match &self.heap.objs[r.0 as usize] {
             Obj::Host(h) => Object { ty: self.types[h.ty as usize], id: h.id, value: Value::Host(r) },
             Obj::HostValue(h) => Object { ty: self.types[h.ty as usize], id: 0, value: Value::Host(r) },
+            // (S3) a promise (task.rs): its id is the one the host settles it by
+            Obj::Promise(p) => Object { ty: "promise", id: p.id, value: Value::Host(r) },
             _ => Object { ty: "?", id: 0, value: Value::Host(r) },
         }
     }
@@ -1297,9 +1343,14 @@ impl Vm {
     #[inline(never)]
     fn type_str(&mut self, r: Ref) -> Result<Value, Exc> {
         let t = match &self.heap.objs[r.0 as usize] {
-            Obj::Host(h) => h.ty,
-            Obj::HostValue(h) => h.ty,
+            Obj::Host(h) => Some(h.ty),
+            Obj::HostValue(h) => Some(h.ty),
+            Obj::Promise(_) => None,
             _ => return internal(),
+        };
+        let t = match t {
+            Some(t) => t,
+            None => self.type_index("promise"),
         } as usize;
         if self.tstrs[t] == Value::Nil {
             let v = self.alloc_str(String::from(self.types[t]))?;
@@ -1543,6 +1594,8 @@ impl Vm {
             self.heap.mark_ref(l.obj, &mut gray);
             self.heap.mark(l.f, &mut gray);
         }
+        // (S3) the promises not settled yet, the waiting invocations' stacks and closures
+        self.tasks.roots(&mut self.heap, &mut gray);
         self.heap.trace(&mut gray);
         let mut gone = Vec::new();
         self.heap.sweep(self.permanent, &mut gone);
@@ -1704,7 +1757,7 @@ impl Vm {
             Exc::Fatal(kind, m) => Err((kind, m)),
             Exc::Throw(v) => Ok(v),
             Exc::Msg(m) => self.alloc_str(m.clone()).map_err(|_| (ErrorKind::Uncaught, m)),
-            Exc::Hook => Err((ErrorKind::Internal, String::from("Interner Fehler der Skript-VM"))),
+            Exc::Hook | Exc::Wait => Err((ErrorKind::Internal, String::from("Interner Fehler der Skript-VM"))),
         }
     }
 
@@ -2282,6 +2335,11 @@ impl Vm {
                         self.stack[n] = Value::Bool(!self.stack[n].truthy());
                         Ok(())
                     }
+                    // (S3) a promise (a host object) waits or gives its value, the rest stays
+                    Op::Await => match self.stack[self.stack.len() - 1] {
+                        Value::Host(r) => self.await_value(r),
+                        _ => Ok(()),
+                    },
                     Op::And(t) | Op::Or(t) | Op::Coalesce(t) => {
                         let v = self.stack[self.stack.len() - 1];
                         let keep = match op {
@@ -2894,6 +2952,11 @@ impl Vm {
                 seen.pop();
             }
             Value::Host(r) => {
+                // (S3) a promise is the VM's, not the host's
+                if let Obj::Promise(p) = &self.heap.objs[r.0 as usize] {
+                    self.write_promise(o, p, depth, seen, host);
+                    return;
+                }
                 let obj = self.object_of(r);
                 if let Some(t) = host.and_then(|h| h.to_str(self, obj)) {
                     o.push_str(&t);
@@ -3048,8 +3111,9 @@ impl Cx<'_> {
     /// call a function value (a callback the script passed) to its end and return its result;
     /// Err(Fail::Throw(v)) when it throws (return it to pass the exception on).  Pass the host
     /// itself (`cx.call(self, f, &args)`): the callback may call natives too.  It cannot yield
-    /// in between (a yield request waits until the native returns); fuel and the limits count
-    /// as usual, and calls nest at most 20 deep.
+    /// in between (a yield request waits until the native returns), (S3) nor wait: an await of
+    /// a promise that is not settled throws in it; fuel and the limits count as usual, and calls
+    /// nest at most 20 deep.
     pub fn call(&mut self, host: &mut dyn Host, f: Value, args: &[Value]) -> Result<Value, Fail> {
         self.vm.nested(host, f, args)
     }
@@ -3117,7 +3181,7 @@ impl Cx<'_> {
     }
 
     /// an exception of the VM as Fail: a runtime error throws its message
-    fn fail(&mut self, e: Exc) -> Fail {
+    pub(crate) fn fail(&mut self, e: Exc) -> Fail {
         match e {
             Exc::Msg(m) => self.error(&m),
             Exc::Throw(v) => Fail::Throw(v),
@@ -3125,7 +3189,7 @@ impl Cx<'_> {
                 self.vm.fatal_kind = Some(kind);
                 Fail::Fatal(m)
             }
-            Exc::Hook => {
+            Exc::Hook | Exc::Wait => {
                 self.vm.fatal_kind = Some(ErrorKind::Internal);
                 Fail::Fatal(String::from("Interner Fehler der Skript-VM"))
             }
@@ -3255,12 +3319,12 @@ fn invalid() -> Error {
     usage(String::from("Ungültiger Wert: von einer anderen VM, oder freigegeben, weil er nicht gepinnt war"))
 }
 
-fn plain(e: Exc) -> Error {
+pub(crate) fn plain(e: Exc) -> Error {
     match e {
         Exc::Msg(m) => Error { kind: ErrorKind::Uncaught, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
         Exc::Throw(_) => usage(String::from("Ausnahme")),
         Exc::Fatal(kind, m) => Error { kind, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
-        Exc::Hook => Error { kind: ErrorKind::Internal, msg: String::from("Interner Fehler der Skript-VM"), file: String::new(), line: 0, col: 0, trace: Vec::new() },
+        Exc::Hook | Exc::Wait => Error { kind: ErrorKind::Internal, msg: String::from("Interner Fehler der Skript-VM"), file: String::new(), line: 0, col: 0, trace: Vec::new() },
     }
 }
 

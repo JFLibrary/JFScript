@@ -22,6 +22,8 @@
 //
 // Errors (each a str the script can catch):
 //   "Zyklischer Import: a.jfs → b.jfs → a.jfs"   a module whose top-level code still runs
+//   "Modul x.jfs: sein Code wartet noch in await …"   (S3) its top-level code waits in another
+//                                                invocation (the same one simply waits with it)
 //   "Modul lib/x.jfs: die Datei gibt es nicht"   the host's reason
 //   "lib/x.jfs:3:5: Hier fehlt …"                it does not compile; uncaught, the invocation
 //                                                ends with the module's file, line and column
@@ -170,6 +172,10 @@ impl Vm {
         if let Some(u) = self.units.iter().rposition(|x| x.path == path && x.state != UnitState::Failed) {
             if let Some(chain) = self.cycle(u) {
                 return msg(format!("Zyklischer Import: {}", chain));
+            }
+            // (S3) its top-level code waits in await in another invocation (task.rs)
+            if self.units[u].map.is_none() && u != 0 && !self.units[u].script {
+                return msg(format!("Modul {}: sein Code wartet noch in await – import geht erst, wenn er fertig ist", path));
             }
             let m = match self.units[u].map {
                 Some(m) => m,
@@ -345,7 +351,7 @@ impl Vm {
         let u = match self.link(&prog, String::from(name), &places, true) {
             Ok(u) => u,
             Err(Exc::Msg(m)) | Err(Exc::Fatal(_, m)) => return Err(refuse(m)),
-            Err(Exc::Throw(_) | Exc::Hook) => return Err(refuse(String::from("lässt sich nicht binden"))),
+            Err(Exc::Throw(_) | Exc::Hook | Exc::Wait) => return Err(refuse(String::from("lässt sich nicht binden"))),
         };
         self.stack.clear();
         self.stack.push(Value::Nil);

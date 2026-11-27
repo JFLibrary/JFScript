@@ -958,7 +958,7 @@ pub fn apply(src: &str, edits: &[Edit]) -> String {
 // ---------------------------------------------------------------- completion
 
 const STMT_WORDS: &[&str] = &["let", "fn", "if", "while", "for", "return", "break", "continue", "try", "throw"];
-const EXPR_WORDS: &[&str] = &["true", "false", "nil", "fn"];
+const EXPR_WORDS: &[&str] = &["true", "false", "nil", "fn", "await"];
 
 /// the built-ins that are functions (and not only modules)
 const BUILTINS: &[&str] = &["print", "len", "type", "str", "int", "float", "bytes"];

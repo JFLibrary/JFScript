@@ -23,8 +23,10 @@
 //                       globals of its file (the private _ ones too); globals_of(file)
 //   vm.eval(i, expr)    a read-only expression in frame i: literals, names (locals, upvalues,
 //                       globals, host values), operators, fields, indexes and len, str, type,
-//                       int, float -- no other calls, no functions, no assignment; fuel and
-//                       output stay as they are.  The value lives until the next run
+//                       int, float, (S3) await of a settled promise (one that is not settled
+//                       is an error: the expression does not wait) -- no other calls, no
+//                       functions, no assignment; fuel and output stay as they are.  The
+//                       value lives until the next run
 //   vm.repr(v) / preview(v, max) / children(v)   for a variables view: the text as inside a
 //                       list (strings quoted), at most max characters ("…" at the cut); the
 //                       items of a list ("0", ..) or the entries of a map (key text, value)
@@ -37,7 +39,10 @@
 // exception leaves it).  Over and Out step over what a call does, breakpoints in it still
 // stop.  A pause ends the step; a step also ends with its invocation.  Code that a native runs
 // through Cx::call (a callback of list.map or list.sort) never stops: the native is in the
-// middle of its work.
+// middle of its work.  (S3) An invocation that waits in await takes its step along (task.rs):
+// other invocations that run meanwhile do not stop for it, and after Vm::wake it stops where
+// the step would have stopped without the wait (Over across `let x = await f()`: at the next
+// statement).
 //
 // Cost: without breakpoints, step or pause request (or after clear_breakpoints) the VM runs
 // exactly as without a debugger: run() uses exec, whose instruction loop knows nothing of it.
@@ -55,6 +60,7 @@ use alloc::vec::Vec;
 use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
 use crate::heap::{self, Obj, Value};
 use crate::module::{norm_path, UnitState};
+use crate::task::PromiseState;
 use crate::vm::{Exc, Host, Status, Vm};
 use crate::{num, stdlib};
 
@@ -164,6 +170,19 @@ impl Dbg {
         self.paused = None;
         self.update();
     }
+
+    /// (S3) the invocation begins to wait in await (task.rs): its step goes with it
+    pub(crate) fn take_step(&mut self) -> Option<(Step, usize)> {
+        let s = self.step.take();
+        self.update();
+        s
+    }
+
+    /// (S3) a waiting invocation goes on (Vm::wake): the step it was in
+    pub(crate) fn set_step(&mut self, s: (Step, usize)) {
+        self.step = Some(s);
+        self.update();
+    }
 }
 
 /// whether src is one expression, as a breakpoint's condition and Vm::eval take it; Err: why
@@ -188,7 +207,7 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
 fn text(e: Exc) -> String {
     match e {
         Exc::Msg(m) | Exc::Fatal(_, m) => m,
-        Exc::Throw(_) | Exc::Hook => String::from("Ausnahme"),
+        Exc::Throw(_) | Exc::Hook | Exc::Wait => String::from("Ausnahme"),
     }
 }
 
@@ -197,7 +216,7 @@ fn no_calls() -> String {
 }
 
 impl Vm {
-    fn dbg_mut(&mut self) -> &mut Dbg {
+    pub(crate) fn dbg_mut(&mut self) -> &mut Dbg {
         self.dbg.get_or_insert_with(|| Box::new(Dbg::default()))
     }
 
@@ -744,6 +763,16 @@ impl Vm {
                 Value::Float(f) => Value::Float(num::neg(f)),
                 v => return Err(format!("Das Minus passt nicht zu {}", v.type_name())),
             },
+            // (S3) a settled promise's value; the expression does not wait
+            ExprKind::Unary(UnOp::Await, a) => {
+                let v = self.ev(fi, at, a)?;
+                match self.promise_state(v) {
+                    None => v,
+                    Some(PromiseState::Resolved(x)) => x,
+                    Some(PromiseState::Rejected(x)) => return Err(format!("abgelehnt: {}", self.repr(x))),
+                    Some(PromiseState::Waiting) => return Err(String::from("Der Wert steht noch aus – im Ausdruck wartet await nicht")),
+                }
+            }
             ExprKind::Binary(op, a, b) => {
                 let x = self.ev(fi, at, a)?;
                 match op {

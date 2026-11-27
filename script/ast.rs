@@ -3,8 +3,8 @@
 //   Program { name, body }   the top-level statements
 //   Stmt { span, kind }      StmtKind: Let, Fn, If, While, For, Break, Continue, Return, Try,
 //                            Throw, Expr, Assign, Block
-//   Expr { span, kind }      ExprKind: literals, Interp, List, Map, Fn, Var, Unary, Binary,
-//                            Call, Method, Field, Index
+//   Expr { span, kind }      ExprKind: literals, Interp, List, Map, Fn, Var, Unary (- ! and
+//                            (S3) await), Binary, Call, Method, Field, Index
 //   Span                     bytes start..end plus line and column of the start (1-based,
 //                            columns count characters); a name's span.start is unique per
 //                            source, a key for side tables of later passes
@@ -145,11 +145,13 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
 }
 
-/// the unary operators: minus and not (!)
+/// the unary operators: minus, not (!) and (S3) await
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UnOp {
     Neg,
     Not,
+    /// await e: the value of a promise once it is there (vm.rs, task.rs)
+    Await,
 }
 
 /// binary operators; And, Or and Coalesce (??) short-circuit
@@ -354,7 +356,11 @@ fn expr(o: &mut String, e: &Expr) {
         ExprKind::Fn(f) => func(o, f),
         ExprKind::Var(n) => o.push_str(n),
         ExprKind::Unary(op, a) => {
-            o.push_str(if *op == UnOp::Neg { "(- " } else { "(! " });
+            o.push_str(match op {
+                UnOp::Neg => "(- ",
+                UnOp::Not => "(! ",
+                UnOp::Await => "(await ",
+            });
             expr(o, a);
             o.push(')');
         }
