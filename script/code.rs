@@ -130,6 +130,10 @@ pub(crate) enum Op {
     /// -1: the Return at the end of a module's top-level code (module.rs puts it there when
     /// it links the module): import's call gets the module's map instead of the value
     EndModule,
+    /// 0: (S3) await: a promise on the top becomes its value (or throws its reason); one
+    /// that is not settled yet makes the invocation wait (task.rs), and this instruction runs
+    /// again when it goes on; any other value stays
+    Await,
 }
 
 impl Op {
@@ -144,7 +148,7 @@ impl Op {
             PopN(n) => -(n as i32),
             Pop | SetLocal(_) | SetCell(_) | SetUp(_) | SetGlobal(_) | AssignHost(_) | JumpIfFalse(_) | Return | EndModule | Throw
             | Add | Sub | Mul | Div | Rem | Eq | Ne | Lt | Le | Gt | Ge | And(_) | Or(_) | Coalesce(_) | GetIndex => -1,
-            NewCell(_) | BoxLocal(_) | Neg | Not | Jump(_) | GetField(_) | IterPrep(_) | RangePrep(_) => 0,
+            NewCell(_) | BoxLocal(_) | Neg | Not | Await | Jump(_) | GetField(_) | IterPrep(_) | RangePrep(_) => 0,
             Concat(n) | MakeList(n) => 1 - n as i32,
             MakeMap(n) => 1 - 2 * n as i32,
             SetField(_) => -2,

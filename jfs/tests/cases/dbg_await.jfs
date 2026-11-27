@@ -1,0 +1,8 @@
+// dbg_await.jfs -- (S3) the debugger steps across an await; a timer runs while load waits
+fn load(n) {
+  let a = n * 2
+  let b = await timer.sleep(10, a + 1)
+  return a + b
+}
+timer.after(5, fn() { print("timer at", now()) })
+print(load(20))

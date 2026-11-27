@@ -7,7 +7,8 @@
 //               variables over a range a..b
 //     warnings: a name that is neither declared nor in globals (with a suggestion for a
 //               typing error), a top-level let read by top-level code before it ran, (S1) a
-//               division of two values that are certainly ints (intdiv.rs: it truncates)
+//               division of two values that are certainly ints (intdiv.rs: it truncates),
+//               (S3) await in a function that list.map, list.sort .. run (awaitchk.rs)
 //   globals: the predeclared names (crate::GLOBALS for check())
 //   resolve_strict(&program, globals)   the same with unknown names as errors
 //               (crate::compile_with: the host says which names it has)
@@ -56,6 +57,8 @@ fn run(prog: &Program, globals: &[&str], strict: bool) -> Vec<Diagnostic> {
     }
     // (S1) a division of two ints truncates: the editor warns (intdiv.rs)
     r.out.extend(crate::intdiv::warnings(prog));
+    // (S3) await in a callback of list.map, list.sort ..: it cannot wait there (awaitchk.rs)
+    r.out.extend(crate::awaitchk::warnings(prog));
     r.out
 }
 

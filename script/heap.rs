@@ -6,6 +6,8 @@
 //               the host's id, one object per (type, id) while it lives (the VM keeps an index),
 //               no children; Obj::HostValue: a value type's object with its data (values the
 //               collector traces), a new one each time
+//   promises    (S3) Obj::Promise: an id and a state (waiting, resolved or rejected with a
+//               value the collector traces); Value::Host refers to it, its type is "promise"
 //   Heap        a Vec of objects addressed by index; free slots form a list; mark bits and the
 //               sweep for the VM's mark-and-sweep collector (the VM marks from its roots)
 //   Map         insertion ordered hash map (keys str, int, bool): entries in order plus an
@@ -130,6 +132,22 @@ pub(crate) struct HostVal {
     pub data: Box<[Value]>,
 }
 
+/// (S3) where a promise stands
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PState {
+    Waiting,
+    Resolved(Value),
+    Rejected(Value),
+}
+
+/// (S3) a promise (task.rs): its id (the host settles it by the id) and its state; the
+/// invocations that wait for it are kept by the VM (task.rs)
+#[derive(Clone, Debug)]
+pub(crate) struct PromiseObj {
+    pub id: u64,
+    pub state: PState,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum Obj {
     Free,
@@ -141,6 +159,8 @@ pub(crate) enum Obj {
     Cell(Value),
     Host(HostObj),
     HostValue(HostVal),
+    /// (S3) a promise: Value::Host refers to it, its type is "promise"
+    Promise(Box<PromiseObj>),
 }
 
 /// FNV-1a over the bytes
@@ -309,6 +329,7 @@ pub(crate) fn size_of(o: &Obj) -> u64 {
         Obj::Cell(_) => 32,
         Obj::Host(_) => 32,
         Obj::HostValue(h) => 32 + 16 * h.data.len() as u64,
+        Obj::Promise(_) => 64,
     }
 }
 
@@ -470,6 +491,11 @@ impl Heap {
                 Obj::Func(f) => kids.extend(f.ups.iter().map(|&r| Value::Cell(r))),
                 Obj::Cell(v) => kids.push(*v),
                 Obj::HostValue(h) => kids.extend_from_slice(&h.data),
+                Obj::Promise(p) => {
+                    if let PState::Resolved(v) | PState::Rejected(v) = p.state {
+                        kids.push(v);
+                    }
+                }
                 _ => {}
             }
             for k in kids.iter() {

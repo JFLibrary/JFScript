@@ -976,7 +976,13 @@ impl Gen<'_> {
             ExprKind::Fn(f) => self.closure(f, String::from("fn")),
             ExprKind::Unary(op, a) => {
                 self.expr(a);
-                self.emit(if *op == UnOp::Neg { Op::Neg } else { Op::Not }, at);
+                let o = match op {
+                    UnOp::Neg => Op::Neg,
+                    UnOp::Not => Op::Not,
+                    // (at the await: a rejection throws there)
+                    UnOp::Await => Op::Await,
+                };
+                self.emit(o, at);
             }
             ExprKind::Binary(op, a, b) => self.binary(*op, a, b),
             ExprKind::Interp(items) | ExprKind::List(items) => self.items(e, items),

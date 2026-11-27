@@ -93,8 +93,9 @@ impl Host for MyHost {
 * Natives: `cx.spend(n)?` adds fuel for the work done and ends the invocation once
   `Limits::fuel` is used up (call it as a long job goes; `cx.charge(n)` only adds),
   `cx.yield_now()` ends the run after the call (`Status::Yielded`, the next `run` continues),
-  `cx.call(self, f, &args)` runs a callback to its end (no yield in between, nested at most 20
-  deep; an exception that leaves it keeps its position and stack trace). Objects a native
+  `cx.call(self, f, &args)` runs a callback to its end (no yield and (S3) no await in between,
+  nested at most 20 deep; an exception that leaves it keeps its position and stack trace).
+  (S3) `cx.promise()` starts a long operation the script can `await` ([HOST.md](HOST.md#long-operations-promises-and-await)). Objects a native
   allocates stay alive until it returns; values it only holds while calling back need
   `cx.keep(v)`. `cx.json_encode(v, indent)` / `cx.json_decode(text)` (and
   `vm.json_encode` / `vm.json_decode` between runs) work like `json.encode` / `json.decode`.
@@ -146,8 +147,9 @@ impl Host for MyHost {
   variable afresh each round).
 * Testing: `coretest --only script` (parser), `coretest --only scriptvm` (compiler, VM,
   collector, fuel, yield at every instruction against an uninterrupted run, soft float against
-  the hardware) and `coretest --only scriptlib` (the standard library); `program.disasm()`
-  prints the bytecode.
+  the hardware) and `coretest --only scriptlib` (the standard library); (S3) `scripttest --only
+  scriptawait` (await: the syntax, waiting invocations, their order, slices, clones, the
+  collector, the debugger); `program.disasm()` prints the bytecode.
 
 **The standard library** ([`stdlib.rs`](../script/stdlib.rs) and its neighbours) is part of
 every VM, whatever the host. Methods take the value first, so `s.split(",")` and
@@ -346,6 +348,61 @@ btn.off("click")                      // all functions of the event; off("click"
 * The editor knows the host's objects from its description (`script::Api`): completion after a
   dot, hover, signature help and warnings for members a known type does not have (below).
 
+## Waiting: await
+
+(S3) A long operation of the host -- a file dialog, a download, a pause -- gives a promise, and
+`await` waits for its value while the app stays usable:
+
+```js
+let path = await ui.open_file("*.vsdx")   // the dialog is open, the app and its events go on
+if path != nil {
+  let doc = await app.open(path)
+  for page in doc.pages { page.zoom = 1 }
+}
+
+let a = fetch(url1)                       // two operations at once: start both,
+let b = fetch(url2)                       // then wait for each
+print(await a, await b)
+
+try {
+  await net.send(msg)
+} catch e {
+  print("nicht gesendet:", e)            // the host rejected the promise
+}
+```
+
+* `await e` is an expression with a prefix like `-` and `!`: `await f(x).y + 1` is
+  `(await f(x).y) + 1`, `-await x` and `await await p` work. It may stand anywhere an expression
+  may: at the top level of a script or a module, in any function, in loops, in `try`.
+* `e` a promise: its value once the host has it. A promise the host rejects throws its reason at
+  the `await` (`try` / `catch` catches it; uncaught, the error has the line and column of the
+  `await` and the calls). Any other value: the value itself (`await 7` is `7`), as in JavaScript;
+  so is a promise that is settled already.
+* While it waits, the invocation (the top-level code, a call of the host, an event listener, a
+  timer's callback) stands still with all its calls and variables, and other code runs: event
+  listeners, other macros, timers. When the value is there, it goes on where it stopped, in the
+  order the host settled the promises. Globals may have changed meanwhile, as in JavaScript.
+* Functions are not marked (no `async`): a function that awaits waits together with its callers,
+  and `let b = load()` gets load's result after the wait. JavaScript would need `async` and a
+  second `await` for that; here the whole invocation waits.
+* Where it cannot wait: in a function that `list.map`, `list.filter`, `list.reduce`, `list.sort` or
+  a function of the host runs as a callback -- it runs to its end inside that call. An `await` of a
+  promise that is not settled throws there ("await kann in einem Rückruf … nicht warten", with its
+  position), and `check` warns where it sees it (a `fn` literal or a top-level function given to
+  `.map(..)` and the like). A `for` loop can wait. Event listeners (`obj.on`) and timer callbacks
+  are invocations of their own: they can wait.
+* Fuel: a waiting invocation is still one invocation; `Limits::fuel` holds for all of it, before
+  and after the wait. A run split into slices of any size gives the same as one run, waits
+  included.
+* `type(p)` is `"promise"`; `print(p)` shows `<promise 3 ausstehend>`, `<promise 3 erfüllt: 42>`
+  or `<promise 3 abgelehnt: "…">`. Promises come from the host (the language has no constructor
+  for them yet).
+* `await` is a keyword (S3): no variable or function can be called so; as a map key
+  (`{await: 1}`) and a field (`m.await`) it still works.
+
+How a host makes promises and lets waiting code go on: [HOST.md](HOST.md#long-operations-promises-and-await).
+The runner `jfs` has `timer.sleep(ms, value)` for it.
+
 **The runner `jfs`** ([`apps/jfs`](../jfs/README.md)) runs scripts on the command line:
 
 ```sh
@@ -530,7 +587,13 @@ vm.request_pause();                                     // stops at the next sta
   `frame_globals(i)` and `globals_of(file)` (the private `_` ones too), `modules()`,
   `repr(v)` / `preview(v, max)` / `children(v)` for a variables view that expands lists and
   maps; `eval(i, expr)` knows literals, the names of the frame, operators, fields, indexes
-  and `len`, `str`, `type`, `int`, `float`. `script::debug::check_expr` checks a condition.
+  and `len`, `str`, `type`, `int`, `float`, (S3) `await` of a settled promise (one that is not
+  settled is an error: the expression does not wait). `script::debug::check_expr` checks a
+  condition.
+* (S3) A step goes with its invocation across an `await`: while it waits, other invocations run
+  without stopping for it; after `vm.wake()` it stops where it would have without the wait
+  (`Over` across `let x = await f()`: at the next statement), and `frames`, `locals` and `eval`
+  show the woken invocation.
 * Cost: without a breakpoint, step or pause request the VM runs as without a debugger (`run`
   uses the instruction loop as it is; `coretest --bench vm` measures it); with one, `run`
   drives it one instruction at a time and checks the statement starts and breakpoints in

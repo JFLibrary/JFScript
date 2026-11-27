@@ -20,8 +20,9 @@
 //   Api::from_items(&items)   the description of today's ls::HostItem list (no types)
 //
 // Types are text: int float str bool bytes list map fn nil any, the name of a type of the
-// description, list<T> (a list of T: `for x in` and `l[i]` give T); anything else is shown as
-// written and means nothing to the services.  Signatures are written as in TypeScript (G1 d, G3):
+// description, list<T> (a list of T: `for x in` and `l[i]` give T), (S3) promise and promise<T>
+// (what a long operation returns: `await` gives a T; task.rs); anything else is shown as written
+// and means nothing to the services.  Signatures are written as in TypeScript (G1 d, G3):
 // "name(a: T, b: T = default, ...rest: T): R"; a parameter without a type is any, a function
 // without ": R" returns nothing known.  The builders never fail: what does not parse is kept as
 // text; validate() tells.
@@ -34,7 +35,7 @@ use crate::ls::HostItem;
 use crate::vm::Operator;
 
 /// the types every script knows (not described by a host)
-pub(crate) const BUILTIN_TYPES: &[&str] = &["int", "float", "str", "bool", "bytes", "list", "map", "fn", "nil", "any"];
+pub(crate) const BUILTIN_TYPES: &[&str] = &["int", "float", "str", "bool", "bytes", "list", "map", "fn", "nil", "any", "promise"];
 
 /// a host's object model (see the module comment)
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -498,6 +499,11 @@ pub(crate) fn list_of(ty: &str) -> Option<&str> {
     ty.trim().strip_prefix("list<")?.strip_suffix('>').map(str::trim)
 }
 
+/// (S3) the type of the value of "promise<T>" (what await gives)
+pub(crate) fn promise_of(ty: &str) -> Option<&str> {
+    ty.trim().strip_prefix("promise<")?.strip_suffix('>').map(str::trim)
+}
+
 /// an argument of type `got` fits a parameter or operand of type `want`
 pub(crate) fn fits(got: &str, want: &str) -> bool {
     got == want || want.is_empty() || want == "any" || (want == "float" && got == "int") || (want == "list" && list_of(got).is_some())
@@ -552,7 +558,7 @@ impl Api {
         let mut out: Vec<String> = Vec::new();
         let known = |t: &str| -> bool {
             let t = t.trim();
-            let t = list_of(t).unwrap_or(t);
+            let t = list_of(t).or_else(|| promise_of(t)).unwrap_or(t);
             t.is_empty() || BUILTIN_TYPES.contains(&t) || self.get_type(t).is_some()
         };
         let mut check = |ty: &str, at: &str, out: &mut Vec<String>| {

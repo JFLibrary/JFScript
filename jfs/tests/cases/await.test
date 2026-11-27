@@ -1,0 +1,85 @@
+# (S3) await with timer.sleep on the virtual clock: the top level waits, timers and a callback
+# that waits too run meanwhile; two sleeps at once; values that are no promise; list.map
+args: --virtual-time {dir}/await.jfs
+--- stdout
+start 0.0
+timer at 5.0
+a: A NACH 10 MS at 10.0
+promise <promise 3 ausstehend>
+callback waits at 12.0
+zweite at 15.0
+callback goes on at 22.0 with 42
+erste at 30.0 <promise 3 erfüllt: "erste">
+7 nil erste
+map: await kann in einem Rückruf, den eine Funktion aufruft (list.map, list.sort, eine Funktion des Hosts), nicht warten: der Wert steht noch aus – warte außerhalb, etwa in einer for-Schleife
+[10, 20]
+end at 30.0
+===
+# --check warns where an await stands in a callback of list.map
+args: --check {dir}/await.jfs
+--- stdout
+{dir}/await.jfs:33:29: Warnung: await im Rückruf von map: der läuft ohne Unterbrechung zu Ende, ein Wert, der noch aussteht, gibt hier einen Fehler – warte außerhalb, etwa in einer for-Schleife
+{dir}/await.jfs:37:33: Warnung: await im Rückruf von map: der läuft ohne Unterbrechung zu Ende, ein Wert, der noch aussteht, gibt hier einen Fehler – warte außerhalb, etwa in einer for-Schleife
+===
+# an error after the wait: its position and the calls as without one
+args: --virtual-time -e "fn f() { await timer.sleep(2); throw \"kaputt\" }; f()"
+exit: 1
+--- stderr
+-e:1:32: Fehler: kaputt
+    fn f() { await timer.sleep(2); throw "kaputt" }; f()
+                                   ^
+  in f (1:32)
+  im Hauptprogramm (1:50)
+===
+# uncaught in a callback of list.map: the error is at the await
+args: --virtual-time -e "[1].map(fn(x) { return await timer.sleep(1) })"
+exit: 1
+--- stderr
+-e:1:24: Fehler: await kann in einem Rückruf, den eine Funktion aufruft (list.map, list.sort, eine Funktion des Hosts), nicht warten: der Wert steht noch aus – warte außerhalb, etwa in einer for-Schleife
+    [1].map(fn(x) { return await timer.sleep(1) })
+                           ^
+  in fn (1:24)
+  im Hauptprogramm (1:5)
+===
+# timer.sleep checks its time; it can be read as a value; without --virtual-time on the real clock
+args: -e "try { timer.sleep(-1) } catch e { print(e) }; let s = timer.sleep; print(await s(1, 3))"
+--- stdout
+timer.sleep: die Zeit muss eine Zahl ab 0 sein (Millisekunden)
+3
+===
+# --test: a test that waits passes or fails after its wait
+args: --test {dir}/unit_await.jfs
+exit: 1
+--- stdout
+ok      test_wait ({dir}/unit_await.jfs)
+FEHLER  test_wait_fails ({dir}/unit_await.jfs:13:3): Annahme verletzt: nach dem Warten
+        | vorher
+2 Tests: 1 bestanden, 1 fehlgeschlagen
+===
+# --debug: next steps across the await, the timer runs while the code waits, the locals after it
+args: --virtual-time --debug {dir}/dbg_await.jfs
+--- stdin
+break 4
+run
+locals
+next
+locals
+bt
+continue
+--- stdout
+jfs-Debugger: {dir}/dbg_await.jfs (help zeigt die Befehle, run startet das Programm)
+(jfs) Haltepunkt 1: {dir}/dbg_await.jfs:4
+(jfs) Halt in {dir}/dbg_await.jfs:4 (Haltepunkt 1)
+    4 |   let b = await timer.sleep(10, a + 1)
+(jfs) n = 20
+a = 40
+(jfs) timer at 5.0
+Halt in {dir}/dbg_await.jfs:5 (Schritt)
+    5 |   return a + b
+(jfs) n = 20
+a = 40
+b = 41
+(jfs) #0 load ({dir}/dbg_await.jfs:5)
+#1 Hauptprogramm ({dir}/dbg_await.jfs:8)
+(jfs) 81
+Das Programm ist zu Ende.

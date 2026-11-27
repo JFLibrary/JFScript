@@ -314,6 +314,16 @@ impl Types<'_> {
                 let t = self.expr(a);
                 if t == "int" || t == "float" { t } else { String::from(self.api.op_result(Operator::Neg, "", &t).unwrap_or("")) }
             }
+            // (S3) await of a promise<T> is a T, of a promise without T not known, of the rest
+            // the value itself
+            ExprKind::Unary(UnOp::Await, a) => {
+                let t = self.expr(a);
+                match api::promise_of(&t) {
+                    Some(x) => String::from(x),
+                    None if t == "promise" => String::new(),
+                    None => t,
+                }
+            }
             ExprKind::Unary(_, _) => String::from("bool"),
         }
     }

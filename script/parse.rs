@@ -622,6 +622,9 @@ impl<'a> Parser<'a> {
         let op = match t.kind {
             TokKind::Minus => UnOp::Neg,
             TokKind::Not => UnOp::Not,
+            // (S3) await binds like the other prefix operators: await f(x).y + 1 is
+            // (await f(x).y) + 1
+            TokKind::Await => UnOp::Await,
             _ => return self.postfix(),
         };
         self.advance();
