@@ -4,7 +4,7 @@
 //                                    starts with _ stays private) as a map, with the values
 //                                    they have when the module's code has run
 //   Host::load(cx, path)             the host's files: the source of a normalised path, or the
-//                                    German reason (vm.rs; the runner reads the file system,
+//                                    host's reason (vm.rs; the runner reads the file system,
 //                                    JFNetworker the device's files)
 //   norm_path(from, path)            `path` resolved against the file `from` and normalised
 //
@@ -165,21 +165,21 @@ impl Vm {
     pub(crate) fn import(&mut self, host: &mut dyn Host, args: &[Value], to: usize) -> Result<bool, Exc> {
         let a = args.first().copied().unwrap_or(Value::Nil);
         let Value::Str(r) = a else {
-            return msg(format!("import braucht den Pfad einer Datei (str), nicht {}", self.type_of(a)));
+            return msg(tf!("import braucht den Pfad einer Datei (str), nicht {}", self.type_of(a)));
         };
         let want = String::from(heap::text(&self.heap, r));
         let here = self.frames.last().map_or(0, |f| self.code.protos[f.proto as usize].unit) as usize;
         let path = norm_path(&self.units[here].path, &want);
         if path.is_empty() || path.ends_with('/') {
-            return msg(format!("import: \u{201e}{}\u{201c} ist kein Pfad einer Datei", want));
+            return msg(tf!("import: \u{201e}{}\u{201c} ist kein Pfad einer Datei", want));
         }
         if let Some(u) = self.units.iter().rposition(|x| x.path == path && x.state != UnitState::Failed) {
             if let Some(chain) = self.cycle(u) {
-                return msg(format!("Zyklischer Import: {}", chain));
+                return msg(tf!("Zyklischer Import: {}", chain));
             }
             // (S3) its top-level code waits in await in another invocation (task.rs)
             if self.units[u].map.is_none() && u != 0 && !self.units[u].script {
-                return msg(format!("Modul {}: sein Code wartet noch in await – import geht erst, wenn er fertig ist", path));
+                return msg(tf!("Modul {}: sein Code wartet noch in await – import geht erst, wenn er fertig ist", path));
             }
             let m = match self.units[u].map {
                 Some(m) => m,
@@ -194,7 +194,7 @@ impl Vm {
             return Ok(false);
         }
         if self.units.len() >= MAX_UNITS {
-            return msg(format!("Zu viele Module (mehr als {})", MAX_UNITS - 1));
+            return msg(tf!("Zu viele Module (mehr als {})", MAX_UNITS - 1));
         }
         let (mark, was) = (self.nroots.len(), self.in_native);
         self.in_native = true;
@@ -203,7 +203,7 @@ impl Vm {
         self.nroots.truncate(mark);
         let src = match src {
             Ok(s) => s,
-            Err(why) => return msg(format!("Modul {}: {}", path, why)),
+            Err(why) => return msg(tf!("Modul {}: {}", path, why)),
         };
         self.used += src.len() as u64 / 64;
         let prog = match crate::compile_module(&path, &src, self.code.strict.as_ref()) {
@@ -216,12 +216,12 @@ impl Vm {
         let u = self.link(&prog, path, &[], false)?;
         let pbase = self.units[u].pbase;
         if self.frames.len() as u32 >= self.lim.depth {
-            let m = format!("Zu viele Aufrufe ineinander (mehr als {}) – endet die Rekursion?", self.lim.depth);
+            let m = tf!("Zu viele Aufrufe ineinander (mehr als {}) – endet die Rekursion?", self.lim.depth);
             return Err(Exc::Fatal(ErrorKind::Depth, m));
         }
         let need = self.code.protos[pbase as usize].max_stack as usize;
         if to + 1 + need + 4 > self.lim.stack as usize {
-            return Err(Exc::Fatal(ErrorKind::Stack, format!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack)));
+            return Err(Exc::Fatal(ErrorKind::Stack, tf!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack)));
         }
         self.stack.truncate(to + 1);
         self.frames.push(Frame { proto: pbase, closure: None, base: to as u32 + 1, pc: 0 });
@@ -233,7 +233,7 @@ impl Vm {
     fn cycle(&self, u: usize) -> Option<String> {
         let tops: Vec<usize> = self.frames.iter().filter(|f| f.closure.is_none()).map(|f| self.code.protos[f.proto as usize].unit as usize).collect();
         let i = tops.iter().position(|&x| x == u)?;
-        let name = |x: usize| if self.units[x].path.is_empty() { "(Hauptprogramm)" } else { self.units[x].path.as_str() };
+        let name = |x: usize| if self.units[x].path.is_empty() { t!("(Hauptprogramm)") } else { self.units[x].path.as_str() };
         let mut parts: Vec<&str> = tops[i..].iter().map(|&x| name(x)).collect();
         parts.push(name(u));
         Some(parts.join(" \u{2192} "))
@@ -255,13 +255,13 @@ impl Vm {
     /// Error names the module's file, line and column
     fn module_error(&mut self, path: &str, d: &[Diagnostic]) -> Result<bool, Exc> {
         let Some(first) = d.first() else {
-            return msg(format!("Modul {}: lässt sich nicht übersetzen", path));
+            return msg(tf!("Modul {}: lässt sich nicht übersetzen", path));
         };
-        let more = if d.len() > 1 { format!(" (und {} weitere Fehler)", d.len() - 1) } else { String::new() };
-        let v = self.alloc_str(format!("{}:{}:{}: {}{}", path, first.line, first.col, first.msg, more))?;
+        let text = if d.len() > 1 { tf!("{} (und {} weitere Fehler)", first.msg, d.len() - 1) } else { first.msg.clone() };
+        let v = self.alloc_str(format!("{}:{}:{}: {}", path, first.line, first.col, text))?;
         let mut trace = vec![TraceLine { func: String::new(), file: String::from(path), line: first.line, col: first.col }];
         trace.extend(self.trace());
-        self.escaped = Some((Some(v), trace, Some(format!("{}{}", first.msg, more))));
+        self.escaped = Some((Some(v), trace, Some(text)));
         Err(Exc::Throw(v))
     }
 
@@ -359,10 +359,10 @@ impl Vm {
     pub fn add_script(&mut self, name: &str, src: &str) -> Result<(), Vec<Diagnostic>> {
         let refuse = |m: String| vec![Diagnostic { line: 0, col: 0, end_col: 0, error: true, msg: m, file: String::from(name) }];
         if self.busy() {
-            return Err(refuse(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
+            return Err(refuse(String::from(t!("Die VM ist noch beschäftigt – erst run() bis zum Ende"))));
         }
         if self.units.len() >= MAX_UNITS {
-            return Err(refuse(format!("Zu viele Skripte (mehr als {})", MAX_UNITS - 1)));
+            return Err(refuse(tf!("Zu viele Skripte (mehr als {})", MAX_UNITS - 1)));
         }
         let (mut names, mut places) = (Vec::new(), Vec::new());
         for (i, u) in self.units.iter().enumerate() {
@@ -377,7 +377,7 @@ impl Vm {
         let u = match self.link(&prog, String::from(name), &places, true) {
             Ok(u) => u,
             Err(Exc::Msg(m)) | Err(Exc::Fatal(_, m)) => return Err(refuse(m)),
-            Err(Exc::Throw(_) | Exc::Hook | Exc::Wait) => return Err(refuse(String::from("lässt sich nicht binden"))),
+            Err(Exc::Throw(_) | Exc::Hook | Exc::Wait) => return Err(refuse(String::from(t!("lässt sich nicht binden")))),
         };
         self.compile_warnings(warnings);
         self.stack.clear();

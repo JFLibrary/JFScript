@@ -1,0 +1,466 @@
+de	en
+# JFScript's messages and the texts of its language services (G9 of docs/RICHTUNG.md; script/msg.rs):
+# the German text is the key, then English; {} placeholders in order, {0} {1} by position, {name} by name.
+# scripttest (group scriptmsg) checks that every key of the sources has a row and every row a key.
+
+# the lexer (lex.rs)
+Zeichenkette ohne Ende: hier fehlt "	Unterminated string: missing "
+Kommentar ohne Ende: hier fehlt */	Unterminated comment: missing */
+Unerwartetes Zeichen {} (für „und“ schreibe &&)	Unexpected character {} (use && for “and”)
+Unerwartetes Zeichen {} (für „oder“ schreibe ||)	Unexpected character {} (use || for “or”)
+Unerwartetes Zeichen {} (Zeichenketten stehen in doppelten Anführungszeichen "…")	Unexpected character {} (strings are written in double quotes "…")
+Unerwartetes Zeichen {} (${{…}} gibt es nur in Zeichenketten)	Unexpected character {} (${{…}} only exists inside strings)
+Unerwartetes Zeichen {}	Unexpected character {}
+Ungültige Escape-Sequenz: \u{…} braucht 1 bis 6 Hex-Ziffern eines Unicode-Zeichens	Invalid escape sequence: \u{…} needs 1 to 6 hex digits of a Unicode character
+Unbekannte Escape-Sequenz \{} (erlaubt: \n \t \r \0 \" \\ \$ \u{{…}})	Unknown escape sequence \{} (allowed: \n \t \r \0 \" \\ \$ \u{{…}})
+Die Zahl {} ist zu groß (ganze Zahlen höchstens 9223372036854775807)	The number {} is too large (integers at most 9223372036854775807)
+Ungültige Zahl {}	Invalid number {}
+
+# the parser (parse.rs)
+eine schließende Klammer )	a closing parenthesis )
+eine schließende eckige Klammer ]	a closing bracket ]
+eine schließende geschweifte Klammer }	a closing brace }
+Unerwarteter Name {}	Unexpected name {}
+Unerwartete Zahl {}	Unexpected number {}
+Unerwartete Zeichenkette	Unexpected string
+Unerwartete Klammer {}	Unexpected bracket {}
+Unerwartetes Komma	Unexpected comma
+Unerwarteter Punkt	Unexpected dot
+Unerwarteter Doppelpunkt	Unexpected colon
+Unerwartetes Semikolon	Unexpected semicolon
+Unerwartetes Ende des Skripts	Unexpected end of the script
+Unerwartetes Schlüsselwort {}	Unexpected keyword {}
+Unerwarteter Operator {}	Unexpected operator {}
+Hier fehlt {} (geöffnet in Zeile {})	Expected {} (opened on line {})
+Hier fehlt {}	Expected {}
+Der Ausdruck ist zu lang (höchstens {} Ebenen) – teile ihn mit let auf	The expression is too long (at most {} levels) – split it up with let
+Zu tief verschachtelt (höchstens {} Ebenen)	Nested too deeply (at most {} levels)
+Unerwartete Klammer }: hier ist kein Block offen	Unexpected brace }: no block is open here
+Zum Vergleichen schreibe == statt =	To compare, write == instead of =
+Hier fehlt eine öffnende geschweifte Klammer { für den Block	Expected an opening brace { for the block
+else ohne vorheriges if	else without a preceding if
+catch ohne vorheriges try	catch without a preceding try
+Nach throw fehlt ein Wert (in derselben Zeile)	Expected a value after throw (on the same line)
+Bereiche a..b gibt es nur in for-Schleifen	Ranges a..b only exist in for loops
+{} – fehlt ein Operator oder ein Zeilenumbruch?	{} – is an operator or a line break missing?
+{} ist ein Schlüsselwort und kann kein Name sein	{} is a keyword and cannot be a name
+Nach let fehlt ein Name	Expected a name after let
+Hier fehlt = mit dem Wert, den das Muster zerlegt	Expected = with the value to destructure
+Hier fehlt = nach dem Namen	Expected = after the name
+Nach ... fehlt der Name für den Rest der Liste	Expected a name for the rest of the list after ...
+Der Rest ...name steht am Ende des Musters	The rest ...name goes at the end of the pattern
+Hier fehlt ein Name oder ein Muster [..] oder {..}	Expected a name or a pattern [..] or {..}
+Hier fehlt ein Komma , oder eine schließende eckige Klammer ]	Expected a comma , or a closing bracket ]
+Ein leeres Muster [] bindet nichts	An empty pattern [] binds nothing
+Hier fehlt ein Name (der Schlüssel) oder Schlüssel: Muster	Expected a name (the key) or key: pattern
+Nach dem Doppelpunkt fehlt ein Name oder ein Muster	Expected a name or a pattern after the colon
+Nach einem Schlüssel in Anführungszeichen fehlt : und ein Name	Expected : and a name after a quoted key
+{} ist ein Schlüsselwort und kann kein Name sein – schreibe {}: name	{} is a keyword and cannot be a name – write {}: name
+Hier fehlt ein Komma , oder eine schließende geschweifte Klammer }	Expected a comma , or a closing brace }
+Ein leeres Muster {} bindet nichts	An empty pattern {} binds nothing
+Im Muster vor = muss eine Variable, ein Feld, ein Index oder eine Liste davon stehen	The pattern before = must be a variable, a field, an index or a list of these
+Nach fn fehlt ein Name	Expected a name after fn
+Hier fehlt ( mit der Parameterliste	Expected ( with the parameter list
+Hier fehlt ein Parametername	Expected a parameter name
+Hier fehlt ein Komma , oder eine schließende Klammer )	Expected a comma , or a closing parenthesis )
+Hier fehlt eine schließende Klammer )	Expected a closing parenthesis )
+Nach for fehlt ein Variablenname	Expected a variable name after for
+Nach dem Komma fehlt ein zweiter Variablenname	Expected a second variable name after the comma
+Hier fehlt in, z. B. for x in liste { … }	Expected in, e.g. for x in list { … }
+Nach dem try-Block fehlt catch	Expected catch after the try block
+Vor {} muss eine Variable, ein Feld oder ein Index stehen	{} must follow a variable, a field or an index
+Hier fehlt : mit dem Wert für den anderen Fall (c ? a : b)	Expected : with the value for the other case (c ? a : b)
+Vergleiche lassen sich nicht verketten – schreibe z. B. a < b && b < c	Comparisons cannot be chained – write e.g. a < b && b < c
+Nach dem Punkt fehlt ein Name	Expected a name after the dot
+Hier fehlt ein Ausdruck	Expected an expression
+Eine Funktion als Wert hat keinen Namen – schreibe fn(…) { … }	A function used as a value has no name – write fn(…) { … }
+... gibt es nur vor dem Rest eines Musters: let [a, ...rest] = liste	... only exists before the rest of a pattern: let [a, ...rest] = list
+Vor for steht in einer Liste aus einer Schleife genau ein Ausdruck: [x * 2 for x in xs]	A list built from a loop has exactly one expression before for: [x * 2 for x in xs]
+Hier fehlt for, if oder eine schließende eckige Klammer ]	Expected for, if or a closing bracket ]
+Nach einem benannten Argument sind alle weiteren benannt (name: wert)	After a named argument, all further ones must be named (name: value)
+Hier fehlt ein Schlüssel: ein Name, eine Zeichenkette, eine Zahl oder [Ausdruck]	Expected a key: a name, a string, a number or [expression]
+Hier fehlt ein Doppelpunkt : nach dem Schlüssel	Expected a colon : after the key
+Hier fehlt } am Ende von ${…}	Expected } at the end of ${…}
+Leeres ${}: hier fehlt ein Ausdruck	Empty ${}: expected an expression
+
+# names and scopes (check.rs)
+{} ist schon deklariert (Zeile {})	{} is already declared (line {})
+Der Parameter {} kommt zweimal vor	The parameter {} appears twice
+{} ist in diesem Block schon deklariert (Zeile {})	{} is already declared in this block (line {})
+{} wird benutzt, bevor es mit let angelegt wird (Zeile {})	{} is used before let creates it (line {})
+Unbekannter Name {}	Unknown name {}
+{} – meinst du {}?	{} – did you mean {}?
+{} – eine neue Variable wird mit let {} = … angelegt	{} – a new variable is created with let {} = …
+Ein Bereich a..b hat nur eine Laufvariable	A range a..b has only one loop variable
+Ein Bereich a..b gibt ganze Zahlen: die lassen sich nicht zerlegen	A range a..b gives integers: they cannot be destructured
+{} steht außerhalb einer Schleife	{} is outside a loop
+return steht außerhalb einer Funktion	return is outside a function
+Das benannte Argument {} kommt zweimal vor	The named argument {} appears twice
+{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)	{}: named arguments reach host functions only with the host's description (script::Api, compile_api)
+{} ist keine Funktion des Hosts, die benannte Argumente nimmt	{} is not a host function that takes named arguments
+{} hat keinen Parameter {}	{} has no parameter {}
+{}: der Parameter {} hat schon ein Argument	{}: the parameter {} already has an argument
+
+# the warning for int / int (intdiv.rs)
+Ganzzahlige Division: {x} /= {r} schneidet ab (7 / 2 ist 3) – {x} = float({x}) / {r} rechnet mit Komma, {x} = int({x} / {r}) schneidet ausdrücklich ab	Integer division: {x} /= {r} truncates (7 / 2 is 3) – {x} = float({x}) / {r} keeps the fraction, {x} = int({x} / {r}) truncates explicitly
+Ganzzahlige Division: {lp} / {r} schneidet ab (7 / 2 ist 3) – float({l}) / {r} rechnet mit Komma, int({lp} / {r}) schneidet ausdrücklich ab	Integer division: {lp} / {r} truncates (7 / 2 is 3) – float({l}) / {r} keeps the fraction, int({lp} / {r}) truncates explicitly
+
+# await in callbacks (awaitchk.rs)
+await im Rückruf von {}: der läuft ohne Unterbrechung zu Ende, ein Wert, der noch aussteht, gibt hier einen Fehler – warte außerhalb, etwa in einer for-Schleife	await in a callback of {}: it runs to the end without a pause, so a value that is still pending gives an error here – wait outside, for example in a for loop
+{} wartet mit await, {} ruft es aber ohne Unterbrechung auf: ein Wert, der noch aussteht, gibt dort einen Fehler – warte außerhalb, etwa in einer for-Schleife	{} waits with await, but {} calls it without a pause: a value that is still pending gives an error there – wait outside, for example in a for loop
+
+# diagnostics (lib.rs)
+Fehler	error
+Warnung	warning
+
+# the VM (vm.rs)
+im Hauptprogramm	in the main program
+im Modul	in the module
+in {} ({})	in {} ({})
+hier lassen sich keine Module laden	modules cannot be loaded here
+Interner Fehler der Skript-VM	Internal error of the script VM
+Rechenzeit aufgebraucht: mehr als {} Schritte seit dem letzten await – eine Endlosschleife?	Out of fuel: more than {} steps since the last await – an endless loop?
+Rechenzeit aufgebraucht: mehr als {} Schritte in einem Aufruf – eine Endlosschleife?	Out of fuel: more than {} steps in one call – an endless loop?
+Speichergrenze erreicht	Memory limit reached
+Unbekannte Funktion {}	Unknown function {}
+Die VM ist noch beschäftigt – erst run() bis zum Ende	The VM is still busy – run() to the end first
+{} ist keine Funktion	{} is not a function
+Aufruf nicht möglich	Call not possible
+Es läuft kein Aufruf – erst call()	No call is running – call() first
+Der Stapel ist voll (mehr als {} Werte)	The stack is full (more than {} values)
+list_push braucht eine Liste	list_push needs a list
+list_replace braucht eine Liste	list_replace needs a list
+<ungültig>	<invalid>
+emit braucht ein Objekt des Hosts, nicht {}	emit needs a host object, not {}
+{} gab einen ungültigen Wert zurück	{} returned an invalid value
+{} hat keine Eigenschaft {}	{} has no property {}
+Das Minus passt nicht zu {}	The minus sign does not apply to {}
+Der Vergleich	The comparison
+Der Operator	The operator
+{} {} passt nicht zu {} und {}	{} {} does not apply to {} and {}
+{} hat keine Methode {}	{} has no method {}
+{}.{}: das Ereignis muss str sein, nicht {}	{}.{}: the event must be str, not {}
+{}.{}: hier muss eine Funktion des Skripts stehen, etwa fn(e) {{ .. }}	{}.{}: this needs a function of the script, such as fn(e) {{ .. }}
+{}.{}: hier muss eine Funktion stehen, nicht {}	{}.{}: this needs a function, not {}
+{} hat kein Ereignis {}	{} has no event {}
+Speichergrenze erreicht ({} Bytes)	Memory limit reached ({} bytes)
+Zu tief verschachtelte Rückrufe (mehr als {})	Callbacks nested too deeply (more than {})
+Ungültiger Wert für Cx::call	Invalid value for Cx::call
+Zu viele Aufrufe ineinander (mehr als {}) – endet die Rekursion?	Too many nested calls (more than {}) – does the recursion end?
+Die Map hat keine Funktion {}	The map has no function {}
+Das Feld {} ist keine Funktion, sondern {}	The field {} is not a function but {}
+len braucht str, bytes, list oder map, nicht {}	len needs str, bytes, list or map, not {}
+int(…): {} passt nicht in int	int(…): {} does not fit in int
+int(…): "{}" ist keine ganze Zahl	int(…): "{}" is not an integer
+int(…) braucht eine Zahl oder einen Text, nicht {}	int(…) needs a number or a string, not {}
+float(…): "{}" ist keine Zahl	float(…): "{}" is not a number
+float(…) braucht eine Zahl oder einen Text, nicht {}	float(…) needs a number or a string, not {}
+{} ist nicht deklariert – lege die Variable mit let {} = … an	{} is not declared – create the variable with let {} = …
+Ein Bereich a..b braucht ganze Zahlen, nicht {}	A range a..b needs integers, not {}
+Division durch 0	Division by 0
+Nur Maps haben Felder, nicht {} (Feld {})	Only maps have fields, not {} (field {})
+{} hat kein Feld {}	{} has no field {}
+{} ist keine Map	{} is not a map
+Index {} liegt außerhalb der Liste (Länge {})	Index {} is outside the list (length {})
+Index {} liegt außerhalb des Textes (Länge {})	Index {} is outside the string (length {})
+Index {} liegt außerhalb der Bytes (Länge {})	Index {} is outside the bytes (length {})
+Ein Index von {} muss int sein, nicht {}	An index of {} must be int, not {}
+{} lässt sich nicht indizieren	{} cannot be indexed
+Ein Index von list muss int sein, nicht {}	An index of list must be int, not {}
+{} lässt sich nicht ändern	{} cannot be changed
+for braucht list, map, str oder bytes, nicht {}	for needs list, map, str or bytes, not {}
+Das Muster [..] braucht eine Liste, nicht {}	The pattern [..] needs a list, not {}
+Das Muster {{..}} braucht eine Map oder ein Objekt des Hosts, nicht {}	The pattern {{..}} needs a map or a host object, not {}
+Die Funktion	The function
+{}: benannte Argumente gehen an Methoden des Hosts nur mit seiner Beschreibung (script::Api, compile_api)	{}: named arguments reach host methods only with the host's description (script::Api, compile_api)
+{}: benannte Argumente gehen nur an Funktionen, deren Parameter bekannt sind	{}: named arguments only go to functions whose parameters are known
+{} nimmt keine benannten Argumente	{} takes no named arguments
+Ungültiger Wert: von einer anderen VM, oder freigegeben, weil er nicht gepinnt war	Invalid value: from another VM, or freed because it was not pinned
+Ausnahme	Exception
+Ein Map-Schlüssel muss str, int oder bool sein, nicht {}	A map key must be str, int or bool, not {}
+
+# modules and scripts (module.rs)
+import braucht den Pfad einer Datei (str), nicht {}	import needs the path of a file (str), not {}
+import: „{}“ ist kein Pfad einer Datei	import: “{}” is not the path of a file
+Zyklischer Import: {}	Circular import: {}
+Modul {}: sein Code wartet noch in await – import geht erst, wenn er fertig ist	Module {}: its code is still waiting in await – import works once it has finished
+Zu viele Module (mehr als {})	Too many modules (more than {})
+Modul {}: {}	Module {}: {}
+(Hauptprogramm)	(main program)
+Modul {}: lässt sich nicht übersetzen	Module {}: does not compile
+{} (und {} weitere Fehler)	{} (and {} more)
+Zu viele Skripte (mehr als {})	Too many scripts (more than {})
+lässt sich nicht binden	cannot be linked
+
+# await and promises (task.rs)
+await kann in einem Rückruf, den eine Funktion aufruft (list.map, list.sort, eine Funktion des Hosts), nicht warten: der Wert steht noch aus – warte außerhalb, etwa in einer for-Schleife	await cannot wait in a callback that a function calls (list.map, list.sort, a host function): the value is still pending – wait outside, for example in a for loop
+Der Aufruf wurde abgebrochen	The call was cancelled
+
+# the standard library (stdlib.rs)
+{}: {} muss {} sein, nicht {}	{}: {} must be {}, not {}
+{}: {} muss eine Funktion sein, nicht {}	{}: {} must be a function, not {}
+eine Zahl	a number
+{}: Ein Map-Schlüssel muss str, int oder bool sein, nicht {}	{}: a map key must be str, int or bool, not {}
+Unbekannte Funktion	Unknown function
+{}: base muss zwischen 2 und 36 liegen, nicht {}	{}: base must be between 2 and 36, not {}
+bytes: {} ist kein Byte (0 bis 255)	bytes: {} is not a byte (0 to 255)
+bytes: Ein Byte muss int sein, nicht {}	bytes: a byte must be int, not {}
+bytes braucht str, list, bytes oder Bytes als int, nicht {}	bytes needs str, list, bytes or single bytes as int, not {}
+{}: {} ist keine Hex-Ziffer (Index {})	{}: {} is not a hex digit (index {})
+{}: Die Zahl der Hex-Ziffern ist ungerade	{}: the number of hex digits is odd
+{}: Die Bytes sind kein gültiges UTF-8 (ab Index {})	{}: the bytes are not valid UTF-8 (from index {})
+{} braucht mindestens einen Wert	{} needs at least one value
+eine Zahl (nicht nan)	a number (not nan)
+{}: lo ist größer als hi	{}: lo is greater than hi
+Annahme verletzt	Assertion failed
+Annahme verletzt: {}	Assertion failed: {}
+erwartet {}, ist {}	expected {}, got {}
+
+# str (strlib.rs)
+{}: n muss mindestens 1 sein, nicht {}	{}: n must be at least 1, not {}
+{}: n muss mindestens 0 sein, nicht {}	{}: n must be at least 0, not {}
+{}: Index {} liegt außerhalb des Textes (Länge {})	{}: index {} is outside the string (length {})
+{}: {} ist kein gültiges Zeichen	{}: {} is not a valid character
+str.format: {{:{}}} braucht int, nicht {}	str.format: {{:{}}} needs int, not {}
+str.format: {{:{}}} braucht eine Zahl, nicht {}	str.format: {{:{}}} needs a number, not {}
+str.format: Ungültige Formatangabe {{:{}}}	str.format: invalid format spec {{:{}}}
+{}: Nach {{ fehlt die schließende }}	{}: the closing }} is missing after {{
+{}: Es gibt kein Argument {}	{}: there is no argument {}
+{}: Die Map hat kein Feld {}	{}: the map has no field {}
+nichts	nothing
+{}: Für {{{}}} muss das erste Argument eine Map sein, nicht {}	{}: {{{}}} needs a map as the first argument, not {}
+{}: Eine }} ohne öffnende {{	{}: a }} without an opening {{
+
+# list (listlib.rs)
+{}: Index {} liegt außerhalb der Liste (Länge {})	{}: index {} is outside the list (length {})
+{}: Eine leere Liste braucht einen Startwert (init)	{}: an empty list needs a start value (init)
+list.sort: {} und {} lassen sich nicht vergleichen – gib eine Vergleichsfunktion an	list.sort: {} and {} cannot be compared – give a comparison function
+list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht {}	list.sort: cmp must return a number or bool, not {}
+{}: {} muss endlich sein, nicht {}	{}: {} must be finite, not {}
+{}: step darf nicht 0 sein	{}: step must not be 0
+{}: n darf nicht negativ sein, nicht {}	{}: n must not be negative ({})
+
+# json (jsonlib.rs)
+json.encode: Die Daten sind zu tief verschachtelt (mehr als {} Ebenen)	json.encode: the data is nested too deeply (more than {} levels)
+json.encode: {} lässt sich nicht als JSON darstellen	json.encode: {} cannot be written as JSON
+json.encode: bytes lassen sich nicht als JSON darstellen – erst b.hex() oder b.text()	json.encode: bytes cannot be written as JSON – use b.hex() or b.text() first
+json.encode: Funktionen lassen sich nicht als JSON darstellen	json.encode: functions cannot be written as JSON
+json.encode: {} (ein Objekt des Hosts) lässt sich nicht als JSON darstellen	json.encode: {} (a host object) cannot be written as JSON
+json.encode: Der Schlüssel "{}" kommt doppelt vor	json.encode: the key "{}" appears twice
+json.encode: Die Daten enthalten sich selbst	json.encode: the data contains itself
+json.encode: indent muss zwischen 0 und 8 liegen, nicht {}	json.encode: indent must be between 0 and 8, not {}
+Der Text ist kein gültiges UTF-8	The text is not valid UTF-8
+Nach dem Wert folgt noch etwas	Something follows after the value
+Die Daten sind zu tief verschachtelt (mehr als 64 Ebenen)	The data is nested too deeply (more than 64 levels)
+Hier fehlt ein Wert	Expected a value
+Unbekanntes Wort (erlaubt sind true, false und null)	Unknown word (allowed are true, false and null)
+Ungültige Zahl	Invalid number
+Die Zahl ist zu lang	The number is too long
+Ungültige Escape-Sequenz	Invalid escape sequence
+Ungültiges \u-Zeichen (ein Surrogat ohne Partner)	Invalid \u character (a surrogate without its partner)
+Ein Steuerzeichen im Text muss als Escape-Sequenz stehen	A control character in a string must be written as an escape sequence
+Der Text endet ohne schließendes "	The string ends without a closing "
+Hier fehlt ein Schlüssel in Anführungszeichen	Expected a key in quotes
+Hier fehlt ein Komma oder eine schließende Klammer	Expected a comma or a closing bracket
+Hier fehlt ein Doppelpunkt	Expected a colon
+Der Schlüssel kommt doppelt vor	The key appears twice
+Ungültiges JSON	Invalid JSON
+json.decode: {} (Zeile {}, Spalte {})	json.decode: {} (line {}, column {})
+str oder bytes	str or bytes
+
+# the debugger (debug.rs)
+Erwartet wird genau ein Ausdruck	Exactly one expression is expected
+Im Ausdruck gehen keine Aufrufe außer len, str, type, int und float	The expression allows no calls except len, str, type, int and float
+Diesen Aufruf gibt es nicht	This call does not exist
+abgelehnt: {}	rejected: {}
+Der Wert steht noch aus – im Ausdruck wartet await nicht	The value is still pending – await does not wait in the expression
+{}.{}: Eigenschaften des Hosts liest der Ausdruck nicht	{}.{}: the expression does not read host properties
+Listen aus einer Schleife rechnet der Ausdruck nicht	The expression does not compute lists from a loop
+
+# the formatter (fmt.rs)
+Der Formatierer hätte die Bedeutung des Skripts geändert; es bleibt, wie es ist	The formatter would have changed what the script means; it stays as it is
+
+# a host's description and the object catalogue (api.rs)
+{} wurde entfernt	{} was removed
+{} wurde entfernt – nimm {}	{} was removed – use {}
+Funktion	Function
+Wert	Value
+Namensraum	Namespace
+Typ	Type
+Werttyp	Value type
+Eigenschaft	Property
+Methode	Method
+Ereignis	Event
+Operator	Operator
+{}: {} vor den benannten, nimmt aber höchstens {}	{}: {} before the named ones, but takes at most {}
+{}: der Parameter {} fehlt	{}: the parameter {} is missing
+kein Argument	no arguments
+1 Argument	1 argument
+{} Argumente	{} arguments
+{}: {}, nimmt aber keine	{}: {}, but takes none
+{}: {}, nimmt aber höchstens {} ({})	{}: {}, but takes at most {} ({})
+{}: {}, braucht aber mindestens {} ({})	{}: {}, but needs at least {} ({})
+{}: ohne Argumente passt keine Form ({})	{}: no form fits without arguments ({})
+{}: 1 Argument passt zu keiner Form ({})	{}: 1 argument fits no form ({})
+{}: {} Argumente passen zu keiner Form ({})	{}: {} arguments fit no form ({})
+{}: unbekannter Typ {}	{}: unknown type {}
+{}: ...{} muss der letzte Parameter sein	{}: ...{} must be the last parameter
+{}: die Form {} kommt zweimal vor	{}: the form {} appears twice
+{}: der Name kommt zweimal vor	{}: the name appears twice
+{}: ist als entfernt angegeben und zugleich beschrieben	{}: is marked as removed and described at the same time
+{}: der Typ kommt zweimal vor	{}: the type appears twice
+{}: ein Name der Sprache, kein Typ des Hosts	{}: a name of the language, not a host type
+{}.{}: die Form {} kommt zweimal vor	{}.{}: the form {} appears twice
+{}.{}: der Name kommt zweimal vor	{}.{}: the name appears twice
+{}.{}: on und off sind die Ereignisse der VM	{}.{}: on and off are reserved for the VM's events
+{}.{}: ist als entfernt angegeben und zugleich beschrieben	{}.{}: is marked as removed and described at the same time
+{} Ereignis {}	{} event {}
+{}: keiner der Operanden ist {}	{}: neither operand is {}
+Objektkatalog	Object catalogue
+Globale Namen	Global names
+Typen	Types
+Werttyp: == vergleicht die Werte	value type: == compares the values
+Eigenschaften	Properties
+Methoden	Methods
+Ereignisse (obj.on(name, fn(e) { .. }))	Events (obj.on(name, fn(e) { .. }))
+Operatoren	Operators
+
+# the language services (ls.rs)
+globale Variable	Global variable
+lokale Variable	Local variable
+Parameter	Parameter
+Schleifenvariable	Loop variable
+Fehlervariable	Catch variable
+Modul	Module
+{} von {}	{} of {}
+„{}“ ist kein gültiger Name (Buchstaben, Ziffern und _, nicht vorn eine Ziffer)	“{}” is not a valid name (letters, digits and _, not starting with a digit)
+Umbenennen geht erst ohne Syntaxfehler (Zeile {}: {})	Renaming needs a script without syntax errors (line {}: {})
+Hier steht kein Name, der in diesem Skript deklariert ist	There is no name here that this script declares
+{} ist hier schon deklariert (Zeile {})	{} is already declared here (line {})
+{} lässt sich hier nicht verwenden	{} cannot be used here
+Der Name {} ist hier schon vergeben (Zeile {})	The name {} is already taken here (line {})
+{} ist in diesem Gültigkeitsbereich schon deklariert	{} is already declared in this scope
+Modul der Standardbibliothek	Standard library module
+Schlüsselwort	Keyword
+nur lesbar	read-only
+Ereignisse: {}	Events: {}
+Ruft f(e) bei jedem Ereignis event auf. {}	Calls f(e) on every event of that name. {}
+Nimmt f (ohne f: alle Funktionen) für event wieder weg. {}	Removes f (without f: all functions) from the event. {}
+Parameter von {}	Parameter of {}
+Namensraum des Hosts	Host namespace
+Name des Hosts	Host name
+eingebaut	Built-in
+Standardbibliothek	Standard library
+Eigenschaft von {}{}	Property of {}{}
+Methode von {}	Method of {}
+Ereignisse	Events
+{} aus {}	{} from {}
+
+# the language services with a description (lsapi.rs)
+{}.{} ist nur lesbar	{}.{} is read-only
+{} ist eine Methode von {}, keine Eigenschaft – mit Klammern: {}(..)	{} is a method of {}, not a property – with parentheses: {}(..)
+{} hat keine Ereignisse	{} has no events
+{} ist eine Eigenschaft von {}, keine Methode – ohne Klammern: .{}	{} is a property of {}, not a method – without parentheses: .{}
+
+# the descriptions of the built-ins and the standard library (lsdoc.rs)
+Schreibt die Werte mit Leerzeichen dazwischen als eine Zeile in die Ausgabe.	Writes the values, separated by spaces, as one line to the output.
+Die Länge: Zeichen eines str, Bytes von bytes, Einträge einer list oder map.	The length: characters of a str, bytes of bytes, entries of a list or map.
+Der Typ als Text: nil, bool, int, float, str, bytes, list, map oder fn.	The type as text: nil, bool, int, float, str, bytes, list, map or fn.
+Der Wert als Text, wie print ihn schreibt.	The value as text, as print writes it.
+Eine ganze Zahl: schneidet einen float ab, liest Text wie "42" oder "0x1F".	An integer: truncates a float, reads text such as "42" or "0x1F".
+Der Wert als Gleitkommazahl (auch aus Text).	The value as a floating-point number (also from text).
+Neue Bytes: leer, aus Text (UTF-8), aus einer Liste von Zahlen oder aus einzelnen Zahlen.	New bytes: empty, from text (UTF-8), from a list of numbers or from single numbers.
+Lädt eine andere Datei einmal und gibt ihre obersten fns und lets als Map; Namen mit _ bleiben privat.	Loads another file once and gives its top-level fns and lets as a map; names starting with _ stay private.
+Wirft einen Fehler mit msg, wenn cond nicht wahr ist.	Throws an error with msg if cond is not true.
+Wirft einen Fehler, wenn a und b verschieden sind; Listen und Maps zählen nach ihrem Inhalt.	Throws an error if a and b differ; lists and maps are compared by their contents.
+Die Zahl der Zeichen.	The number of characters.
+Der Teil von start bis vor end (Zeichen); negative Werte zählen vom Ende.	The part from start up to before end (characters); negative values count from the end.
+Zerlegt den Text an sep in eine Liste, höchstens n Teile; ohne sep an Leerraum.	Splits the text at sep into a list of at most n parts; without sep at whitespace.
+Die Werte der Liste als ein Text, mit sep dazwischen.	The values of the list as one text, with sep between them.
+Ohne Leerraum an beiden Enden (oder ohne die Zeichen aus chars).	Without whitespace at both ends (or without the characters in chars).
+Ohne Leerraum am Anfang (oder ohne die Zeichen aus chars).	Without whitespace at the start (or without the characters in chars).
+Ohne Leerraum am Ende (oder ohne die Zeichen aus chars).	Without whitespace at the end (or without the characters in chars).
+Wo sub zuerst vorkommt (ab Zeichen from), nil wenn nirgends.	Where sub first occurs (from character from on), nil if nowhere.
+Wo sub zuletzt vorkommt, nil wenn nirgends.	Where sub last occurs, nil if nowhere.
+Ob sub im Text vorkommt.	Whether sub occurs in the text.
+Ob der Text mit p anfängt.	Whether the text starts with p.
+Ob der Text mit p aufhört.	Whether the text ends with p.
+Wie oft sub vorkommt, ohne Überlappung.	How often sub occurs, without overlap.
+Setzt to für from ein, überall oder nur n Mal.	Puts to in place of from, everywhere or only n times.
+Der Text in Großbuchstaben (ß wird SS).	The text in upper case (ß becomes SS).
+Der Text in Kleinbuchstaben.	The text in lower case.
+Der Text n Mal hintereinander.	The text n times in a row.
+Die Zeichen als Liste von Texten.	The characters as a list of texts.
+Der Text als bytes in UTF-8.	The text as bytes in UTF-8.
+Der Unicode-Wert des Zeichens an Stelle i (ohne i: des ersten).	The Unicode value of the character at position i (without i: of the first one).
+Ein Text aus den Zeichen mit diesen Unicode-Werten.	A text made of the characters with these Unicode values.
+Setzt die Argumente für {}, {0} oder {name} ein; nach einem Doppelpunkt Breite, Ausrichtung und Genauigkeit.	Puts the arguments in place of {}, {0} or {name}; after a colon, width, alignment and precision.
+Ein fester 32-Bit-Hash (FNV-1a) der UTF-8-Bytes, gleich auf jedem Rechner.	A fixed 32-bit hash (FNV-1a) of the UTF-8 bytes, the same on every machine.
+Die Zahl der Werte.	The number of values.
+Hängt die Werte hinten an.	Appends the values at the end.
+Nimmt den letzten Wert heraus und gibt ihn zurück (nil bei leerer Liste).	Removes the last value and returns it (nil for an empty list).
+Fügt x an Stelle i ein (0 bis len).	Inserts x at position i (0 to len).
+Nimmt den Wert an Stelle i heraus und gibt ihn zurück.	Removes the value at position i and returns it.
+Eine neue Liste von start bis vor end; negative Werte zählen vom Ende.	A new list from start up to before end; negative values count from the end.
+Dreht die Reihenfolge um (in der Liste selbst) und gibt sie zurück.	Reverses the order (in the list itself) and returns it.
+Sortiert stabil (in der Liste selbst); cmp(a, b) gibt eine Zahl oder true für a vor b.	Sorts stably (in the list itself); cmp(a, b) gives a number, or true for a before b.
+Eine neue Liste mit f(x) für jeden Wert.	A new list with f(x) for each value.
+Eine neue Liste mit den Werten, für die f(x) wahr ist.	A new list with the values for which f(x) is true.
+Faltet die Liste mit f(acc, x) zusammen, ab init (ohne init: ab dem ersten Wert).	Folds the list with f(acc, x), starting at init (without init: at the first value).
+Ob x in der Liste steht (Vergleich mit ==).	Whether x is in the list (compared with ==).
+Die erste Stelle von x, nil wenn es fehlt.	The first position of x, nil if it is missing.
+Die Werte als ein Text, mit sep dazwischen.	The values as one text, with sep between them.
+Eine neue Liste start, start + step, … bis vor end (step 1, auch negativ); list.range(n) zählt von 0 bis n - 1. Ganze Zahlen bleiben ganz.	A new list start, start + step, … up to before end (step 1, also negative); list.range(n) counts from 0 to n - 1. Integers stay integers.
+Eine neue Liste von n Kommazahlen, gleichmäßig verteilt von start bis end (beide dabei).	A new list of n floats, evenly spread from start to end (both included).
+Die Zahl der Einträge.	The number of entries.
+Die Schlüssel als Liste, in der Reihenfolge des Einfügens.	The keys as a list, in insertion order.
+Die Werte als Liste, in der Reihenfolge des Einfügens.	The values as a list, in insertion order.
+Die Einträge als Liste von [Schlüssel, Wert].	The entries as a list of [key, value].
+Ob es den Schlüssel k gibt.	Whether the key k exists.
+Der Wert zu k, default wenn der Schlüssel fehlt.	The value for k, default if the key is missing.
+Entfernt den Eintrag zu k; ob es ihn gab.	Removes the entry for k; whether it existed.
+Eine neue Map mit den Einträgen aller Maps; spätere Werte gewinnen.	A new map with the entries of all maps; later values win.
+Die Zahl der Bytes.	The number of bytes.
+Die Bytes von start bis vor end; negative Werte zählen vom Ende.	The bytes from start up to before end; negative values count from the end.
+Die Bytes als Hex-Text.	The bytes as hex text.
+Bytes aus einem Hex-Text.	Bytes from a hex text.
+Die Bytes als Text (UTF-8); lossy ersetzt ungültige Folgen statt zu werfen.	The bytes as text (UTF-8); lossy replaces invalid sequences instead of throwing.
+Ein fester 32-Bit-Hash (FNV-1a) der Bytes.	A fixed 32-bit hash (FNV-1a) of the bytes.
+Der Betrag (ein int bleibt ein int).	The absolute value (an int stays an int).
+Der kleinste der Werte (oder einer Liste).	The smallest of the values (or of a list).
+Der größte der Werte (oder einer Liste).	The largest of the values (or of a list).
+x begrenzt auf lo bis hi.	x clamped to the range lo to hi.
+Abgerundet auf eine ganze Zahl.	Rounded down to an integer.
+Aufgerundet auf eine ganze Zahl.	Rounded up to an integer.
+Gerundet, Hälften weg von der Null.	Rounded, halves away from zero.
+Die Nachkommastellen abgeschnitten.	With the fractional part cut off.
+Die Quadratwurzel.	The square root.
+x hoch y.	x to the power of y.
+e hoch x.	e to the power of x.
+Der natürliche Logarithmus.	The natural logarithm.
+Der Logarithmus zur Basis 2.	The logarithm to base 2.
+Der Logarithmus zur Basis 10.	The logarithm to base 10.
+Der Sinus (x im Bogenmaß).	The sine (x in radians).
+Der Kosinus (x im Bogenmaß).	The cosine (x in radians).
+Der Tangens (x im Bogenmaß).	The tangent (x in radians).
+Der Arkussinus im Bogenmaß, von -π/2 bis π/2; nan außerhalb von -1 bis 1.	The arc sine in radians, from -π/2 to π/2; nan outside -1 to 1.
+Der Arkuskosinus im Bogenmaß, von 0 bis π; nan außerhalb von -1 bis 1.	The arc cosine in radians, from 0 to π; nan outside -1 to 1.
+Der Arkustangens im Bogenmaß, von -π/2 bis π/2.	The arc tangent in radians, from -π/2 to π/2.
+Der Winkel des Punkts (x, y) im Bogenmaß, von -π bis π: atan(y / x) im richtigen Quadranten.	The angle of the point (x, y) in radians, from -π to π: atan(y / x) in the right quadrant.
+Die Länge des Vektors (auch einer Liste): die Wurzel aus der Summe der Quadrate, genau gerundet, ohne Überlauf.	The length of the vector (also of a list): the square root of the sum of the squares, correctly rounded, without overflow.
+Der Sinus von x Grad; exakt bei Vielfachen von 30° (0, ±0.5, ±1).	The sine of x degrees; exact at multiples of 30° (0, ±0.5, ±1).
+Der Kosinus von x Grad; exakt bei Vielfachen von 30° (0, ±0.5, ±1).	The cosine of x degrees; exact at multiples of 30° (0, ±0.5, ±1).
+Der Tangens von x Grad; exakt bei Vielfachen von 45° (0, ±1, ±inf bei 90°).	The tangent of x degrees; exact at multiples of 45° (0, ±1, ±inf at 90°).
+Ob x keine Zahl (nan) ist.	Whether x is not a number (nan).
+Ob x endlich ist (weder inf noch nan).	Whether x is finite (neither inf nor nan).
+Die Kreiszahl π.	The circle constant π.
+Die Eulersche Zahl e.	Euler's number e.
+2π, ein voller Kreis im Bogenmaß.	2π, a full circle in radians.
+Unendlich als float.	Infinity as a float.
+Keine Zahl (nan) als float.	Not a number (nan) as a float.
+Der Wert als JSON-Text: kompakt oder mit indent Leerzeichen je Ebene.	The value as JSON text: compact, or with indent spaces per level.
+Die Werte aus einem JSON-Text (Objekte werden Maps in ihrer Reihenfolge).	The values of a JSON text (objects become maps in their order).
+Die ganze Zahl in s (auch 0x, 0b, 0o), nil wenn s keine ist.	The integer in s (also 0x, 0b, 0o), nil if s holds none.
+Die größte ganze Zahl.	The largest integer.
+Die kleinste ganze Zahl.	The smallest integer.
+Die Gleitkommazahl in s, nil wenn s keine ist.	The floating-point number in s, nil if s holds none.

@@ -120,7 +120,7 @@ pub(crate) fn split(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
     let n = match opt_int(vm, F, a, 2, "n")? {
         None => usize::MAX,
         Some(k) if k >= 1 => k as usize,
-        Some(k) => return err(format!("{}: n muss mindestens 1 sein, nicht {}", F, k)),
+        Some(k) => return err(tf!("{}: n muss mindestens 1 sein, nicht {}", F, k)),
     };
     // a part takes 32 bytes of heap at least: more than this many cannot be stored, and
     // the list of ranges must not grow beyond the limit before new_str notices
@@ -293,7 +293,7 @@ pub(crate) fn replace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Valu
     let limit = match opt_int(vm, F, a, 3, "n")? {
         None => usize::MAX,
         Some(k) if k >= 0 => k as usize,
-        Some(k) => return err(format!("{}: n muss mindestens 0 sein, nicht {}", F, k)),
+        Some(k) => return err(tf!("{}: n muss mindestens 0 sein, nicht {}", F, k)),
     };
     let (s, f, t) = (heap::text(&vm.heap, r), heap::text(&vm.heap, fr), heap::text(&vm.heap, to));
     let k = s.matches(f).take(limit).count();
@@ -341,7 +341,7 @@ pub(crate) fn repeat(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
     let r = want_str(vm, F, a, 0, "s")?;
     let k = want_int(vm, F, a, 1, "n")?;
     if k < 0 {
-        return err(format!("{}: n muss mindestens 0 sein, nicht {}", F, k));
+        return err(tf!("{}: n muss mindestens 0 sein, nicht {}", F, k));
     }
     let s = heap::text(&vm.heap, r);
     let Some(len) = (s.len() as u64).checked_mul(k as u64) else { return Err(heap_full(vm)) };
@@ -388,7 +388,7 @@ pub(crate) fn code(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, 
     spend(vm, scan / 64)?;
     match c {
         Some(c) => Ok(Value::Int(c as i64)),
-        None => err(format!("{}: Index {} liegt außerhalb des Textes (Länge {})", F, i, n)),
+        None => err(tf!("{}: Index {} liegt außerhalb des Textes (Länge {})", F, i, n)),
     }
 }
 
@@ -400,7 +400,7 @@ pub(crate) fn from_code(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
         match *v {
             Value::Int(i) => match u32::try_from(i).ok().and_then(char::from_u32) {
                 Some(c) => s.push(c),
-                None => return err(format!("{}: {} ist kein gültiges Zeichen", F, i)),
+                None => return err(tf!("{}: {} ist kein gültiges Zeichen", F, i)),
             },
             v => return bad(vm, F, "n", "int", v),
         }
@@ -489,7 +489,7 @@ impl Spec {
 fn render(vm: &Vm, v: Value, sp: &Spec, spec: &str) -> Result<(bool, &'static str, String), Exc> {
     let numeric = matches!(v, Value::Int(_) | Value::Float(_));
     if let Some(t @ ('x' | 'X' | 'b' | 'o' | 'd')) = sp.ty {
-        let Value::Int(i) = v else { return err(format!("str.format: {{:{}}} braucht int, nicht {}", spec, vm.type_of(v))) };
+        let Value::Int(i) = v else { return err(tf!("str.format: {{:{}}} braucht int, nicht {}", spec, vm.type_of(v))) };
         let m = i.unsigned_abs();
         let body = match t {
             'x' => format!("{:x}", m),
@@ -535,7 +535,7 @@ fn render(vm: &Vm, v: Value, sp: &Spec, spec: &str) -> Result<(bool, &'static st
                 };
                 Ok((x.to_bits() >> 63 != 0 && !num::is_nan(x), "", body))
             }
-            v => err(format!("str.format: {{:{}}} braucht eine Zahl, nicht {}", spec, vm.type_of(v))),
+            v => err(tf!("str.format: {{:{}}} braucht eine Zahl, nicht {}", spec, vm.type_of(v))),
         };
     }
     let mut body = String::new();
@@ -574,7 +574,7 @@ fn put(vm: &Vm, out: &mut String, v: Value, spec: &str) -> Result<(), Exc> {
         }
         return Ok(());
     }
-    let Some(sp) = Spec::parse(spec) else { return err(format!("str.format: Ungültige Formatangabe {{:{}}}", spec)) };
+    let Some(sp) = Spec::parse(spec) else { return err(tf!("str.format: Ungültige Formatangabe {{:{}}}", spec)) };
     let numeric = matches!(v, Value::Int(_) | Value::Float(_));
     let (neg, prefix, body) = render(vm, v, &sp, spec)?;
     let sign = if neg { "-" } else if sp.plus && numeric { "+" } else { "" };
@@ -622,7 +622,7 @@ pub(crate) fn format(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
                 i += 2;
             }
             b'{' => {
-                let Some(len) = fmt[i + 1..].find('}') else { return err(format!("{}: Nach {{ fehlt die schließende }}", F)) };
+                let Some(len) = fmt[i + 1..].find('}') else { return err(tf!("{}: Nach {{ fehlt die schließende }}", F)) };
                 let body = &fmt[i + 1..i + 1 + len];
                 i += len + 2;
                 let (field, spec) = body.split_once(':').unwrap_or((body, ""));
@@ -630,28 +630,28 @@ pub(crate) fn format(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value
                     next += 1;
                     match args.get(next - 1) {
                         Some(v) => *v,
-                        None => return err(format!("{}: Es gibt kein Argument {}", F, next - 1)),
+                        None => return err(tf!("{}: Es gibt kein Argument {}", F, next - 1)),
                     }
                 } else if let Ok(k) = field.parse::<usize>() {
                     match args.get(k) {
                         Some(v) => *v,
-                        None => return err(format!("{}: Es gibt kein Argument {}", F, k)),
+                        None => return err(tf!("{}: Es gibt kein Argument {}", F, k)),
                     }
                 } else {
                     match args.first() {
                         Some(m @ Value::Map(_)) => match vm.map_get_str(*m, field) {
                             Some(v) => v,
-                            None => return err(format!("{}: Die Map hat kein Feld {}", F, field)),
+                            None => return err(tf!("{}: Die Map hat kein Feld {}", F, field)),
                         },
                         v => {
-                            let t = v.map_or("nichts", |v| vm.type_of(*v));
-                            return err(format!("{}: Für {{{}}} muss das erste Argument eine Map sein, nicht {}", F, field, t));
+                            let t = v.map_or(t!("nichts"), |v| vm.type_of(*v));
+                            return err(tf!("{}: Für {{{}}} muss das erste Argument eine Map sein, nicht {}", F, field, t));
                         }
                     }
                 };
                 put(vm, &mut out, v, spec)?;
             }
-            b'}' => return err(format!("{}: Eine }} ohne öffnende {{", F)),
+            b'}' => return err(tf!("{}: Eine }} ohne öffnende {{", F)),
             _ => {
                 let j = fmt[i..].find(['{', '}']).map_or(b.len(), |k| i + k);
                 out.push_str(&fmt[i..j]);

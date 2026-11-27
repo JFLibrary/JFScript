@@ -242,7 +242,7 @@ impl<'a> W<'a> {
                     }
                     awaits_block(&f.body, &mut at);
                     for sp in at {
-                        let m = format!(
+                        let m = tf!(
                             "await im Rückruf von {}: der läuft ohne Unterbrechung zu Ende, ein Wert, der noch aussteht, gibt hier einen Fehler – warte außerhalb, etwa in einer for-Schleife",
                             how
                         );
@@ -250,7 +250,7 @@ impl<'a> W<'a> {
                     }
                 }
                 ExprKind::Var(n) if self.top.contains_key(n.as_str()) && self.decls.get(n.as_str()) == Some(&1) => {
-                    let m = format!(
+                    let m = tf!(
                         "{} wartet mit await, {} ruft es aber ohne Unterbrechung auf: ein Wert, der noch aussteht, gibt dort einen Fehler – warte außerhalb, etwa in einer for-Schleife",
                         n, how
                     );

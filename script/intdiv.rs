@@ -171,10 +171,12 @@ pub(crate) fn warnings(prog: &Program) -> Vec<Diagnostic> {
         let loose = matches!(&d.lhs.kind, ExprKind::Binary(op, ..) if !matches!(op, BinOp::Mul | BinOp::Div | BinOp::Rem));
         let lp = if loose { format!("({})", l) } else { l.clone() };
         let msg = match d.assign {
-            Some(x) => format!(
-                "Ganzzahlige Division: {x} /= {r} schneidet ab (7 / 2 ist 3) – {x} = float({x}) / {r} rechnet mit Komma, {x} = int({x} / {r}) schneidet ausdrücklich ab"
+            Some(x) => tf!(
+                "Ganzzahlige Division: {x} /= {r} schneidet ab (7 / 2 ist 3) – {x} = float({x}) / {r} rechnet mit Komma, {x} = int({x} / {r}) schneidet ausdrücklich ab",
+                x = x,
+                r = r
             ),
-            None => format!("Ganzzahlige Division: {lp} / {r} schneidet ab (7 / 2 ist 3) – float({l}) / {r} rechnet mit Komma, int({lp} / {r}) schneidet ausdrücklich ab"),
+            None => tf!("Ganzzahlige Division: {lp} / {r} schneidet ab (7 / 2 ist 3) – float({l}) / {r} rechnet mit Komma, int({lp} / {r}) schneidet ausdrücklich ab", lp = lp, r = r, l = l),
         };
         // to the end of the right operand when it is on the same line
         let end = if d.rhs.span.line == d.at.line { d.rhs.span.col + width(d.rhs) } else { d.at.col + 1 };

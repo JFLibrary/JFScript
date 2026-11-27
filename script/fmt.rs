@@ -316,7 +316,7 @@ pub fn format_with(src: &str, unit: &str) -> Result<String, Vec<Diagnostic>> {
             col: 1,
             end_col: 2,
             error: true,
-            msg: String::from("Der Formatierer hätte die Bedeutung des Skripts geändert; es bleibt, wie es ist"),
+            msg: String::from(t!("Der Formatierer hätte die Bedeutung des Skripts geändert; es bleibt, wie es ist")),
             file: String::new(),
         }]),
     }

@@ -122,12 +122,32 @@
 // function and at the top level.  Comments // and /* */.  A line break ends a statement once
 // its expression is complete (parse.rs has the details); a string stays on one line.
 // Positions: lines and columns from 1, columns count characters, end_col is exclusive.
-// The messages are German.  The scope rules are in ast.rs.
+// The messages are German unless the host chose another language (below).  The scope rules are
+// in ast.rs.
+//
+// (S3, G9) messages in the app's language (msg.rs, docs/HOST.md "The language of the messages"):
+//   set_language(code) -> code   "de" (the default), "en" or a BCP 47 tag for the whole process;
+//                                a code without a column of the table takes English, "" German;
+//                                language(), languages()
+//   what follows it              compile errors and warnings, run-time errors and the messages
+//                                scripts catch, the warnings of compile_api and take_warnings,
+//                                the texts of ls::* (hover, completion, signature help, check,
+//                                rename, library_doc), Api::validate and the catalogue's words
+//   what does not                keywords and names (G9.3), the text of values (str, print), a
+//                                host's own texts (cx.error, cx.warn, Api descriptions:
+//                                Api::map_docs puts them through the host's catalogue)
+//   the table                    locales/messages.tsv, the form of JFLib's ui.tsv: the German
+//                                text is the key, then en; scripttest (group scriptmsg) checks it
+//                                against every t!, tf! and de! of the sources
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+// (S3, G9) the messages in the host's language: t!, tf!, de! and the table (msg.rs); first, so
+// every module has the macros
+#[macro_use]
+mod msg;
 pub mod ast;
 pub mod check;
 mod intdiv;
@@ -174,10 +194,11 @@ pub use code::LineEntry;
 pub use api::Api;
 pub use debug::{Breakpoint, FrameInfo, Pause, PauseReason, Step};
 pub use task::{Promise, PromiseState};
+pub use msg::{language, languages, set_language};
 
 /// a message for the editor: position (1-based; columns count characters, end_col is
-/// exclusive and on the same line), error or warning, German text; file: the name given to
-/// parse / compile_named / compile_with ("" from check)
+/// exclusive and on the same line), error or warning, the text (German, or in the language of
+/// set_language); file: the name given to parse / compile_named / compile_with ("" from check)
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Diagnostic {
     pub line: u32,
@@ -191,7 +212,7 @@ pub struct Diagnostic {
 impl core::fmt::Display for Diagnostic {
     /// "3:5: Fehler: Hier fehlt eine schließende Klammer )"
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "{}:{}: {}: {}", self.line, self.col, if self.error { "Fehler" } else { "Warnung" }, self.msg)
+        write!(f, "{}:{}: {}: {}", self.line, self.col, if self.error { t!("Fehler") } else { t!("Warnung") }, self.msg)
     }
 }
 

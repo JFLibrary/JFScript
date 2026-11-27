@@ -15,7 +15,7 @@
 //   references(src, pos) -> Vec<Span>   the declaration and every use of the symbol at pos,
 //                                    in source order
 //   rename(src, pos, new) -> Result<Vec<Edit>, String>   the edits that rename the symbol at
-//                                    pos; refused (German reason): a keyword, no valid name, a
+//                                    pos; refused (a reason, msg.rs): a keyword, no valid name, a
 //                                    name that clashes (declared in the same scope, or a use
 //                                    that would then mean another declaration), code that does
 //                                    not parse, no symbol of this script at pos
@@ -107,15 +107,15 @@ pub enum SymKind {
 }
 
 impl SymKind {
-    /// the German word for a hover ("Funktion", "lokale Variable" ..)
+    /// the word for a hover in the current language ("Funktion", "lokale Variable" ..)
     pub fn word(self) -> &'static str {
         match self {
-            SymKind::Global => "globale Variable",
-            SymKind::Fn => "Funktion",
-            SymKind::Local => "lokale Variable",
-            SymKind::Param => "Parameter",
-            SymKind::Loop => "Schleifenvariable",
-            SymKind::Catch => "Fehlervariable",
+            SymKind::Global => t!("globale Variable"),
+            SymKind::Fn => t!("Funktion"),
+            SymKind::Local => t!("lokale Variable"),
+            SymKind::Param => t!("Parameter"),
+            SymKind::Loop => t!("Schleifenvariable"),
+            SymKind::Catch => t!("Fehlervariable"),
         }
     }
 }
@@ -237,7 +237,7 @@ pub struct HostItem<'a> {
     pub name: &'a str,
     /// the parameters of a function ("port, handlers"); None: a value or a namespace
     pub params: Option<&'a str>,
-    /// a short description (German)
+    /// a short description (in the host's language)
     pub doc: &'a str,
 }
 
@@ -470,7 +470,7 @@ fn is_ident_char(c: char) -> bool {
 /// the parameters (None: a constant) and the description of a built-in or library name
 /// ("print", "str.split", "math.pi")
 pub fn library_doc(name: &str) -> Option<(Option<&'static str>, &'static str)> {
-    lsdoc::doc(name).map(|d| (d.params, d.text))
+    lsdoc::doc(name).map(|d| (d.params, d.doc()))
 }
 
 /// a valid name that is no keyword
@@ -1051,9 +1051,9 @@ fn sig_of(s: &Symbol) -> String {
 /// the kind line of a symbol's hover: "Funktion", "Parameter von greet", "lokale Variable in
 /// handle"
 fn kind_of(idx: &Index, s: &Symbol) -> String {
-    let w = if s.import.is_some() { "Modul" } else { s.kind.word() };
+    let w = if s.import.is_some() { t!("Modul") } else { s.kind.word() };
     match s.parent.map(|p| idx.symbols[p].name.as_str()) {
-        Some(p) if s.kind == SymKind::Param => format!("{} von {}", w, p),
+        Some(p) if s.kind == SymKind::Param => tf!("{} von {}", w, p),
         Some(p) => format!("{} in {}", w, p),
         None => String::from(w),
     }
@@ -1117,24 +1117,24 @@ fn refs_of(idx: &Index, sym: usize) -> Vec<Span> {
 /// see the module comment
 pub fn rename(src: &str, pos: u32, new: &str) -> Result<Vec<Edit>, String> {
     if TokKind::keyword(new).is_some() {
-        return Err(format!("{} ist ein Schlüsselwort und kann kein Name sein", new));
+        return Err(tf!("{} ist ein Schlüsselwort und kann kein Name sein", new));
     }
     if !is_name(new) {
-        return Err(format!("„{}“ ist kein gültiger Name (Buchstaben, Ziffern und _, nicht vorn eine Ziffer)", new));
+        return Err(tf!("„{}“ ist kein gültiger Name (Buchstaben, Ziffern und _, nicht vorn eine Ziffer)", new));
     }
     let prog = match crate::parse("", src) {
         Ok(p) => p,
-        Err(d) => return Err(format!("Umbenennen geht erst ohne Syntaxfehler (Zeile {}: {})", d[0].line, d[0].msg)),
+        Err(d) => return Err(tf!("Umbenennen geht erst ohne Syntaxfehler (Zeile {}: {})", d[0].line, d[0].msg)),
     };
     let idx = index_of(&prog, src);
-    let Some(sym) = idx.at(pos) else { return Err(String::from("Hier steht kein Name, der in diesem Skript deklariert ist")) };
+    let Some(sym) = idx.at(pos) else { return Err(String::from(t!("Hier steht kein Name, der in diesem Skript deklariert ist"))) };
     let s = &idx.symbols[sym];
     if s.name == new {
         return Ok(Vec::new());
     }
     // the same scope
     if let Some(o) = idx.symbols.iter().find(|o| o.name == new && o.scope_id == s.scope_id) {
-        return Err(format!("{} ist hier schon deklariert (Zeile {})", new, o.span.line));
+        return Err(tf!("{} ist hier schon deklariert (Zeile {})", new, o.span.line));
     }
     let spans = refs_of(&idx, sym);
     // (S3) a shorthand {a} keeps its key: {a: new}
@@ -1164,7 +1164,7 @@ pub fn rename(src: &str, pos: u32, new: &str) -> Result<Vec<Edit>, String> {
     };
     let (prog2, errs) = crate::parse_partial("", &after);
     if !errs.is_empty() {
-        return Err(format!("{} lässt sich hier nicht verwenden", new));
+        return Err(tf!("{} lässt sich hier nicht verwenden", new));
     }
     let idx2 = index_of(&prog2, &after);
     let decl_of = |ix: &Index, u: Option<usize>| u.map(|i| ix.symbols[i].span.start);
@@ -1175,13 +1175,13 @@ pub fn rename(src: &str, pos: u32, new: &str) -> Result<Vec<Edit>, String> {
         let got = decl_of(&idx2, u2.sym);
         if got != want {
             let line = if u.sym == Some(sym) { got.and_then(|g| idx2.symbols.iter().find(|x| x.span.start == g)).map_or(u.span.line, |x| x.span.line) } else { u.span.line };
-            return Err(format!("Der Name {} ist hier schon vergeben (Zeile {})", new, line));
+            return Err(tf!("Der Name {} ist hier schon vergeben (Zeile {})", new, line));
         }
     }
     let before = crate::check::resolve(&prog, &[]).iter().filter(|x| x.error).count();
     let now = crate::check::resolve(&prog2, &[]).iter().filter(|x| x.error).count();
     if now > before {
-        return Err(format!("{} ist in diesem Gültigkeitsbereich schon deklariert", new));
+        return Err(tf!("{} ist in diesem Gültigkeitsbereich schon deklariert", new));
     }
     Ok(edits)
 }
@@ -1479,8 +1479,8 @@ fn names(src: &str, toks: &[Tok], idx: &Index, bodies: &[(u32, u32)], start: u32
         }
         taken.push(String::from(b));
         let (kind, detail, doc) = match lsdoc::doc(b) {
-            Some(d) => (ItemKind::Function, lib_detail(d, false), String::from(d.text)),
-            None => (ItemKind::Module, String::from(b), String::from("Modul der Standardbibliothek")),
+            Some(d) => (ItemKind::Function, lib_detail(d, false), String::from(d.doc())),
+            None => (ItemKind::Module, String::from(b), String::from(t!("Modul der Standardbibliothek"))),
         };
         c.push(Cand { item: Item { label: String::from(b), kind, detail, doc }, rank: 3 });
     }
@@ -1506,7 +1506,7 @@ fn names(src: &str, toks: &[Tok], idx: &Index, bodies: &[(u32, u32)], start: u32
     }
     for w in words {
         if !c.iter().any(|x| x.item.label == w) {
-            c.push(Cand { item: Item { label: String::from(w), kind: ItemKind::Keyword, detail: String::from("Schlüsselwort"), doc: String::new() }, rank: 4 });
+            c.push(Cand { item: Item { label: String::from(w), kind: ItemKind::Keyword, detail: String::from(t!("Schlüsselwort")), doc: String::new() }, rank: 4 });
         }
     }
 }
@@ -1553,7 +1553,7 @@ fn lib_methods(ty: &str, c: &mut Vec<Cand>) {
             }
             continue;
         }
-        c.push(Cand { item: Item { label: String::from(short), kind: ItemKind::Method, detail: lib_detail(d, true), doc: String::from(d.text) }, rank: 3 });
+        c.push(Cand { item: Item { label: String::from(short), kind: ItemKind::Method, detail: lib_detail(d, true), doc: String::from(d.doc()) }, rank: 3 });
     }
 }
 
@@ -1599,7 +1599,7 @@ fn typed_members(types: Option<&Types>, k: Known, cx: &Context, c: &mut Vec<Cand
             let lib = crate::api::list_of(t).map_or(t, |_| "list");
             if let Some(ty) = api.get_type(t) {
                 for p in &ty.props {
-                    let ro = if p.readonly { " (nur lesbar)" } else { "" };
+                    let ro = if p.readonly { format!(" ({})", t!("nur lesbar")) } else { String::new() };
                     c.push(Cand { item: Item { label: p.name.clone(), kind: ItemKind::Value, detail: format!("{}.{}{}", ty.name, p.label().trim_start_matches("readonly "), ro), doc: p.doc.clone() }, rank: 2 });
                 }
                 for m in &ty.methods {
@@ -1607,9 +1607,9 @@ fn typed_members(types: Option<&Types>, k: Known, cx: &Context, c: &mut Vec<Cand
                 }
                 if !ty.events.is_empty() {
                     let evs: Vec<&str> = ty.events.iter().map(|e| e.name.as_str()).collect();
-                    let doc = format!("Ereignisse: {}", evs.join(", "));
-                    c.push(Cand { item: Item { label: String::from("on"), kind: ItemKind::Method, detail: format!("{}.on(event: str, f: fn)", ty.name), doc: format!("Ruft f(e) bei jedem Ereignis event auf. {}", doc) }, rank: 3 });
-                    c.push(Cand { item: Item { label: String::from("off"), kind: ItemKind::Method, detail: format!("{}.off(event: str, f: fn)", ty.name), doc: format!("Nimmt f (ohne f: alle Funktionen) für event wieder weg. {}", doc) }, rank: 3 });
+                    let doc = tf!("Ereignisse: {}", evs.join(", "));
+                    c.push(Cand { item: Item { label: String::from("on"), kind: ItemKind::Method, detail: format!("{}.on(event: str, f: fn)", ty.name), doc: tf!("Ruft f(e) bei jedem Ereignis event auf. {}", doc) }, rank: 3 });
+                    c.push(Cand { item: Item { label: String::from("off"), kind: ItemKind::Method, detail: format!("{}.off(event: str, f: fn)", ty.name), doc: tf!("Nimmt f (ohne f: alle Funktionen) für event wieder weg. {}", doc) }, rank: 3 });
                 }
             } else if matches!(lib, "str" | "list" | "map" | "bytes") {
                 lib_methods(lib, c);
@@ -1656,7 +1656,7 @@ fn members(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, cx: &Context,
                 for d in lsdoc::DOCS.iter().filter(|d| d.name.starts_with(&pre)) {
                     let short = &d.name[pre.len()..];
                     let kind = if d.params.is_none() { ItemKind::Constant } else { ItemKind::Function };
-                    c.push(Cand { item: Item { label: String::from(short), kind, detail: lib_detail(d, false), doc: String::from(d.text) }, rank: 3 });
+                    c.push(Cand { item: Item { label: String::from(short), kind, detail: lib_detail(d, false), doc: String::from(d.doc()) }, rank: 3 });
                 }
             }
             if !any {
@@ -1701,7 +1701,7 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
         let f = &s.forms[s.form];
         let &(a, b) = f.params.get(f.active)?;
         let callee = f.label.split('(').next().unwrap_or("");
-        return Some(Hover { span, sig: String::from(&f.label[a as usize..b as usize]), kind: format!("Parameter von {}", callee), doc: f.doc.clone() });
+        return Some(Hover { span, sig: String::from(&f.label[a as usize..b as usize]), kind: tf!("Parameter von {}", callee), doc: f.doc.clone() });
     }
     if let Some(s) = idx.sym_of(name, t.start) {
         let s2 = &idx.symbols[s];
@@ -1714,7 +1714,7 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
     }
     if let Some(g) = cx.api.and_then(|api| api.global(name).map(|g| (api, g))) {
         let it = global_item(g.0, name, g.1);
-        let kind = if it.kind == ItemKind::Module { "Namensraum des Hosts" } else { "Name des Hosts" };
+        let kind = if it.kind == ItemKind::Module { t!("Namensraum des Hosts") } else { t!("Name des Hosts") };
         // (S3) a function with several forms: each on a line of its own
         let forms = global_forms(g.0, name);
         if forms.len() > 1 {
@@ -1724,16 +1724,16 @@ pub fn hover<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<Hove
         return Some(Hover { span, sig: it.detail, kind: String::from(kind), doc: it.doc });
     }
     if let Some(h) = cx.host.iter().find(|h| h.name == name) {
-        return Some(Hover { span, sig: host_detail(h), kind: String::from("Name des Hosts"), doc: String::from(h.doc) });
+        return Some(Hover { span, sig: host_detail(h), kind: String::from(t!("Name des Hosts")), doc: String::from(h.doc) });
     }
     if let Some(d) = lsdoc::doc(name) {
-        return Some(Hover { span, sig: lib_detail(d, false), kind: String::from("eingebaut"), doc: String::from(d.text) });
+        return Some(Hover { span, sig: lib_detail(d, false), kind: String::from(t!("eingebaut")), doc: String::from(d.doc()) });
     }
     if lsdoc::MODULES.contains(&name) {
-        return Some(Hover { span, sig: String::from(name), kind: String::from("Modul der Standardbibliothek"), doc: String::new() });
+        return Some(Hover { span, sig: String::from(name), kind: String::from(t!("Modul der Standardbibliothek")), doc: String::new() });
     }
     if cx.host.iter().any(|h| h.name.split('.').next() == Some(name)) || cx.api.is_some_and(|a| a.is_namespace(name)) {
-        return Some(Hover { span, sig: String::from(name), kind: String::from("Name des Hosts"), doc: String::new() });
+        return Some(Hover { span, sig: String::from(name), kind: String::from(t!("Name des Hosts")), doc: String::new() });
     }
     None
 }
@@ -1788,27 +1788,27 @@ fn typed_member_doc(api: &Api, k: Known, name: &str) -> Option<(String, String, 
             let it = global_item(api, name, g);
             if forms.len() > 1 {
                 let (sig, doc) = forms_text(&forms);
-                return Some((sig, String::from("Name des Hosts"), doc));
+                return Some((sig, String::from(t!("Name des Hosts")), doc));
             }
-            Some((it.detail, String::from("Name des Hosts"), it.doc))
+            Some((it.detail, String::from(t!("Name des Hosts")), it.doc))
         }
         Known::Ty(t) => {
             let t = crate::api::member_type(&t);
             let lib = crate::api::list_of(t).map_or(t, |_| "list");
             let Some(ty) = api.get_type(t) else {
-                return method_doc(lib, name).map(|(s, d)| (s, String::from("Standardbibliothek"), d));
+                return method_doc(lib, name).map(|(s, d)| (s, String::from(t!("Standardbibliothek")), d));
             };
             if let Some(p) = ty.find_prop(name) {
-                let ro = if p.readonly { ", nur lesbar" } else { "" };
-                return Some((format!("{}.{}", ty.name, p.label().trim_start_matches("readonly ")), format!("Eigenschaft von {}{}", ty.name, ro), p.doc.clone()));
+                let ro = if p.readonly { format!(", {}", t!("nur lesbar")) } else { String::new() };
+                return Some((format!("{}.{}", ty.name, p.label().trim_start_matches("readonly ")), tf!("Eigenschaft von {}{}", ty.name, ro), p.doc.clone()));
             }
             if !forms.is_empty() {
                 let (sig, doc) = forms_text(&forms);
-                return Some((sig, format!("Methode von {}", ty.name), doc));
+                return Some((sig, tf!("Methode von {}", ty.name), doc));
             }
             if (name == "on" || name == "off") && !ty.events.is_empty() {
                 let evs: Vec<String> = ty.events.iter().map(|e| e.label()).collect();
-                return Some((format!("{}.{}(event: str, f: fn)", ty.name, name), String::from("Ereignisse"), evs.join("\n")));
+                return Some((format!("{}.{}(event: str, f: fn)", ty.name, name), String::from(t!("Ereignisse")), evs.join("\n")));
             }
             None
         }
@@ -1822,20 +1822,20 @@ fn member_doc(src: &str, toks: &[Tok], idx: &Index, r: Option<usize>, name: &str
     {
         return typed_member_doc(api, k, name);
     }
-    let lib = String::from("Standardbibliothek");
+    let lib = String::from(t!("Standardbibliothek"));
     match recv_of(src, toks, idx, r) {
         Recv::Import(path) => {
             let (mi, _) = module(cx, &path)?;
             let s = mi.symbols.iter().find(|s| s.name == name && matches!(s.kind, SymKind::Global | SymKind::Fn) && s.parent.is_none())?;
-            Some((sig_of(s), format!("{} aus {}", s.kind.word(), path), s.doc.clone()))
+            Some((sig_of(s), tf!("{} aus {}", s.kind.word(), path), s.doc.clone()))
         }
         Recv::Name(n) => {
             let full = format!("{}.{}", n, name);
             if let Some(h) = cx.host.iter().find(|h| h.name == full) {
-                return Some((host_detail(h), String::from("Name des Hosts"), String::from(h.doc)));
+                return Some((host_detail(h), String::from(t!("Name des Hosts")), String::from(h.doc)));
             }
             if let Some(d) = lsdoc::doc(&full) {
-                return Some((lib_detail(d, false), lib, String::from(d.text)));
+                return Some((lib_detail(d, false), lib, String::from(d.doc())));
             }
             method_doc("", name).map(|(s, d)| (s, lib, d))
         }
@@ -1849,7 +1849,7 @@ fn method_doc(ty: &str, name: &str) -> Option<(String, String)> {
     let found: Vec<&lsdoc::Doc> = tys.iter().filter_map(|t| lsdoc::doc(&format!("{}.{}", t, name)).filter(|d| !d.recv.is_empty())).collect();
     let first = found.first()?;
     let sigs: Vec<String> = found.iter().map(|d| lib_detail(d, true)).collect();
-    Some((sigs.join(" · "), String::from(first.text)))
+    Some((sigs.join(" · "), String::from(first.doc())))
 }
 
 /// see the module comment
@@ -1933,7 +1933,7 @@ pub fn signature<'a>(src: &str, pos: u32, cx: impl Into<Context<'a>>) -> Option<
                 match (typed.is_empty(), cx.host.iter().find(|h| h.name == name && h.params.is_some()), lsdoc::doc(name)) {
                     (false, _, _) => typed.into_iter().map(|(l, d, s)| (l, d, Some(s))).collect(),
                     (true, Some(h), _) => alloc::vec![(host_detail(h), String::from(h.doc), None)],
-                    (true, None, Some(d)) if d.params.is_some() => alloc::vec![(lib_detail(d, false), String::from(d.text), None)],
+                    (true, None, Some(d)) if d.params.is_some() => alloc::vec![(lib_detail(d, false), String::from(d.doc()), None)],
                     _ => return None,
                 }
             }

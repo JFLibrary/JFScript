@@ -24,7 +24,6 @@
 //   argument; positional arguments come first.  {a, b} in a map literal is {a: a, b: b}.
 
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -86,9 +85,9 @@ fn closer(k: TokKind) -> TokKind {
 
 fn closer_name(k: TokKind) -> &'static str {
     match k {
-        TokKind::RParen => "eine schließende Klammer )",
-        TokKind::RBracket => "eine schließende eckige Klammer ]",
-        _ => "eine schließende geschweifte Klammer }",
+        TokKind::RParen => de!("eine schließende Klammer )"),
+        TokKind::RBracket => de!("eine schließende eckige Klammer ]"),
+        _ => de!("eine schließende geschweifte Klammer }"),
     }
 }
 
@@ -189,20 +188,20 @@ impl<'a> Parser<'a> {
     fn unexpected(&self, t: Tok) -> String {
         let s = self.text(t);
         match t.kind {
-            TokKind::Ident => format!("Unerwarteter Name {}", s),
-            TokKind::Int | TokKind::Float => format!("Unerwartete Zahl {}", s),
-            TokKind::Str | TokKind::StrHead | TokKind::StrMid | TokKind::StrTail => String::from("Unerwartete Zeichenkette"),
+            TokKind::Ident => tf!("Unerwarteter Name {}", s),
+            TokKind::Int | TokKind::Float => tf!("Unerwartete Zahl {}", s),
+            TokKind::Str | TokKind::StrHead | TokKind::StrMid | TokKind::StrTail => String::from(t!("Unerwartete Zeichenkette")),
             TokKind::LParen | TokKind::RParen | TokKind::LBracket | TokKind::RBracket | TokKind::LBrace | TokKind::RBrace => {
-                format!("Unerwartete Klammer {}", s)
+                tf!("Unerwartete Klammer {}", s)
             }
-            TokKind::Comma => String::from("Unerwartetes Komma"),
-            TokKind::Dot => String::from("Unerwarteter Punkt"),
-            TokKind::Colon => String::from("Unerwarteter Doppelpunkt"),
-            TokKind::Semi => String::from("Unerwartetes Semikolon"),
-            TokKind::Eof => String::from("Unerwartetes Ende des Skripts"),
-            TokKind::Error => format!("Unerwartetes Zeichen {}", s),
-            k if k.is_keyword() => format!("Unerwartetes Schlüsselwort {}", s),
-            _ => format!("Unerwarteter Operator {}", s),
+            TokKind::Comma => String::from(t!("Unerwartetes Komma")),
+            TokKind::Dot => String::from(t!("Unerwarteter Punkt")),
+            TokKind::Colon => String::from(t!("Unerwarteter Doppelpunkt")),
+            TokKind::Semi => String::from(t!("Unerwartetes Semikolon")),
+            TokKind::Eof => String::from(t!("Unerwartetes Ende des Skripts")),
+            TokKind::Error => tf!("Unerwartetes Zeichen {}", s),
+            k if k.is_keyword() => tf!("Unerwartetes Schlüsselwort {}", s),
+            _ => tf!("Unerwarteter Operator {}", s),
         }
     }
 
@@ -239,10 +238,8 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         let line = if self.after_prev() { self.prev().line } else { self.peek().line };
-        let mut msg = format!("Hier fehlt {}", closer_name(want));
-        if o.line != line {
-            msg.push_str(&format!(" (geöffnet in Zeile {})", o.line));
-        }
+        let want = crate::msg::tr(closer_name(want));
+        let msg = if o.line != line { tf!("Hier fehlt {} (geöffnet in Zeile {})", want, o.line) } else { tf!("Hier fehlt {}", want) };
         if self.boundary() || self.closes_outer() {
             self.error_here(msg);
             self.open.pop();
@@ -286,9 +283,9 @@ impl<'a> Parser<'a> {
         self.depth += 1;
         if self.depth + chain as u32 > MAX_DEPTH {
             let msg = if chain {
-                format!("Der Ausdruck ist zu lang (höchstens {} Ebenen) – teile ihn mit let auf", MAX_DEPTH)
+                tf!("Der Ausdruck ist zu lang (höchstens {} Ebenen) – teile ihn mit let auf", MAX_DEPTH)
             } else {
-                format!("Zu tief verschachtelt (höchstens {} Ebenen)", MAX_DEPTH)
+                tf!("Zu tief verschachtelt (höchstens {} Ebenen)", MAX_DEPTH)
             };
             return self.fail(msg);
         }
@@ -307,7 +304,7 @@ impl<'a> Parser<'a> {
                 TokKind::Eof => break,
                 TokKind::RBrace if !top => break,
                 TokKind::RBrace => {
-                    self.error(span(t), "Unerwartete Klammer }: hier ist kein Block offen");
+                    self.error(span(t), t!("Unerwartete Klammer }: hier ist kein Block offen"));
                     self.advance();
                     continue;
                 }
@@ -341,9 +338,9 @@ impl<'a> Parser<'a> {
         let t = self.peek();
         if t.kind != TokKind::LBrace {
             let msg = if t.kind == TokKind::Assign {
-                "Zum Vergleichen schreibe == statt ="
+                t!("Zum Vergleichen schreibe == statt =")
             } else {
-                "Hier fehlt eine öffnende geschweifte Klammer { für den Block"
+                t!("Hier fehlt eine öffnende geschweifte Klammer { für den Block")
             };
             return self.fail(msg);
         }
@@ -369,8 +366,8 @@ impl<'a> Parser<'a> {
             TokKind::Try => self.try_stmt(),
             TokKind::Break | TokKind::Continue | TokKind::Return | TokKind::Throw => self.jump_stmt(),
             TokKind::LBrace => self.block_stmt(),
-            TokKind::Else => self.fail("else ohne vorheriges if"),
-            TokKind::Catch => self.fail("catch ohne vorheriges try"),
+            TokKind::Else => self.fail(t!("else ohne vorheriges if")),
+            TokKind::Catch => self.fail(t!("catch ohne vorheriges try")),
             _ => self.expr_stmt(),
         }
     }
@@ -392,7 +389,7 @@ impl<'a> Parser<'a> {
             TokKind::Continue => StmtKind::Continue,
             TokKind::Return if self.stmt_ends() => StmtKind::Return(None),
             TokKind::Return => StmtKind::Return(Some(self.expr()?)),
-            _ if self.stmt_ends() => return self.fail("Nach throw fehlt ein Wert (in derselben Zeile)"),
+            _ if self.stmt_ends() => return self.fail(t!("Nach throw fehlt ein Wert (in derselben Zeile)")),
             _ => StmtKind::Throw(self.expr()?),
         };
         let sp = self.since(kw);
@@ -422,28 +419,29 @@ impl<'a> Parser<'a> {
         }
         let t = self.peek();
         let msg = match t.kind {
-            TokKind::DotDot => String::from("Bereiche a..b gibt es nur in for-Schleifen"),
-            _ => format!("{} – fehlt ein Operator oder ein Zeilenumbruch?", self.unexpected(t)),
+            TokKind::DotDot => String::from(t!("Bereiche a..b gibt es nur in for-Schleifen")),
+            _ => tf!("{} – fehlt ein Operator oder ein Zeilenumbruch?", self.unexpected(t)),
         };
         self.fail(msg)
     }
 
-    fn name(&mut self, msg: &str) -> PResult<Name> {
+    /// msg: the message when there is no name (a key of msg.rs: de!(..), translated here)
+    fn name(&mut self, msg: &'static str) -> PResult<Name> {
         let t = self.peek();
         if t.kind == TokKind::Ident {
             self.advance();
             return Ok(Name { text: self.text(t).to_string(), span: span(t) });
         }
         if t.kind.is_keyword() && !self.after_prev() {
-            return self.fail(format!("{} ist ein Schlüsselwort und kann kein Name sein", self.text(t)));
+            return self.fail(tf!("{} ist ein Schlüsselwort und kann kein Name sein", self.text(t)));
         }
-        self.fail(msg)
+        self.fail(crate::msg::tr(msg))
     }
 
     #[inline(never)]
     fn let_stmt(&mut self) -> PResult<Stmt> {
         let kw = self.advance();
-        let pat = self.pattern("Nach let fehlt ein Name")?;
+        let pat = self.pattern(de!("Nach let fehlt ein Name"))?;
         self.pending = Some(Box::new(Stmt { span: self.since(kw), kind: StmtKind::Let { pat: pat.clone(), init: None } }));
         let init = if self.at(TokKind::Assign) {
             self.advance();
@@ -451,9 +449,9 @@ impl<'a> Parser<'a> {
         } else if self.stmt_ends() && pat.name().is_some() {
             None
         } else if self.stmt_ends() {
-            return self.fail("Hier fehlt = mit dem Wert, den das Muster zerlegt");
+            return self.fail(t!("Hier fehlt = mit dem Wert, den das Muster zerlegt"));
         } else {
-            return self.fail("Hier fehlt = nach dem Namen");
+            return self.fail(t!("Hier fehlt = nach dem Namen"));
         };
         let sp = self.since(kw);
         self.end_stmt()?;
@@ -465,7 +463,7 @@ impl<'a> Parser<'a> {
     /// a pattern: a name, [a, b, ...rest] or {a, b: c} (items and entries may have defaults);
     /// what: the message when there is none
     #[inline(never)]
-    fn pattern(&mut self, what: &str) -> PResult<Pattern> {
+    fn pattern(&mut self, what: &'static str) -> PResult<Pattern> {
         match self.peek().kind {
             TokKind::LBracket => self.list_pattern(),
             TokKind::LBrace => self.map_pattern(),
@@ -477,7 +475,7 @@ impl<'a> Parser<'a> {
     }
 
     /// a pattern with a default `p = e` (parameters, items and entries of patterns)
-    fn pattern_default(&mut self, what: &str) -> PResult<Pattern> {
+    fn pattern_default(&mut self, what: &'static str) -> PResult<Pattern> {
         let p = self.pattern(what)?;
         self.default_of(p)
     }
@@ -506,17 +504,17 @@ impl<'a> Parser<'a> {
         while !self.at(TokKind::RBracket) && !self.at(TokKind::Eof) {
             if self.at(TokKind::DotDotDot) {
                 let d = self.advance();
-                let n = self.name("Nach ... fehlt der Name für den Rest der Liste")?;
+                let n = self.name(de!("Nach ... fehlt der Name für den Rest der Liste"))?;
                 rest = Some(Box::new(Pattern { span: span(d).to(n.span), kind: PatKind::Name(n) }));
                 if self.at(TokKind::Comma) {
                     self.advance();
                 }
                 if !self.at(TokKind::RBracket) && !self.boundary() && !self.closes_outer() {
-                    return self.fail("Der Rest ...name steht am Ende des Musters");
+                    return self.fail(t!("Der Rest ...name steht am Ende des Musters"));
                 }
                 break;
             }
-            items.push(self.pattern_default("Hier fehlt ein Name oder ein Muster [..] oder {..}")?);
+            items.push(self.pattern_default(de!("Hier fehlt ein Name oder ein Muster [..] oder {..}"))?);
             if self.at(TokKind::Comma) {
                 self.advance();
                 continue;
@@ -524,14 +522,14 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RBracket) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende eckige Klammer ]");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende eckige Klammer ]"));
         }
         self.nl_sig = saved;
         self.close()?;
         self.depth -= 1;
         let sp = self.since(o);
         if items.is_empty() && rest.is_none() {
-            self.error(sp, "Ein leeres Muster [] bindet nichts");
+            self.error(sp, t!("Ein leeres Muster [] bindet nichts"));
         }
         Ok(Pattern { span: sp, kind: PatKind::List(items, rest) })
     }
@@ -555,21 +553,21 @@ impl<'a> Parser<'a> {
                     if self.boundary() || self.closes_outer() {
                         break;
                     }
-                    return self.fail("Hier fehlt ein Name (der Schlüssel) oder Schlüssel: Muster");
+                    return self.fail(t!("Hier fehlt ein Name (der Schlüssel) oder Schlüssel: Muster"));
                 }
             };
             self.advance();
             let p = if self.at(TokKind::Colon) {
                 self.advance();
-                self.pattern_default("Nach dem Doppelpunkt fehlt ein Name oder ein Muster")?
+                self.pattern_default(de!("Nach dem Doppelpunkt fehlt ein Name oder ein Muster"))?
             } else if t.kind == TokKind::Ident {
                 // {a} and {a = 1}: the key is the name
                 let p = Pattern { span: key.span, kind: PatKind::Name(key.clone()) };
                 self.default_of(p)?
             } else if t.kind == TokKind::Str {
-                return self.fail("Nach einem Schlüssel in Anführungszeichen fehlt : und ein Name");
+                return self.fail(t!("Nach einem Schlüssel in Anführungszeichen fehlt : und ein Name"));
             } else {
-                self.error(key.span, format!("{} ist ein Schlüsselwort und kann kein Name sein – schreibe {}: name", key.text, key.text));
+                self.error(key.span, tf!("{} ist ein Schlüsselwort und kann kein Name sein – schreibe {}: name", key.text, key.text));
                 return Err(Fail);
             };
             entries.push((key, p));
@@ -580,14 +578,14 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RBrace) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende geschweifte Klammer }");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende geschweifte Klammer }"));
         }
         self.nl_sig = saved;
         self.close()?;
         self.depth -= 1;
         let sp = self.since(o);
         if entries.is_empty() {
-            self.error(sp, "Ein leeres Muster {} bindet nichts");
+            self.error(sp, t!("Ein leeres Muster {} bindet nichts"));
         }
         Ok(Pattern { span: sp, kind: PatKind::Map(entries) })
     }
@@ -607,7 +605,7 @@ impl<'a> Parser<'a> {
         match e.kind {
             ExprKind::List(items) => {
                 if items.is_empty() {
-                    self.error(sp, "Ein leeres Muster [] bindet nichts");
+                    self.error(sp, t!("Ein leeres Muster [] bindet nichts"));
                     return Err(Fail);
                 }
                 let mut v = Vec::with_capacity(items.len());
@@ -618,7 +616,7 @@ impl<'a> Parser<'a> {
             }
             ExprKind::Var(_) | ExprKind::Field(..) | ExprKind::Index(..) => Ok(Pattern { span: sp, kind: PatKind::Target(Box::new(e)) }),
             _ => {
-                self.error(sp, "Im Muster vor = muss eine Variable, ein Feld, ein Index oder eine Liste davon stehen");
+                self.error(sp, t!("Im Muster vor = muss eine Variable, ein Feld, ein Index oder eine Liste davon stehen"));
                 Err(Fail)
             }
         }
@@ -627,7 +625,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn fn_decl(&mut self) -> PResult<Stmt> {
         let kw = self.advance();
-        let name = self.name("Nach fn fehlt ein Name")?;
+        let name = self.name(de!("Nach fn fehlt ein Name"))?;
         let stub = FnDef { span: self.since(kw), name: Some(name.clone()), params: Vec::new(), body: Block { span: name.span, stmts: Vec::new() } };
         self.pending = Some(Box::new(Stmt { span: stub.span, kind: StmtKind::Fn(stub) }));
         let f = self.fn_rest(kw, Some(name))?;
@@ -638,7 +636,7 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn fn_rest(&mut self, kw: Tok, name: Option<Name>) -> PResult<FnDef> {
         if !self.at(TokKind::LParen) {
-            return self.fail("Hier fehlt ( mit der Parameterliste");
+            return self.fail(t!("Hier fehlt ( mit der Parameterliste"));
         }
         self.open_bracket();
         let saved = self.nl_sig;
@@ -646,7 +644,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while !self.at(TokKind::RParen) && !(self.at(TokKind::LBrace) && !self.map_pattern_ahead()) && !self.at(TokKind::Eof) {
             // (S3) a pattern, with a default: fn f(a, [x, y], {w, h}, b = 2)
-            params.push(self.pattern_default("Hier fehlt ein Parametername")?);
+            params.push(self.pattern_default(de!("Hier fehlt ein Parametername"))?);
             if self.at(TokKind::Comma) {
                 self.advance();
                 continue;
@@ -654,12 +652,12 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RParen) || self.at(TokKind::LBrace) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende Klammer )");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende Klammer )"));
         }
         self.nl_sig = saved;
         if self.at(TokKind::LBrace) {
             // fn f(a {: the body follows
-            self.error_here("Hier fehlt eine schließende Klammer )");
+            self.error_here(t!("Hier fehlt eine schließende Klammer )"));
             self.open.pop();
         } else {
             self.close()?;
@@ -701,15 +699,15 @@ impl<'a> Parser<'a> {
 
     /// after `for` (a loop or a comprehension's clause): a, b in src or lo..hi
     fn for_head(&mut self) -> PResult<(Pattern, Option<Pattern>, ForSrc)> {
-        let a = self.pattern("Nach for fehlt ein Variablenname")?;
+        let a = self.pattern(de!("Nach for fehlt ein Variablenname"))?;
         let b = if self.at(TokKind::Comma) {
             self.advance();
-            Some(self.pattern("Nach dem Komma fehlt ein zweiter Variablenname")?)
+            Some(self.pattern(de!("Nach dem Komma fehlt ein zweiter Variablenname"))?)
         } else {
             None
         };
         if !self.at(TokKind::In) {
-            return self.fail("Hier fehlt in, z. B. for x in liste { … }");
+            return self.fail(t!("Hier fehlt in, z. B. for x in liste { … }"));
         }
         self.advance();
         let first = self.expr()?;
@@ -727,7 +725,7 @@ impl<'a> Parser<'a> {
         let kw = self.advance();
         let body = self.block()?;
         if !self.at(TokKind::Catch) {
-            return self.fail("Nach dem try-Block fehlt catch");
+            return self.fail(t!("Nach dem try-Block fehlt catch"));
         }
         self.advance();
         let var = if self.at(TokKind::Ident) { Some(self.name("")?) } else { None };
@@ -763,7 +761,7 @@ impl<'a> Parser<'a> {
             return Ok(Stmt { span: sp, kind: StmtKind::AssignPat { pat, value } });
         }
         if !matches!(e.kind, ExprKind::Var(_) | ExprKind::Field(..) | ExprKind::Index(..)) {
-            let msg = format!("Vor {} muss eine Variable, ein Feld oder ein Index stehen", self.text(t));
+            let msg = tf!("Vor {} muss eine Variable, ein Feld oder ein Index stehen", self.text(t));
             self.error(e.span, msg);
             return Err(Fail);
         }
@@ -789,7 +787,7 @@ impl<'a> Parser<'a> {
         self.enter(true)?;
         let a = self.expr()?;
         if !self.at(TokKind::Colon) {
-            return self.fail("Hier fehlt : mit dem Wert für den anderen Fall (c ? a : b)");
+            return self.fail(t!("Hier fehlt : mit dem Wert für den anderen Fall (c ? a : b)"));
         }
         self.advance();
         let b = self.expr()?;
@@ -810,7 +808,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             if (bp == BP_EQ || bp == BP_CMP) && last == bp {
-                return self.fail("Vergleiche lassen sich nicht verketten – schreibe z. B. a < b && b < c");
+                return self.fail(t!("Vergleiche lassen sich nicht verketten – schreibe z. B. a < b && b < c"));
             }
             self.advance();
             self.enter(true)?;
@@ -871,7 +869,7 @@ impl<'a> Parser<'a> {
                     self.advance();
                     let n = self.peek();
                     if n.kind != TokKind::Ident && !(n.kind.is_keyword() && !self.after_prev()) {
-                        return self.fail("Nach dem Punkt fehlt ein Name");
+                        return self.fail(t!("Nach dem Punkt fehlt ein Name"));
                     }
                     self.advance();
                     let name = Name { text: self.text(n).to_string(), span: span(n) };
@@ -909,23 +907,23 @@ impl<'a> Parser<'a> {
             TokKind::Fn if self.peek_at(1).kind == TokKind::Ident => {
                 if self.after_prev() {
                     // a declaration on the next line: the expression above is missing
-                    self.error_here("Hier fehlt ein Ausdruck");
+                    self.error_here(t!("Hier fehlt ein Ausdruck"));
                     return Ok(Expr { span: Span { end: t.start, ..span(t) }, kind: ExprKind::Nil });
                 }
-                return self.fail("Eine Funktion als Wert hat keinen Namen – schreibe fn(…) { … }");
+                return self.fail(t!("Eine Funktion als Wert hat keinen Namen – schreibe fn(…) { … }"));
             }
             TokKind::Fn => return self.fn_lit(),
-            TokKind::DotDot => return self.fail("Bereiche a..b gibt es nur in for-Schleifen"),
-            TokKind::DotDotDot => return self.fail("... gibt es nur vor dem Rest eines Musters: let [a, ...rest] = liste"),
+            TokKind::DotDot => return self.fail(t!("Bereiche a..b gibt es nur in for-Schleifen")),
+            TokKind::DotDotDot => return self.fail(t!("... gibt es nur vor dem Rest eines Musters: let [a, ...rest] = liste")),
             _ => {
                 let after = self.pos > self.stmt_start;
                 if after && (self.boundary() || matches!(t.kind, TokKind::RParen | TokKind::RBracket | TokKind::RBrace
                     | TokKind::Comma | TokKind::Semi | TokKind::StrMid | TokKind::StrTail)) {
                     // the expression is missing, the rest still parses
-                    self.error_here("Hier fehlt ein Ausdruck");
+                    self.error_here(t!("Hier fehlt ein Ausdruck"));
                     return Ok(Expr { span: Span { end: t.start, ..span(t) }, kind: ExprKind::Nil });
                 }
-                let msg = if after { String::from("Hier fehlt ein Ausdruck") } else { self.unexpected(t) };
+                let msg = if after { String::from(t!("Hier fehlt ein Ausdruck")) } else { self.unexpected(t) };
                 return self.fail(msg);
             }
         };
@@ -956,7 +954,7 @@ impl<'a> Parser<'a> {
             v.push(self.expr()?);
             if self.at(TokKind::For) {
                 if v.len() > 1 {
-                    return self.fail("Vor for steht in einer Liste aus einer Schleife genau ein Ausdruck: [x * 2 for x in xs]");
+                    return self.fail(t!("Vor for steht in einer Liste aus einer Schleife genau ein Ausdruck: [x * 2 for x in xs]"));
                 }
                 let e = v.pop().unwrap_or(Expr { span: span(o), kind: ExprKind::Nil });
                 let clauses = self.clauses()?;
@@ -971,7 +969,7 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RBracket) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende eckige Klammer ]");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende eckige Klammer ]"));
         }
         self.nl_sig = saved;
         self.close()?;
@@ -1000,7 +998,7 @@ impl<'a> Parser<'a> {
         }
         self.depth -= out.len() as u32;
         if !self.at(TokKind::RBracket) && !self.boundary() && !self.closes_outer() {
-            return self.fail("Hier fehlt for, if oder eine schließende eckige Klammer ]");
+            return self.fail(t!("Hier fehlt for, if oder eine schließende eckige Klammer ]"));
         }
         Ok(out)
     }
@@ -1034,7 +1032,7 @@ impl<'a> Parser<'a> {
             } else {
                 let x = self.expr()?;
                 if named {
-                    self.error(x.span, "Nach einem benannten Argument sind alle weiteren benannt (name: wert)");
+                    self.error(x.span, t!("Nach einem benannten Argument sind alle weiteren benannt (name: wert)"));
                 }
                 v.push(x);
             }
@@ -1045,7 +1043,7 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RParen) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende Klammer )");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende Klammer )"));
         }
         self.nl_sig = saved;
         self.close()?;
@@ -1081,7 +1079,7 @@ impl<'a> Parser<'a> {
                     if self.boundary() || self.closes_outer() {
                         break;
                     }
-                    return self.fail("Hier fehlt ein Schlüssel: ein Name, eine Zeichenkette, eine Zahl oder [Ausdruck]");
+                    return self.fail(t!("Hier fehlt ein Schlüssel: ein Name, eine Zeichenkette, eine Zahl oder [Ausdruck]"));
                 }
             };
             if t.kind == TokKind::Ident && (self.at(TokKind::Comma) || self.at(TokKind::RBrace) || self.boundary() || self.closes_outer()) {
@@ -1090,7 +1088,7 @@ impl<'a> Parser<'a> {
                 kv.push((key, v));
             } else {
                 if !self.at(TokKind::Colon) {
-                    return self.fail("Hier fehlt ein Doppelpunkt : nach dem Schlüssel");
+                    return self.fail(t!("Hier fehlt ein Doppelpunkt : nach dem Schlüssel"));
                 }
                 self.advance();
                 let v = self.expr()?;
@@ -1103,7 +1101,7 @@ impl<'a> Parser<'a> {
             if self.at(TokKind::RBrace) || self.boundary() || self.closes_outer() {
                 break;
             }
-            return self.fail("Hier fehlt ein Komma , oder eine schließende geschweifte Klammer }");
+            return self.fail(t!("Hier fehlt ein Komma , oder eine schließende geschweifte Klammer }"));
         }
         self.nl_sig = saved;
         self.close()?;
@@ -1122,11 +1120,11 @@ impl<'a> Parser<'a> {
             let t = self.peek();
             if t.nl || t.kind == TokKind::Eof {
                 // the string ended at the line end (lex reported it)
-                self.error_here("Hier fehlt } am Ende von ${…}");
+                self.error_here(t!("Hier fehlt } am Ende von ${…}"));
                 break;
             }
             if matches!(t.kind, TokKind::StrMid | TokKind::StrTail) {
-                self.error(span(t), "Leeres ${}: hier fehlt ein Ausdruck");
+                self.error(span(t), t!("Leeres ${}: hier fehlt ein Ausdruck"));
             } else {
                 parts.push(self.expr()?);
             }
@@ -1142,7 +1140,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 _ => {
-                    self.error_here("Hier fehlt } am Ende von ${…}");
+                    self.error_here(t!("Hier fehlt } am Ende von ${…}"));
                     if t.nl || t.kind == TokKind::Eof {
                         break;
                     }

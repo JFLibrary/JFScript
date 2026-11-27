@@ -24,9 +24,9 @@ for n in config.args { print(greet(n)) }
 |---|---|
 | [`script/`](script/lib.rs) | the language: the crate `jfscript`, used as `script` (`script::compile`, `script::Vm`) |
 | [`jfs/`](jfs/README.md) | the runner `jfs`: `.jfs` files on the command line, like `python file.py` |
-| [`scripttest/`](scripttest/src/main.rs) | the self-checks: lexer, parser, VM, standard library, language services, modules |
+| [`scripttest/`](scripttest/src/main.rs) | the self-checks: lexer, parser, VM, standard library, language services, modules, the table of messages |
 | [`docs/LANGUAGE.md`](docs/LANGUAGE.md) | the language, its standard library, the host interface, modules, the debugger |
-| [`docs/HOST.md`](docs/HOST.md) | how an app gives scripts its objects: properties, methods, operators, events, and the description for the editor and the object catalogue |
+| [`docs/HOST.md`](docs/HOST.md) | how an app gives scripts its objects: properties, methods, operators, events, the description for the editor and the object catalogue, and the language of the messages (German or English) |
 | [`docs/RICHTUNG.md`](docs/RICHTUNG.md) | the direction (German): what JFScript is for and its stages |
 | [`tools/`](tools) | `linux_test.py` (the tests on Linux from Windows), `script_math_check.py` (the math against Python's decimal module, with `--java` against Java's StrictMath) |
 

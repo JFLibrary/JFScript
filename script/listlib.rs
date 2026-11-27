@@ -20,7 +20,6 @@
 // number (negative: a before b) or a bool (true: a before b).  The list is replaced at the
 // end, so an error or an exception in cmp leaves it as it was.  1 fuel per comparison.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -58,7 +57,7 @@ pub(crate) fn pop(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, E
 }
 
 fn outside<T>(f: &str, i: i64, n: usize) -> Result<T, Exc> {
-    err(format!("{}: Index {} liegt außerhalb der Liste (Länge {})", f, i, n))
+    err(tf!("{}: Index {} liegt außerhalb der Liste (Länge {})", f, i, n))
 }
 
 /// x before index i (0..=len)
@@ -197,7 +196,7 @@ pub(crate) fn reduce(vm: &mut Vm, host: &mut dyn Host, a: &[Value]) -> Result<Va
     } else {
         match items.split_first() {
             Some((first, rest)) => (*first, rest),
-            None => return err(format!("{}: Eine leere Liste braucht einen Startwert (init)", F)),
+            None => return err(tf!("{}: Eine leere Liste braucht einen Startwert (init)", F)),
         }
     };
     for x in rest {
@@ -218,7 +217,7 @@ fn order(vm: &Vm, a: Value, b: Value) -> Result<Ordering, Exc> {
         }),
         (Value::Str(x), Value::Str(y)) => Ok(heap::text(&vm.heap, x).cmp(heap::text(&vm.heap, y))),
         (Value::Bytes(x), Value::Bytes(y)) => Ok(vm.heap.bytes_of(x).cmp(vm.heap.bytes_of(y))),
-        _ => err(format!(
+        _ => err(tf!(
             "list.sort: {} und {} lassen sich nicht vergleichen – gib eine Vergleichsfunktion an",
             vm.type_of(a),
             vm.type_of(b)
@@ -247,7 +246,7 @@ impl Sorter<'_> {
             Value::Bool(x) => Ok(x),
             Value::Int(i) => Ok(i < 0),
             Value::Float(x) => Ok(num::lt(x, 0.0)),
-            v => err(format!("list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht {}", self.vm.type_of(v))),
+            v => err(tf!("list.sort: cmp muss eine Zahl oder bool zurückgeben, nicht {}", self.vm.type_of(v))),
         }
     }
 
@@ -329,10 +328,10 @@ fn finite(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc
         Value::Float(x) if !is_finite(x) => {
             let mut s = String::new();
             num::fmt(x, &mut s);
-            err(format!("{}: {} muss endlich sein, nicht {}", f, p, s))
+            err(tf!("{}: {} muss endlich sein, nicht {}", f, p, s))
         }
         v @ Value::Float(_) => Ok(v),
-        v => bad(vm, f, p, "eine Zahl", v),
+        v => bad(vm, f, p, t!("eine Zahl"), v),
     }
 }
 
@@ -358,7 +357,7 @@ pub(crate) fn range(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
     let max = max_items(vm);
     if let (Value::Int(s), Value::Int(e), Value::Int(d)) = (start, end, step) {
         if d == 0 {
-            return err(format!("{}: step darf nicht 0 sein", F));
+            return err(tf!("{}: step darf nicht 0 sein", F));
         }
         let (s, e, d) = (s as i128, e as i128, d as i128);
         let n = if d > 0 && e > s {
@@ -377,7 +376,7 @@ pub(crate) fn range(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value,
     }
     let (s, e, d) = (float_of(start), float_of(end), float_of(step));
     if d.to_bits() << 1 == 0 {
-        return err(format!("{}: step darf nicht 0 sein", F));
+        return err(tf!("{}: step darf nicht 0 sein", F));
     }
     let up = d.to_bits() >> 63 == 0;
     let at = |i: u64| if i == 0 { s } else { num::add(s, num::mul(num::from_i64(i as i64), d)) };
@@ -409,7 +408,7 @@ pub(crate) fn linspace(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Val
     let e = float_of(finite(vm, F, a, 1, "end")?);
     let n = want_int(vm, F, a, 2, "n")?;
     if n < 0 {
-        return err(format!("{}: n darf nicht negativ sein, nicht {}", F, n));
+        return err(tf!("{}: n darf nicht negativ sein, nicht {}", F, n));
     }
     if n as u64 > max_items(vm) {
         return Err(heap_full(vm));

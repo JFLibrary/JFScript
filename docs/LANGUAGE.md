@@ -11,6 +11,13 @@ float arithmetic in software (`script::num`), so a script gives the same bits on
 and a run split into slices of any size gives the same result as one uninterrupted run. The
 syntax and the editor helpers (`check`, `tokens`, `outline`) are in the crate comment.
 
+The messages are German, the language they were written in. (S3) A host may choose English
+instead, for all of them and for the texts of the editor helpers: `script::set_language("en")`
+once for the process (G9 of [RICHTUNG.md](RICHTUNG.md);
+[HOST.md](HOST.md#the-language-of-the-messages-s3) has the details). Keywords, names and the
+text of values stay the same in every language, so a script gives the same result under every
+host; only a caught message's text changes.
+
 ```rust
 use script::{Cx, Fail, Host, Limits, Status, Value, Vm};
 
@@ -132,8 +139,9 @@ impl Host for MyHost {
 * Limits (`Limits`): heap bytes (accounted the same way on every target), stack values, call
   depth, fuel per invocation, print output. Crossing one ends the invocation at once; scripts
   cannot catch it. Runtime errors (`1 / 0`, a bad index, wrong types, unknown functions) throw
-  a `str` with a German message that `try`/`catch` can catch; uncaught, they end the
-  invocation with an `Error` (`kind`, `msg`, `line`, `col`, `trace`). The VM stays usable:
+  a `str` with a message (German, or in the language the host chose) that `try`/`catch` can
+  catch; uncaught, they end the invocation with an `Error` (`kind`, `msg`, `line`, `col`,
+  `trace`). The VM stays usable:
   globals keep their values, `call` works again; `cancel()` drops a pending invocation.
 * `Vm: Clone + Send`: a clone is a full copy (heap included) that runs on independently, also
   from the middle of a yielded invocation; a `Program` is shared (`Arc`) between VMs.
@@ -264,8 +272,8 @@ let shard = "user:42".hash() % 8                     // FNV-1a, stable everywher
   maps in member order, numbers without a point or exponent ints (floats when they do not
   fit), the others floats; errors throw with the position:
   `json.decode: Hier fehlt ein Doppelpunkt (Zeile 1, Spalte 6)`.
-* Errors in arguments throw a catchable `str` in German, named after the function and the
-  parameter (`str.split: sep muss str sein, nicht int`,
+* Errors in arguments throw a catchable `str` (German unless the host chose a language), named
+  after the function and the parameter (`str.split: sep muss str sein, nicht int`,
   `list.insert: Index 5 liegt außerhalb der Liste (Länge 3)`).
 * Fuel follows the work, on top of the 1 of the call: 1 per new object, 1 per 64 bytes of text
   read or written, 1 per 8 list values and 1 per 4 map entries copied or visited, 1 per
@@ -563,7 +571,7 @@ let h = ls::hover(src, at, &cx);                         // "fn greet(name)\nFun
 let s = ls::signature(src, caret, &cx);                  // "greet(name, greeting)", active 1
 let d = ls::definition(src, at, &cx);                    // Location { path: None, span }
 let r = ls::references(src, at);                         // the declaration and every use
-let e = ls::rename(src, at, "count")?;                   // Vec<Edit> or a German reason
+let e = ls::rename(src, at, "count")?;                   // Vec<Edit> or a reason
 let new_src = ls::apply(src, &e);
 let folds = ls::folding(src);                            // Fold { line, end, kind }
 let outline = ls::symbols(src);                          // fns (nested ones as children), lets
@@ -586,7 +594,7 @@ let tidy = script::fmt::format(src)?;                    // or the syntax errors
 * Doc comments are the `///` lines right above a `fn` or `let`. Hover shows the signature
   (`fn greet(name)`, `let f = fn(a, b)`, `let m = import("x.jfs")`), the kind ("Parameter von
   greet", "lokale Variable in handle") and the doc; for the library and the host their
-  description (`ls::library_doc(name)` has the library's, German, our own words).
+  description (`ls::library_doc(name)` has the library's, in our own words, German or English).
 * Completion ranks the exact-case prefix first, then by kind: names in scope (locals before
   the script's globals), the host's names, the built-ins and library modules, keywords (the
   statement keywords only where a statement may start, `else` / `catch` after a `}`, `in` after

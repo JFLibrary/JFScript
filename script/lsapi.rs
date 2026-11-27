@@ -937,9 +937,9 @@ impl Diags<'_, '_> {
                         shorts.push(first);
                     }
                 }
-                let mut m = format!("Unbekannter Name {}", full);
+                let mut m = tf!("Unbekannter Name {}", full);
                 if let Some(c) = closest(&name.text, shorts.into_iter()) {
-                    m.push_str(&format!(" – meinst du {}{}?", pre, c));
+                    m = tf!("{} – meinst du {}?", m, format!("{}{}", pre, c));
                 }
                 self.warn(name, m);
             } else if let Use::Call(args) = how
@@ -955,47 +955,48 @@ impl Diags<'_, '_> {
         let Some(t) = api.get_type(api::member_type(&ty)) else { return };
         let n = name.text.as_str();
         let names = || t.props.iter().map(|p| p.name.as_str()).chain(t.methods.iter().map(|m| m.name.as_str()));
-        let unknown = |what: &str| -> String {
+        let unknown = |prop: bool| -> String {
             if let Some(r) = t.removed.iter().find(|r| r.name == n) {
                 return r.message(&format!("{}.{}", t.name, n));
             }
+            let m = if prop { tf!("{} hat keine Eigenschaft {}", t.name, n) } else { tf!("{} hat keine Methode {}", t.name, n) };
             match closest(n, names()) {
-                Some(c) => format!("{} hat keine {} {} – meinst du {}?", t.name, what, n, c),
-                None => format!("{} hat keine {} {}", t.name, what, n),
+                Some(c) => tf!("{} – meinst du {}?", m, c),
+                None => m,
             }
         };
         match how {
             Use::Get | Use::Set => {
                 if let Some(p) = t.find_prop(n) {
                     if p.readonly && matches!(how, Use::Set) {
-                        self.warn(name, format!("{}.{} ist nur lesbar", t.name, n));
+                        self.warn(name, tf!("{}.{} ist nur lesbar", t.name, n));
                     }
                 } else if t.find_method(n).is_some() {
-                    self.warn(name, format!("{} ist eine Methode von {}, keine Eigenschaft – mit Klammern: {}(..)", n, t.name, n));
+                    self.warn(name, tf!("{} ist eine Methode von {}, keine Eigenschaft – mit Klammern: {}(..)", n, t.name, n));
                 } else {
-                    let m = unknown("Eigenschaft");
+                    let m = unknown(true);
                     self.warn(name, m);
                 }
             }
             Use::Call(args) => {
                 if n == "on" || n == "off" {
                     if t.events.is_empty() {
-                        self.warn(name, format!("{} hat keine Ereignisse", t.name));
+                        self.warn(name, tf!("{} hat keine Ereignisse", t.name));
                     } else if let Some(Expr { kind: ExprKind::Str(ev), span, .. }) = args.first()
                         && t.find_event(ev).is_none()
                     {
-                        let mut m = format!("{} hat kein Ereignis {}", t.name, ev);
+                        let mut m = tf!("{} hat kein Ereignis {}", t.name, ev);
                         if let Some(c) = closest(ev, t.events.iter().map(|x| x.name.as_str())) {
-                            m.push_str(&format!(" – meinst du {}?", c));
+                            m = tf!("{} – meinst du {}?", m, c);
                         }
                         let at = Name { text: format!("\"{}\"", ev), span: *span };
                         self.warn(&at, m);
                     }
                 } else if t.find_method(n).is_none() {
                     if t.find_prop(n).is_some() {
-                        self.warn(name, format!("{} ist eine Eigenschaft von {}, keine Methode – ohne Klammern: .{}", n, t.name, n));
+                        self.warn(name, tf!("{} ist eine Eigenschaft von {}, keine Methode – ohne Klammern: .{}", n, t.name, n));
                     } else {
-                        let m = unknown("Methode");
+                        let m = unknown(false);
                         self.warn(name, m);
                     }
                 } else if args.iter().any(|a| matches!(a.kind, ExprKind::Named(..))) {

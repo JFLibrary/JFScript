@@ -93,7 +93,7 @@ pub struct Pause {
     pub col: u32,
     /// the breakpoint's id
     pub breakpoint: Option<u32>,
-    /// the condition of the breakpoint failed: why (German)
+    /// the condition of the breakpoint failed: why (msg.rs)
     pub error: Option<String>,
 }
 
@@ -186,7 +186,7 @@ impl Dbg {
 }
 
 /// whether src is one expression, as a breakpoint's condition and Vm::eval take it; Err: why
-/// not (German)
+/// not (msg.rs)
 pub fn check_expr(src: &str) -> Result<(), String> {
     parse_expr(src).map(|_| ())
 }
@@ -199,7 +199,7 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
     }
     match prog.body.as_slice() {
         [Stmt { kind: StmtKind::Expr(e), .. }] => Ok(e.clone()),
-        _ => Err(String::from("Erwartet wird genau ein Ausdruck")),
+        _ => Err(String::from(t!("Erwartet wird genau ein Ausdruck"))),
     }
 }
 
@@ -207,12 +207,12 @@ fn parse_expr(src: &str) -> Result<Expr, String> {
 fn text(e: Exc) -> String {
     match e {
         Exc::Msg(m) | Exc::Fatal(_, m) => m,
-        Exc::Throw(_) | Exc::Hook | Exc::Wait => String::from("Ausnahme"),
+        Exc::Throw(_) | Exc::Hook | Exc::Wait => String::from(t!("Ausnahme")),
     }
 }
 
 fn no_calls() -> String {
-    String::from("Im Ausdruck gehen keine Aufrufe außer len, str, type, int und float")
+    String::from(t!("Im Ausdruck gehen keine Aufrufe außer len, str, type, int und float"))
 }
 
 impl Vm {
@@ -490,7 +490,7 @@ impl Vm {
     /// a value as inside a list: strings quoted
     pub fn repr(&self, v: Value) -> String {
         if !self.valid(v) {
-            return String::from("<ungültig>");
+            return String::from(t!("<ungültig>"));
         }
         let mut s = String::new();
         self.write_value(&mut s, v, true, 0, &mut Vec::new(), None);
@@ -535,7 +535,7 @@ impl Vm {
     pub fn eval(&mut self, frame: usize, expr: &str) -> Result<Value, String> {
         let e = parse_expr(expr)?;
         let Some((fi, at)) = self.frame_at(frame) else {
-            return Err(String::from("Diesen Aufruf gibt es nicht"));
+            return Err(String::from(t!("Diesen Aufruf gibt es nicht")));
         };
         self.eval_ast(fi, at, &e)
     }
@@ -575,7 +575,7 @@ impl Vm {
         {
             return Ok(v);
         }
-        Err(format!("Unbekannter Name {}", name))
+        Err(tf!("Unbekannter Name {}", name))
     }
 
     /// two values on the stack through an operator of the VM
@@ -591,7 +591,7 @@ impl Vm {
             _ => num::NAN,
         };
         let (tx, ty) = (self.type_of(x), self.type_of(y));
-        let mismatch = |what: &str| format!("{} {} passt nicht zu {} und {}", what, op.text(), tx, ty);
+        let mismatch = |what: &str| tf!("{} {} passt nicht zu {} und {}", what, op.text(), tx, ty);
         Ok(match op {
             BinOp::Eq => Value::Bool(self.same(x, y)),
             BinOp::Ne => Value::Bool(!self.same(x, y)),
@@ -602,7 +602,7 @@ impl Vm {
                     (Value::Float(a), Value::Int(b)) => num::cmp_int(b, a).map(core::cmp::Ordering::reverse),
                     (Value::Float(a), Value::Float(b)) => num::cmp(a, b),
                     (Value::Str(_), Value::Str(_)) => Some(self.str(x).cmp(&self.str(y))),
-                    _ => return Err(mismatch("Der Vergleich")),
+                    _ => return Err(mismatch(t!("Der Vergleich"))),
                 };
                 Value::Bool(match (op, ord) {
                     (_, None) => false,
@@ -617,7 +617,7 @@ impl Vm {
                     BinOp::Add => a.wrapping_add(b),
                     BinOp::Sub => a.wrapping_sub(b),
                     BinOp::Mul => a.wrapping_mul(b),
-                    BinOp::Div | BinOp::Rem if b == 0 => return Err(String::from("Division durch 0")),
+                    BinOp::Div | BinOp::Rem if b == 0 => return Err(String::from(t!("Division durch 0"))),
                     BinOp::Div => a.wrapping_div(b),
                     _ => a.wrapping_rem(b),
                 }),
@@ -646,7 +646,7 @@ impl Vm {
                     v.extend_from_slice(self.heap.bytes_of(b));
                     Value::Bytes(self.alloc(Obj::Bytes(v.into_boxed_slice())).map_err(text)?)
                 }
-                _ => return Err(mismatch("Der Operator")),
+                _ => return Err(mismatch(t!("Der Operator"))),
             },
         })
     }
@@ -656,25 +656,25 @@ impl Vm {
         match (obj, idx) {
             (Value::List(l), Value::Int(i)) => {
                 let items = self.heap.list(l);
-                usize::try_from(i).ok().and_then(|i| items.get(i)).copied().ok_or_else(|| format!("Index {} liegt außerhalb der Liste (Länge {})", i, items.len()))
+                usize::try_from(i).ok().and_then(|i| items.get(i)).copied().ok_or_else(|| tf!("Index {} liegt außerhalb der Liste (Länge {})", i, items.len()))
             }
             (Value::Map(_), k) => match self.heap.key(k) {
                 Some(_) => Ok(self.map_get(obj, k).unwrap_or(Value::Nil)),
-                None => Err(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", self.type_of(k))),
+                None => Err(tf!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", self.type_of(k))),
             },
             (Value::Str(s), Value::Int(i)) => {
                 let so = self.heap.str(s);
                 match heap::char_at(so, i) {
                     Some(c) => self.alloc_str(String::from(c)).map_err(text),
-                    None => Err(format!("Index {} liegt außerhalb des Textes (Länge {})", i, so.chars)),
+                    None => Err(tf!("Index {} liegt außerhalb des Textes (Länge {})", i, so.chars)),
                 }
             }
             (Value::Bytes(b), Value::Int(i)) => {
                 let bs = self.heap.bytes_of(b);
-                usize::try_from(i).ok().and_then(|i| bs.get(i)).map(|x| Value::Int(*x as i64)).ok_or_else(|| format!("Index {} liegt außerhalb der Bytes (Länge {})", i, bs.len()))
+                usize::try_from(i).ok().and_then(|i| bs.get(i)).map(|x| Value::Int(*x as i64)).ok_or_else(|| tf!("Index {} liegt außerhalb der Bytes (Länge {})", i, bs.len()))
             }
-            (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => Err(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i))),
-            _ => Err(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
+            (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => Err(tf!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i))),
+            _ => Err(tf!("{} lässt sich nicht indizieren", self.type_of(obj))),
         }
     }
 
@@ -686,7 +686,7 @@ impl Vm {
                 Value::Bytes(r) => self.heap.bytes_of(r).len() as i64,
                 Value::List(r) => self.heap.list(r).len() as i64,
                 Value::Map(r) => self.heap.map(r).live as i64,
-                v => return Err(format!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
+                v => return Err(tf!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
             }),
             "type" => self.alloc_str(String::from(self.type_of(a))).map_err(text)?,
             "str" => match a {
@@ -699,12 +699,12 @@ impl Vm {
             "int" => match a {
                 Value::Int(_) => a,
                 Value::Bool(b) => Value::Int(b as i64),
-                Value::Float(f) => Value::Int(num::to_i64(f).ok_or_else(|| format!("int(…): {} passt nicht in int", self.display(a)))?),
+                Value::Float(f) => Value::Int(num::to_i64(f).ok_or_else(|| tf!("int(…): {} passt nicht in int", self.display(a)))?),
                 Value::Str(_) => {
                     let s = self.str(a).unwrap_or("");
-                    Value::Int(stdlib::parse_int(s, None).ok_or_else(|| format!("int(…): \"{}\" ist keine ganze Zahl", s))?)
+                    Value::Int(stdlib::parse_int(s, None).ok_or_else(|| tf!("int(…): \"{}\" ist keine ganze Zahl", s))?)
                 }
-                v => return Err(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
+                v => return Err(tf!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             _ => match a {
                 Value::Float(_) => a,
@@ -713,10 +713,10 @@ impl Vm {
                     let s = self.str(a).unwrap_or("");
                     match s.trim().parse::<f64>() {
                         Ok(f) => Value::Float(if num::is_nan(f) { num::NAN } else { f }),
-                        Err(_) => return Err(format!("float(…): \"{}\" ist keine Zahl", s)),
+                        Err(_) => return Err(tf!("float(…): \"{}\" ist keine Zahl", s)),
                     }
                 }
-                v => return Err(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
+                v => return Err(tf!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
         })
     }
@@ -762,7 +762,7 @@ impl Vm {
             ExprKind::Unary(UnOp::Neg, a) => match self.ev(fi, at, a)? {
                 Value::Int(i) => Value::Int(i.wrapping_neg()),
                 Value::Float(f) => Value::Float(num::neg(f)),
-                v => return Err(format!("Das Minus passt nicht zu {}", self.type_of(v))),
+                v => return Err(tf!("Das Minus passt nicht zu {}", self.type_of(v))),
             },
             // (S3) a settled promise's value; the expression does not wait
             ExprKind::Unary(UnOp::Await, a) => {
@@ -770,8 +770,8 @@ impl Vm {
                 match self.promise_state(v) {
                     None => v,
                     Some(PromiseState::Resolved(x)) => x,
-                    Some(PromiseState::Rejected(x)) => return Err(format!("abgelehnt: {}", self.repr(x))),
-                    Some(PromiseState::Waiting) => return Err(String::from("Der Wert steht noch aus – im Ausdruck wartet await nicht")),
+                    Some(PromiseState::Rejected(x)) => return Err(tf!("abgelehnt: {}", self.repr(x))),
+                    Some(PromiseState::Waiting) => return Err(String::from(t!("Der Wert steht noch aus – im Ausdruck wartet await nicht"))),
                 }
             }
             ExprKind::Binary(op, a, b) => {
@@ -796,8 +796,8 @@ impl Vm {
                 match v {
                     Value::Map(_) => self.map_get_str(v, &name.text).unwrap_or(Value::Nil),
                     // (S2) a property asks the host: no calls here
-                    Value::Host(_) => return Err(format!("{}.{}: Eigenschaften des Hosts liest der Ausdruck nicht", self.type_of(v), name.text)),
-                    _ => return Err(format!("{} hat kein Feld {}", v.type_name(), name.text)),
+                    Value::Host(_) => return Err(tf!("{}.{}: Eigenschaften des Hosts liest der Ausdruck nicht", self.type_of(v), name.text)),
+                    _ => return Err(tf!("{} hat kein Feld {}", v.type_name(), name.text)),
                 }
             }
             ExprKind::Index(obj, i) => {
@@ -826,7 +826,7 @@ impl Vm {
                 return if x.truthy() { self.ev(fi, at, a) } else { self.ev(fi, at, b) };
             }
             ExprKind::Named(_, v) => self.ev(fi, at, v)?,
-            ExprKind::Comp(..) => return Err(String::from("Listen aus einer Schleife rechnet der Ausdruck nicht")),
+            ExprKind::Comp(..) => return Err(String::from(t!("Listen aus einer Schleife rechnet der Ausdruck nicht"))),
         })
     }
 }

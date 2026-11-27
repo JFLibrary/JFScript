@@ -142,7 +142,7 @@ pub(crate) fn err<T>(m: String) -> Result<T, Exc> {
 
 /// "f: p muss want sein, nicht <type>" (a host object's type by the host's name: mesh, vec)
 pub(crate) fn bad<T>(vm: &Vm, f: &str, p: &str, want: &str, got: Value) -> Result<T, Exc> {
-    err(format!("{}: {} muss {} sein, nicht {}", f, p, want, vm.type_of(got)))
+    err(tf!("{}: {} muss {} sein, nicht {}", f, p, want, vm.type_of(got)))
 }
 
 pub(crate) fn want_int(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<i64, Exc> {
@@ -192,7 +192,7 @@ pub(crate) fn want_bytes(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Re
 pub(crate) fn want_fn(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Result<Value, Exc> {
     match arg(a, i) {
         v @ (Value::Func(_) | Value::Native(_)) => Ok(v),
-        v => err(format!("{}: {} muss eine Funktion sein, nicht {}", f, p, vm.type_of(v))),
+        v => err(tf!("{}: {} muss eine Funktion sein, nicht {}", f, p, vm.type_of(v))),
     }
 }
 
@@ -201,7 +201,7 @@ pub(crate) fn want_num(vm: &Vm, f: &str, a: &[Value], i: usize, p: &str) -> Resu
     match arg(a, i) {
         Value::Int(n) => Ok(num::from_i64(n)),
         Value::Float(x) => Ok(x),
-        v => bad(vm, f, p, "eine Zahl", v),
+        v => bad(vm, f, p, t!("eine Zahl"), v),
     }
 }
 
@@ -223,7 +223,7 @@ pub(crate) fn span(vm: &Vm, f: &str, a: &[Value], i: usize, len: usize) -> Resul
 
 /// the message of a value that cannot be a map key
 pub(crate) fn key_error<T>(vm: &Vm, f: &str, k: Value) -> Result<T, Exc> {
-    err(format!("{}: Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", f, vm.type_of(k)))
+    err(tf!("{}: Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", f, vm.type_of(k)))
 }
 
 // ---- fuel, heap, callbacks
@@ -250,7 +250,7 @@ pub(crate) fn spend(vm: &mut Vm, fuel: u64) -> Result<(), Exc> {
 }
 
 pub(crate) fn heap_full(vm: &Vm) -> Exc {
-    Exc::Fatal(ErrorKind::Heap, format!("Speichergrenze erreicht ({} Bytes)", vm.lim.heap))
+    Exc::Fatal(ErrorKind::Heap, tf!("Speichergrenze erreicht ({} Bytes)", vm.lim.heap))
 }
 
 /// a text of len bytes that is being built stays below the heap limit
@@ -271,7 +271,7 @@ pub(crate) fn call(vm: &mut Vm, host: &mut dyn Host, f: Value, args: &[Value]) -
         Ok(v) => Ok(v),
         Err(Fail::Throw(v)) => Err(Exc::Throw(v)),
         Err(Fail::Fatal(m)) => Err(Exc::Fatal(vm.fatal_kind.take().unwrap_or(ErrorKind::Host), m)),
-        Err(Fail::Unknown) => err(String::from("Unbekannte Funktion")),
+        Err(Fail::Unknown) => err(String::from(t!("Unbekannte Funktion"))),
     }
 }
 
@@ -344,7 +344,7 @@ fn int_parse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
     let base = match opt_int(vm, F, a, 1, "base")? {
         None => None,
         Some(b @ 2..=36) => Some(b as u32),
-        Some(b) => return err(format!("{}: base muss zwischen 2 und 36 liegen, nicht {}", F, b)),
+        Some(b) => return err(tf!("{}: base muss zwischen 2 und 36 liegen, nicht {}", F, b)),
     };
     let s = heap::text(&vm.heap, r);
     let v = parse_int(s, base).map_or(Value::Nil, Value::Int);
@@ -372,8 +372,8 @@ fn float_parse(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc>
 fn byte_of(vm: &Vm, v: Value) -> Result<u8, Exc> {
     match v {
         Value::Int(i @ 0..=255) => Ok(i as u8),
-        Value::Int(i) => err(format!("bytes: {} ist kein Byte (0 bis 255)", i)),
-        v => err(format!("bytes: Ein Byte muss int sein, nicht {}", vm.type_of(v))),
+        Value::Int(i) => err(tf!("bytes: {} ist kein Byte (0 bis 255)", i)),
+        v => err(tf!("bytes: Ein Byte muss int sein, nicht {}", vm.type_of(v))),
     }
 }
 
@@ -389,7 +389,7 @@ fn bytes_new(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
             vm.heap.list(*r).iter().map(|v| byte_of(vm, *v)).collect::<Result<_, _>>()?
         }
         [v] if !matches!(v, Value::Int(_)) => {
-            return err(format!("bytes braucht str, list, bytes oder Bytes als int, nicht {}", vm.type_of(*v)));
+            return err(tf!("bytes braucht str, list, bytes oder Bytes als int, nicht {}", vm.type_of(*v)));
         }
         _ => a.iter().map(|v| byte_of(vm, *v)).collect::<Result<_, _>>()?,
     };
@@ -434,7 +434,7 @@ fn bytes_from_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, E
     let mut hi: Option<u8> = None;
     for (i, c) in s.chars().enumerate() {
         let Some(d) = c.to_digit(16) else {
-            return err(format!("{}: {} ist keine Hex-Ziffer (Index {})", F, c, i));
+            return err(tf!("{}: {} ist keine Hex-Ziffer (Index {})", F, c, i));
         };
         match hi.take() {
             Some(h) => out.push(h << 4 | d as u8),
@@ -442,7 +442,7 @@ fn bytes_from_hex(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, E
         }
     }
     if hi.is_some() {
-        return err(format!("{}: Die Zahl der Hex-Ziffern ist ungerade", F));
+        return err(tf!("{}: Die Zahl der Hex-Ziffern ist ungerade", F));
     }
     let fuel = text_fuel(s.len());
     spend(vm, fuel)?;
@@ -457,7 +457,7 @@ fn bytes_text(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
     let s = match core::str::from_utf8(data) {
         Ok(s) => String::from(s),
         Err(_) if lossy => String::from_utf8_lossy(data).into_owned(),
-        Err(e) => return err(format!("{}: Die Bytes sind kein gültiges UTF-8 (ab Index {})", F, e.valid_up_to())),
+        Err(e) => return err(tf!("{}: Die Bytes sind kein gültiges UTF-8 (ab Index {})", F, e.valid_up_to())),
     };
     let fuel = text_fuel(data.len());
     spend(vm, fuel)?;
@@ -592,7 +592,7 @@ pub(crate) fn is_nan(v: Value) -> bool {
 fn number(vm: &Vm, f: &str, v: Value) -> Result<Value, Exc> {
     match v {
         Value::Int(_) | Value::Float(_) => Ok(v),
-        v => bad(vm, f, "x", "eine Zahl", v),
+        v => bad(vm, f, "x", t!("eine Zahl"), v),
     }
 }
 
@@ -625,7 +625,7 @@ fn extreme(vm: &mut Vm, a: &[Value], f: &str, max: bool) -> Result<Value, Exc> {
     }
     match best {
         Some(b) => Ok(b),
-        None => err(format!("{} braucht mindestens einen Wert", f)),
+        None => err(tf!("{} braucht mindestens einen Wert", f)),
     }
 }
 
@@ -643,14 +643,14 @@ fn math_clamp(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
     let x = number(vm, F, arg(a, 0))?;
     let lo = match arg(a, 1) {
         v @ (Value::Int(_) | Value::Float(_)) if !is_nan(v) => v,
-        v => return bad(vm, F, "lo", "eine Zahl (nicht nan)", v),
+        v => return bad(vm, F, "lo", t!("eine Zahl (nicht nan)"), v),
     };
     let hi = match arg(a, 2) {
         v @ (Value::Int(_) | Value::Float(_)) if !is_nan(v) => v,
-        v => return bad(vm, F, "hi", "eine Zahl (nicht nan)", v),
+        v => return bad(vm, F, "hi", t!("eine Zahl (nicht nan)"), v),
     };
     if num_cmp(lo, hi) == Ordering::Greater {
-        return err(format!("{}: lo ist größer als hi", F));
+        return err(tf!("{}: lo ist größer als hi", F));
     }
     Ok(if is_nan(x) {
         x
@@ -766,7 +766,7 @@ fn math_hypot(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> 
         match v {
             Value::Int(i) => xs.push(num::from_i64(i)),
             Value::Float(x) => xs.push(x),
-            v => return bad(vm, F, "x", "eine Zahl", v),
+            v => return bad(vm, F, "x", t!("eine Zahl"), v),
         }
     }
     Ok(Value::Float(num::hypot(&xs)))
@@ -804,8 +804,8 @@ fn assert_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc> {
         return Ok(Value::Nil);
     }
     match arg(a, 1) {
-        Value::Nil => err(String::from("Annahme verletzt")),
-        m => err(format!("Annahme verletzt: {}", vm.display(m))),
+        Value::Nil => err(String::from(t!("Annahme verletzt"))),
+        m => err(tf!("Annahme verletzt: {}", vm.display(m))),
     }
 }
 
@@ -820,8 +820,11 @@ fn assert_eq_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Value, Exc
     if same {
         return Ok(Value::Nil);
     }
-    let what = format!("erwartet {}, ist {}", vm.repr(y), vm.repr(x));
-    spend(vm, what.len() as u64 / 64)?;
+    let (want, got) = (vm.repr(y), vm.repr(x));
+    // the fuel counts the length of the German text (its 15 bytes around the values), the same
+    // in every language
+    spend(vm, (want.len() + got.len() + 15) as u64 / 64)?;
+    let what = tf!("erwartet {}, ist {}", want, got);
     match arg(a, 2) {
         Value::Nil => err(format!("assert_eq: {}", what)),
         m => err(format!("{}: {}", vm.display(m), what)),

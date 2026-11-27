@@ -193,7 +193,7 @@ impl Lexer<'_> {
     fn open_strings(&mut self) {
         if let Some(&(_, _, line, col)) = self.interp.first() {
             let end = if line == self.line { self.col } else { col + 1 };
-            self.error(line, col, end, String::from("Zeichenkette ohne Ende: hier fehlt \""));
+            self.error(line, col, end, String::from(t!("Zeichenkette ohne Ende: hier fehlt \"")));
             self.interp.clear();
         }
     }
@@ -229,7 +229,7 @@ impl Lexer<'_> {
                 if self.pos < self.b.len() {
                     self.bump_n(2);
                 } else {
-                    self.error(line, col, col + 2, String::from("Kommentar ohne Ende: hier fehlt */"));
+                    self.error(line, col, col + 2, String::from(t!("Kommentar ohne Ende: hier fehlt */")));
                 }
                 TokKind::Comment
             }
@@ -333,13 +333,6 @@ impl Lexer<'_> {
                 }
             }
             Error => {
-                let hint = match ch {
-                    '&' => " (für „und“ schreibe &&)",
-                    '|' => " (für „oder“ schreibe ||)",
-                    '\'' => " (Zeichenketten stehen in doppelten Anführungszeichen \"…\")",
-                    '$' => " (${…} gibt es nur in Zeichenketten)",
-                    _ => "",
-                };
                 let shown = if ch.is_ascii_graphic() {
                     format!("{}", ch)
                 } else if ch.is_control() {
@@ -347,7 +340,14 @@ impl Lexer<'_> {
                 } else {
                     format!("{} (U+{:04X})", ch, ch as u32)
                 };
-                self.error(line, col, col + 1, format!("Unerwartetes Zeichen {}{}", shown, hint));
+                let msg = match ch {
+                    '&' => tf!("Unerwartetes Zeichen {} (für „und“ schreibe &&)", shown),
+                    '|' => tf!("Unerwartetes Zeichen {} (für „oder“ schreibe ||)", shown),
+                    '\'' => tf!("Unerwartetes Zeichen {} (Zeichenketten stehen in doppelten Anführungszeichen \"…\")", shown),
+                    '$' => tf!("Unerwartetes Zeichen {} (${{…}} gibt es nur in Zeichenketten)", shown),
+                    _ => tf!("Unerwartetes Zeichen {}", shown),
+                };
+                self.error(line, col, col + 1, msg);
             }
             _ => {}
         }
@@ -405,7 +405,7 @@ impl Lexer<'_> {
                 if ok {
                     self.bump();
                 } else {
-                    let msg = "Ungültige Escape-Sequenz: \\u{…} braucht 1 bis 6 Hex-Ziffern eines Unicode-Zeichens";
+                    let msg = t!("Ungültige Escape-Sequenz: \\u{…} braucht 1 bis 6 Hex-Ziffern eines Unicode-Zeichens");
                     self.error(line, col, self.col, String::from(msg));
                 }
             }
@@ -414,7 +414,7 @@ impl Lexer<'_> {
             _ => {
                 let ch = self.ch();
                 self.bump();
-                self.error(line, col, self.col, format!("Unbekannte Escape-Sequenz \\{} (erlaubt: \\n \\t \\r \\0 \\\" \\\\ \\$ \\u{{…}})", ch));
+                self.error(line, col, self.col, tf!("Unbekannte Escape-Sequenz \\{} (erlaubt: \\n \\t \\r \\0 \\\" \\\\ \\$ \\u{{…}})", ch));
             }
         }
     }
@@ -451,9 +451,9 @@ impl Lexer<'_> {
             },
         };
         let msg = if too_big {
-            format!("Die Zahl {} ist zu groß (ganze Zahlen höchstens 9223372036854775807)", text)
+            tf!("Die Zahl {} ist zu groß (ganze Zahlen höchstens 9223372036854775807)", text)
         } else {
-            format!("Ungültige Zahl {}", text)
+            tf!("Ungültige Zahl {}", text)
         };
         self.error(line, col, self.col, msg);
         TokKind::Error

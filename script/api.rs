@@ -14,7 +14,8 @@
 //           .op("vec + vec: vec", "..").op("float * vec: vec", "..").op("-vec: vec", ".."))
 //       .typ(Type::new("element", "..").event("click: mouse_event", ".."))
 //   api.names()            the roots of the global names, for script::compile_with
-//   api.validate()         what does not fit: an unknown type, a name twice (German texts)
+//   api.validate()         what does not fit: an unknown type, a name twice (texts in the
+//                          language of set_language)
 //   api.catalogue()        the object catalogue as a tree of Entry, for a UI (jfscript-ide later)
 //   api.markdown()         the same as a Markdown page: the app's reference
 //   Api::from_items(&items)   the description of today's ls::HostItem list (no types)
@@ -28,6 +29,9 @@
 //                          "geom.move wurde entfernt – nimm m.translate"
 //   (S3) .check_calls()    the signatures name every form a call may take: the language
 //                          services warn about a call whose arguments fit none of them
+//   (S3) .map_docs(f)      every description through the host's own translation (G9.2); the
+//                          texts JFScript adds (headings, "Eigenschaft von ..") follow
+//                          script::set_language
 //
 // Types are text: int float str bool bytes list map fn nil any, (S3) number (int or float), the
 // name of a type of the description, list<T> (a list of T: `for x in` and `l[i]` give T), (S3)
@@ -110,7 +114,7 @@ pub struct Removed {
 impl Removed {
     /// "geom.move wurde entfernt – nimm m.translate" (shown: the name as the message names it)
     pub fn message(&self, shown: &str) -> String {
-        if self.hint.is_empty() { format!("{} wurde entfernt", shown) } else { format!("{} wurde entfernt – nimm {}", shown, self.hint) }
+        if self.hint.is_empty() { tf!("{} wurde entfernt", shown) } else { tf!("{} wurde entfernt – nimm {}", shown, self.hint) }
     }
 }
 
@@ -216,18 +220,18 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
-    /// the German word ("Funktion", "Eigenschaft" ..)
+    /// the word in the current language ("Funktion", "Eigenschaft" ..; msg.rs)
     pub fn word(self) -> &'static str {
         match self {
-            EntryKind::Function => "Funktion",
-            EntryKind::Value => "Wert",
-            EntryKind::Namespace => "Namensraum",
-            EntryKind::Type => "Typ",
-            EntryKind::ValueType => "Werttyp",
-            EntryKind::Property => "Eigenschaft",
-            EntryKind::Method => "Methode",
-            EntryKind::Event => "Ereignis",
-            EntryKind::Operator => "Operator",
+            EntryKind::Function => t!("Funktion"),
+            EntryKind::Value => t!("Wert"),
+            EntryKind::Namespace => t!("Namensraum"),
+            EntryKind::Type => t!("Typ"),
+            EntryKind::ValueType => t!("Werttyp"),
+            EntryKind::Property => t!("Eigenschaft"),
+            EntryKind::Method => t!("Methode"),
+            EntryKind::Event => t!("Ereignis"),
+            EntryKind::Operator => t!("Operator"),
         }
     }
 }
@@ -497,6 +501,29 @@ impl Api {
     /// Api::check_calls)
     pub fn check_calls(mut self) -> Api {
         self.check_calls = true;
+        self
+    }
+
+    /// (S3, G9.2) every description of the model (the app's, the globals', the types' and their
+    /// members') through f, the empty ones left out: a host that writes its descriptions in one
+    /// language gives the user's with its own catalogue, `api.map_docs(|d| tr(d))`, and makes the
+    /// description again when the language changes.  Names, types and signatures stay as they
+    /// are (G9.3)
+    pub fn map_docs(mut self, mut f: impl FnMut(&str) -> String) -> Api {
+        let mut map = |d: &mut String| {
+            if !d.is_empty() {
+                *d = f(d);
+            }
+        };
+        map(&mut self.doc);
+        self.globals.iter_mut().for_each(|g| map(&mut g.doc));
+        for t in &mut self.types {
+            map(&mut t.doc);
+            t.props.iter_mut().for_each(|p| map(&mut p.doc));
+            t.methods.iter_mut().for_each(|m| map(&mut m.doc));
+            t.events.iter_mut().for_each(|e| map(&mut e.doc));
+            t.ops.iter_mut().for_each(|o| map(&mut o.doc));
+        }
         self
     }
 
@@ -825,22 +852,22 @@ pub fn named_message(shown: &str, sig: &Sig, args: &[Arg], m: Mismatch) -> Strin
     match m {
         Mismatch::NoParam { arg } => {
             let n = args.get(arg).and_then(|a| a.name).unwrap_or("");
-            let mut s = format!("{} hat keinen Parameter {}", shown, n);
+            let mut s = tf!("{} hat keinen Parameter {}", shown, n);
             let names = sig.params.iter().filter(|p| !p.rest).map(|p| p.name.as_str());
             if let Some(c) = crate::check::suggest_member(n, names) {
-                s.push_str(&format!(" – meinst du {}?", c));
+                s = tf!("{} – meinst du {}?", s, c);
             }
             s
         }
-        Mismatch::Twice { param, .. } => format!("{}: der Parameter {} hat schon ein Argument", shown, name_of(param)),
+        Mismatch::Twice { param, .. } => tf!("{}: der Parameter {} hat schon ein Argument", shown, name_of(param)),
         Mismatch::TooMany { most } => {
             let given = args.iter().filter(|a| a.name.is_none()).count();
-            format!("{}: {} vor den benannten, nimmt aber höchstens {}", shown, count_text(given), most)
+            tf!("{}: {} vor den benannten, nimmt aber höchstens {}", shown, count_text(given), most)
         }
-        Mismatch::Missing { param } => format!("{}: der Parameter {} fehlt", shown, name_of(param)),
+        Mismatch::Missing { param } => tf!("{}: der Parameter {} fehlt", shown, name_of(param)),
         Mismatch::Type { arg, param } => {
             let ty = args.get(arg).map_or("", |a| a.ty);
-            format!("{}: {} muss {} sein, nicht {}", shown, name_of(param), sig.params.get(param).map_or("", |p| p.ty.as_str()), ty)
+            tf!("{}: {} muss {} sein, nicht {}", shown, name_of(param), sig.params.get(param).map_or("", |p| p.ty.as_str()), ty)
         }
     }
 }
@@ -862,9 +889,9 @@ pub fn bind<'s>(forms: &[&'s Sig], args: &[Arg]) -> Result<Binding<'s>, Vec<Mism
 /// "kein Argument", "1 Argument", "3 Argumente"
 fn count_text(n: usize) -> String {
     match n {
-        0 => String::from("kein Argument"),
-        1 => String::from("1 Argument"),
-        _ => format!("{} Argumente", n),
+        0 => String::from(t!("kein Argument")),
+        1 => String::from(t!("1 Argument")),
+        _ => tf!("{} Argumente", n),
     }
 }
 
@@ -891,16 +918,16 @@ pub fn count_warning(shown: &str, forms: &[&Sig], given: usize) -> Option<String
         let (min, max) = s.arity();
         let names = param_names(s);
         return Some(match max {
-            Some(0) => format!("{}: {}, nimmt aber keine", shown, count_text(given)),
-            Some(m) if given > m => format!("{}: {}, nimmt aber höchstens {} ({})", shown, count_text(given), m, names),
-            _ => format!("{}: {}, braucht aber mindestens {} ({})", shown, count_text(given), min, names),
+            Some(0) => tf!("{}: {}, nimmt aber keine", shown, count_text(given)),
+            Some(m) if given > m => tf!("{}: {}, nimmt aber höchstens {} ({})", shown, count_text(given), m, names),
+            _ => tf!("{}: {}, braucht aber mindestens {} ({})", shown, count_text(given), min, names),
         });
     }
     let all: Vec<String> = forms.iter().map(|s| format!("{}({})", shown, param_names(s))).collect();
     Some(match given {
-        0 => format!("{}: ohne Argumente passt keine Form ({})", shown, all.join(", ")),
-        1 => format!("{}: 1 Argument passt zu keiner Form ({})", shown, all.join(", ")),
-        n => format!("{}: {} Argumente passen zu keiner Form ({})", shown, n, all.join(", ")),
+        0 => tf!("{}: ohne Argumente passt keine Form ({})", shown, all.join(", ")),
+        1 => tf!("{}: 1 Argument passt zu keiner Form ({})", shown, all.join(", ")),
+        n => tf!("{}: {} Argumente passen zu keiner Form ({})", shown, n, all.join(", ")),
     })
 }
 
@@ -974,7 +1001,7 @@ impl Api {
         None
     }
 
-    /// what does not fit the description (German), empty when all is well: types named
+    /// what does not fit the description (msg.rs: German by default), empty when all is well: types named
     /// nowhere, names twice (forms of a function or method are no name twice, the same form
     /// twice is), a rest parameter that is not the last, operators of other types, removed
     /// names that are still described
@@ -996,14 +1023,14 @@ impl Api {
         }
         let mut check = |ty: &str, at: &str, out: &mut Vec<String>| {
             if !known(self, ty) {
-                out.push(format!("{}: unbekannter Typ {}", at, ty));
+                out.push(tf!("{}: unbekannter Typ {}", at, ty));
             }
         };
         let sig = |s: &Sig, at: &str, out: &mut Vec<String>, check: &mut dyn FnMut(&str, &str, &mut Vec<String>)| {
             for (i, p) in s.params.iter().enumerate() {
                 check(&p.ty, &format!("{} ({})", at, p.name), out);
                 if p.rest && i + 1 < s.params.len() {
-                    out.push(format!("{}: ...{} muss der letzte Parameter sein", at, p.name));
+                    out.push(tf!("{}: ...{} muss der letzte Parameter sein", at, p.name));
                 }
             }
             check(&s.ret, at, out);
@@ -1015,10 +1042,10 @@ impl Api {
                     // another form of a function
                     GlobalKind::Func(s) if before.iter().all(|x| matches!(x.kind, GlobalKind::Func(_))) => {
                         if before.iter().any(|x| x.kind == g.kind) {
-                            out.push(format!("{}: die Form {} kommt zweimal vor", g.name, s.label(&g.name)));
+                            out.push(tf!("{}: die Form {} kommt zweimal vor", g.name, s.label(&g.name)));
                         }
                     }
-                    _ => out.push(format!("{}: der Name kommt zweimal vor", g.name)),
+                    _ => out.push(tf!("{}: der Name kommt zweimal vor", g.name)),
                 }
             }
             match &g.kind {
@@ -1029,15 +1056,15 @@ impl Api {
         }
         for r in &self.removed {
             if self.global(&r.name).is_some() || self.is_namespace(&r.name) {
-                out.push(format!("{}: ist als entfernt angegeben und zugleich beschrieben", r.name));
+                out.push(tf!("{}: ist als entfernt angegeben und zugleich beschrieben", r.name));
             }
         }
         for (i, t) in self.types.iter().enumerate() {
             if self.types[..i].iter().any(|x| x.name == t.name) {
-                out.push(format!("{}: der Typ kommt zweimal vor", t.name));
+                out.push(tf!("{}: der Typ kommt zweimal vor", t.name));
             }
             if BUILTIN_TYPES.contains(&t.name.as_str()) {
-                out.push(format!("{}: ein Name der Sprache, kein Typ des Hosts", t.name));
+                out.push(tf!("{}: ein Name der Sprache, kein Typ des Hosts", t.name));
             }
             // (name, the method's index; None: a property)
             let mut names: Vec<(&str, Option<usize>)> = Vec::new();
@@ -1048,18 +1075,18 @@ impl Api {
                     // another form of a method
                     Some(k) if !before.is_empty() && before.iter().all(|b| b.is_some()) => {
                         if before.iter().flatten().any(|&b| t.methods[b].sig == t.methods[k].sig) {
-                            out.push(format!("{}.{}: die Form {} kommt zweimal vor", t.name, n, t.methods[k].sig.label(n)));
+                            out.push(tf!("{}.{}: die Form {} kommt zweimal vor", t.name, n, t.methods[k].sig.label(n)));
                         }
                     }
-                    _ if !before.is_empty() => out.push(format!("{}.{}: der Name kommt zweimal vor", t.name, n)),
-                    _ if n == "on" || n == "off" => out.push(format!("{}.{}: on und off sind die Ereignisse der VM", t.name, n)),
+                    _ if !before.is_empty() => out.push(tf!("{}.{}: der Name kommt zweimal vor", t.name, n)),
+                    _ if n == "on" || n == "off" => out.push(tf!("{}.{}: on und off sind die Ereignisse der VM", t.name, n)),
                     _ => {}
                 }
                 names.push((n, m));
             }
             for r in &t.removed {
                 if t.find_prop(&r.name).is_some() || t.find_method(&r.name).is_some() {
-                    out.push(format!("{}.{}: ist als entfernt angegeben und zugleich beschrieben", t.name, r.name));
+                    out.push(tf!("{}.{}: ist als entfernt angegeben und zugleich beschrieben", t.name, r.name));
                 }
             }
             for p in &t.props {
@@ -1069,12 +1096,12 @@ impl Api {
                 sig(&m.sig, &format!("{}.{}", t.name, m.name), &mut out, &mut check);
             }
             for e in &t.events {
-                check(&e.ty, &format!("{} Ereignis {}", t.name, e.name), &mut out);
+                check(&e.ty, &tf!("{} Ereignis {}", t.name, e.name), &mut out);
             }
             for o in &t.ops {
                 let at = format!("{} {}", t.name, o.label());
                 if o.lhs != t.name && o.rhs != t.name {
-                    out.push(format!("{}: keiner der Operanden ist {}", at, t.name));
+                    out.push(tf!("{}: keiner der Operanden ist {}", at, t.name));
                 }
                 for x in [&o.lhs, &o.rhs, &o.ret] {
                     check(x, &at, &mut out);
@@ -1162,11 +1189,11 @@ impl Api {
     }
 
     /// the catalogue as a Markdown page: the title, the description, "Globale Namen", then a
-    /// section per type with its properties, methods, events and operators (German headings;
-    /// the texts as the host wrote them)
+    /// section per type with its properties, methods, events and operators (headings in the
+    /// language of set_language; the texts as the host wrote them)
     pub fn markdown(&self) -> String {
         let mut o = String::new();
-        o.push_str(&format!("# {}\n\n", if self.name.is_empty() { "Objektkatalog" } else { &self.name }));
+        o.push_str(&format!("# {}\n\n", if self.name.is_empty() { t!("Objektkatalog") } else { &self.name }));
         if !self.doc.is_empty() {
             o.push_str(&format!("{}\n\n", self.doc));
         }
@@ -1180,7 +1207,7 @@ impl Api {
         };
         let globals: Vec<&Entry> = cat.iter().filter(|e| matches!(e.kind, EntryKind::Function | EntryKind::Value | EntryKind::Namespace)).collect();
         if !globals.is_empty() {
-            o.push_str("## Globale Namen\n\n");
+            o.push_str(&format!("## {}\n\n", t!("Globale Namen")));
             for e in globals {
                 line(&mut o, e, "");
                 for c in &e.children {
@@ -1191,15 +1218,24 @@ impl Api {
         }
         let types: Vec<&Entry> = cat.iter().filter(|e| matches!(e.kind, EntryKind::Type | EntryKind::ValueType)).collect();
         if !types.is_empty() {
-            o.push_str("## Typen\n\n");
+            o.push_str(&format!("## {}\n\n", t!("Typen")));
         }
         for t in types {
-            let what = if t.kind == EntryKind::ValueType { " (Werttyp: == vergleicht die Werte)" } else { "" };
-            o.push_str(&format!("### {}{}\n\n", t.name, what));
+            if t.kind == EntryKind::ValueType {
+                o.push_str(&format!("### {} ({})\n\n", t.name, t!("Werttyp: == vergleicht die Werte")));
+            } else {
+                o.push_str(&format!("### {}\n\n", t.name));
+            }
             if !t.doc.is_empty() {
                 o.push_str(&format!("{}\n\n", t.doc));
             }
-            for (kind, head) in [(EntryKind::Property, "Eigenschaften"), (EntryKind::Method, "Methoden"), (EntryKind::Event, "Ereignisse (obj.on(name, fn(e) { .. }))"), (EntryKind::Operator, "Operatoren")] {
+            let heads = [
+                (EntryKind::Property, t!("Eigenschaften")),
+                (EntryKind::Method, t!("Methoden")),
+                (EntryKind::Event, t!("Ereignisse (obj.on(name, fn(e) { .. }))")),
+                (EntryKind::Operator, t!("Operatoren")),
+            ];
+            for (kind, head) in heads {
                 let kids: Vec<&Entry> = t.children.iter().filter(|c| c.kind == kind).collect();
                 if kids.is_empty() {
                     continue;

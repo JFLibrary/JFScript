@@ -4,10 +4,12 @@
 // (scriptlibt.rs), the language services and the formatter (scriptlst.rs), modules, the debug
 // interface and the test functions (scriptmodt.rs), (S2) the host interface's second version:
 // host objects, properties, operators, events, descriptions and the catalogue (scripthostt.rs),
-// (S3) await with promises of the host and waiting invocations (scriptawaitt.rs).
+// (S3) await with promises of the host and waiting invocations (scriptawaitt.rs), the syntax pass
+// (scriptsynt.rs), the messages in the host's language: the table against the sources, English
+// (scriptmsgt.rs; last, it switches the language and back).
 // They came from JFLib's coretest.  Console program; exit code 1 when a check fails.
 //
-//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost, scriptawait, scriptsyn
+//   cargo run -p scripttest -- [--only NAME]   a group alone: script, scriptvm, scriptlib, scriptls, scriptmod, scripthost, scriptawait, scriptsyn, scriptmsg
 //   cargo run -p scripttest -- --bench vm      the VM's benchmark (scriptmodt.rs), what host objects cost (scripthostt.rs)
 //   cargo run -p scripttest -- --math FILE     answers for tools/script_math_check.py
 //   (cargo jflib test -p scripttest runs it through tests/all.uis; --script is ignored)
@@ -24,6 +26,7 @@ mod scriptawaitt;
 mod scripthostt;
 mod scriptlibt;
 mod scriptlst;
+mod scriptmsgt;
 mod scriptmodt;
 mod scriptsynt;
 mod scriptt;
@@ -65,7 +68,7 @@ fn run() -> i32 {
         scripthostt::bench();
         return 0;
     }
-    let groups: [(&'static str, fn(&mut T)); 8] = [
+    let groups: [(&'static str, fn(&mut T)); 9] = [
         ("script", scriptt::run),
         ("scriptvm", scriptvmt::run),
         ("scriptlib", scriptlibt::run),
@@ -74,6 +77,7 @@ fn run() -> i32 {
         ("scripthost", scripthostt::run),
         ("scriptawait", scriptawaitt::run),
         ("scriptsyn", scriptsynt::run),
+        ("scriptmsg", scriptmsgt::run),
     ];
     let mut failed = 0;
     let mut total = 0;

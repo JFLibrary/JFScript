@@ -7,8 +7,9 @@ by name through `Host::call`, maps as objects, `HostItem` lists for the editor -
 ([LANGUAGE.md](LANGUAGE.md)); everything here is added on top, and a host that does not use it
 compiles and behaves as before. What stage S3 added for the gaps the first such host (JFLib's
 modeltool) found is marked (S3): forms, optional parameters and unions in signatures, binding a
-call, `compile_api`, the host's type names in messages, closer suggestions and removed names; and
-the named arguments of the syntax pass, which reach a host's functions through its description.
+call, `compile_api`, the host's type names in messages, closer suggestions and removed names; the
+named arguments of the syntax pass, which reach a host's functions through its description; and
+the messages in the app's language ([below](#the-language-of-the-messages-s3)).
 
 What the script sees is in [LANGUAGE.md](LANGUAGE.md#host-objects). The checks of all of it are
 the group `scripthost` of `scripttest` ([`scripthostt.rs`](../scripttest/src/scripthostt.rs)), a
@@ -517,3 +518,72 @@ Operatoren:
 
 - `vec + vec: vec` – Die Summe.
 ```
+
+(S3) The headings and the words JFScript adds ("Eigenschaften", `EntryKind::word`) follow the
+language of the messages ([below](#the-language-of-the-messages-s3)); the names and the host's
+texts stay as the host wrote them.
+
+## The language of the messages (S3)
+
+JFScript's messages and the texts of its language services come in the app's language (G9.1,
+G9.2 of [RICHTUNG.md](RICHTUNG.md)): German, the language they were written in, and English; more
+languages are a column each in a table. Without a word from the host everything stays German,
+byte for byte as before, so existing hosts and their tests see no change.
+
+```rust
+// once at start and whenever the user switches (a JFLib app: its UI language)
+let code = script::set_language(&ui::i18n::language_code());   // "de", "en"; "fr" -> "en"
+assert_eq!(script::language(), code);
+script::languages();                                          // ["de", "en"]
+```
+
+* `script::set_language(code)` takes "de", "en" or a BCP 47 tag ("en-GB" takes "en"). A code the
+  table has no column for takes English, as JFLib's `ui::i18n::set_language_code` does for a UI
+  language its catalogue lacks; "" is German again. It gives the code it took.
+* The setting holds for the whole process, as JFLib's UI language does: messages are made deep in
+  the lexer, the parser, the checks, the VM and the library, where no host value reaches. It is an
+  atomic, so threads may compile and run while it changes; each message takes the language of the
+  moment it is made (a `Diagnostic` keeps its text, a VM's `limit_text` is made in `Vm::new`). A
+  process that wants two languages at once (two windows, two users) is not served; JFLib's apps
+  have one UI language.
+* What follows it: compile errors and warnings (`Diagnostic::msg`, and Display "3:5: error: .."
+  for "3:5: Fehler: .."), run-time errors (`Error::msg`, Display with its trace "in the main
+  program"), the message a script catches with `try`/`catch` for an error of the VM or the
+  library, the warnings of `compile_api` and of modules through `take_warnings`, `Api::validate`,
+  the texts of `ls::complete`, `hover`, `signature`, `check` and `rename`, `ls::library_doc`,
+  `SymKind::word`, `EntryKind::word`, the headings of `Api::markdown`, `Vm::limit_text` and the
+  default reason of `Host::load`.
+* What does not (G9.3, and so a script gives the same result under every host): keywords, names
+  of the library and of the host, parameter names, type names (`int`, `str`, `mesh`), the text of
+  values (`str(x)`, `print`, `${..}`; a promise prints as `<promise 3 ausstehend>` in every
+  language), and every text of the host: `cx.error(..)`, `cx.warn(..)`, `Fail::Fatal`, the reason
+  of `Host::load`, a value a script throws itself, the descriptions of `script::Api` and
+  `HostItem`. Fuel, heap and the other limits do not depend on the language either.
+* A caught message changes with the language: a script that wants to tell errors apart throws
+  values of its own (`throw {code: 3}`) instead of comparing texts.
+* Placeholders in the table (`script/locales/messages.tsv`, the form of JFLib's `ui.tsv`): `{}` in
+  order, `{0}` `{1}` by position when a language needs another word order, `{name}` by name;
+  `{{` and `}}` are braces. A language without its own cell for a text shows the English one.
+
+The host's own descriptions are the host's to translate: JFScript never translates them (G9.2).
+A host that writes them in its UI language builds the `Api` with those texts and builds it again
+when the language changes. One that keeps them in one language (German, as its source texts) and
+its translations in its catalogue (JFLib's `locales/ui.tsv`, each description a row) puts them
+through that catalogue in one step:
+
+```rust
+let api = Api::new("modeltool")
+    .func("vec(x: float, y: float, z: float = 0): vec", "Ein neuer Vektor.")
+    .typ(Type::new("vec", "Ein Vektor.").prop("readonly x: float", "Die x-Komponente."))
+    .map_docs(|d| String::from(catalog.tr(d)));    // every description: app, globals, members
+```
+
+`HostItem` lists (the form before S2) hold `&'static str`; a host makes the list with the texts of
+its language (`ui::i18n::t(..)`). Names, types and signatures stay as written, so a script and its
+completion look the same in every language.
+
+The checks are the group `scriptmsg` of `scripttest`
+([`scriptmsgt.rs`](../scripttest/src/scriptmsgt.rs)): every key of the sources has a row with an
+English cell and the same placeholders, every row a key, a literal of `script/` that reads like
+German must be a message (see `script/msg.rs`), then messages, warnings and the services' texts in
+English, and the German ones unchanged after a switch.

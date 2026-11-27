@@ -66,7 +66,7 @@ impl Enc<'_> {
             return Err(vm.fuel_out());
         }
         if depth > DEPTH {
-            return err(format!("json.encode: Die Daten sind zu tief verschachtelt (mehr als {} Ebenen)", DEPTH));
+            return err(tf!("json.encode: Die Daten sind zu tief verschachtelt (mehr als {} Ebenen)", DEPTH));
         }
         Ok(match v {
             Value::Nil | Value::Cell(_) => J::Null,
@@ -77,7 +77,7 @@ impl Enc<'_> {
                 num::fmt(x, &mut s);
                 match Number::parse(&s) {
                     Some(n) => J::Number(n),
-                    None => return err(format!("json.encode: {} lässt sich nicht als JSON darstellen", s)),
+                    None => return err(tf!("json.encode: {} lässt sich nicht als JSON darstellen", s)),
                 }
             }
             Value::Str(r) => {
@@ -85,9 +85,9 @@ impl Enc<'_> {
                 self.charge(s.len())?;
                 J::String(s.to_string())
             }
-            Value::Bytes(_) => return err(String::from("json.encode: bytes lassen sich nicht als JSON darstellen – erst b.hex() oder b.text()")),
-            Value::Func(_) | Value::Native(_) => return err(String::from("json.encode: Funktionen lassen sich nicht als JSON darstellen")),
-            Value::Host(_) => return err(format!("json.encode: {} (ein Objekt des Hosts) lässt sich nicht als JSON darstellen", vm.type_of(v))),
+            Value::Bytes(_) => return err(String::from(t!("json.encode: bytes lassen sich nicht als JSON darstellen – erst b.hex() oder b.text()"))),
+            Value::Func(_) | Value::Native(_) => return err(String::from(t!("json.encode: Funktionen lassen sich nicht als JSON darstellen"))),
+            Value::Host(_) => return err(tf!("json.encode: {} (ein Objekt des Hosts) lässt sich nicht als JSON darstellen", vm.type_of(v))),
             Value::List(r) => {
                 self.enter(r)?;
                 let items = vm.heap.list(r);
@@ -114,7 +114,7 @@ impl Enc<'_> {
                     };
                     self.charge(k.len())?;
                     if mixed && !names.insert(k.clone()) {
-                        return err(format!("json.encode: Der Schlüssel \"{}\" kommt doppelt vor", k));
+                        return err(tf!("json.encode: Der Schlüssel \"{}\" kommt doppelt vor", k));
                     }
                     out.push((k, self.value(e.val, depth + 1)?));
                 }
@@ -126,7 +126,7 @@ impl Enc<'_> {
 
     fn enter(&mut self, r: Ref) -> Result<(), Exc> {
         if self.seen.contains(&r) {
-            return err(String::from("json.encode: Die Daten enthalten sich selbst"));
+            return err(String::from(t!("json.encode: Die Daten enthalten sich selbst")));
         }
         self.seen.push(r);
         Ok(())
@@ -161,7 +161,7 @@ pub(crate) fn encode_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
     let indent = match opt_int(vm, "json.encode", a, 1, "indent")? {
         None => 0,
         Some(n @ 0..=8) => n as u32,
-        Some(n) => return err(format!("json.encode: indent muss zwischen 0 und 8 liegen, nicht {}", n)),
+        Some(n) => return err(tf!("json.encode: indent muss zwischen 0 und 8 liegen, nicht {}", n)),
     };
     let text = encode(vm, arg(a, 0), indent)?;
     spend(vm, 1)?;
@@ -172,28 +172,28 @@ pub(crate) fn encode_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
 fn syntax(vm: &Vm, text: &[u8], e: js::Error) -> Exc {
     let what = match e.kind {
         "value_limit" | "member_limit" | "byte_limit" | "string_limit" => return heap_full(vm),
-        "invalid_utf8" => "Der Text ist kein gültiges UTF-8",
-        "trailing_data" => "Nach dem Wert folgt noch etwas",
-        "depth_limit" => "Die Daten sind zu tief verschachtelt (mehr als 64 Ebenen)",
-        "expected_value" => "Hier fehlt ein Wert",
-        "invalid_literal" => "Unbekanntes Wort (erlaubt sind true, false und null)",
-        "invalid_number" => "Ungültige Zahl",
-        "number_limit" => "Die Zahl ist zu lang",
-        "invalid_escape" => "Ungültige Escape-Sequenz",
-        "unpaired_surrogate" => "Ungültiges \\u-Zeichen (ein Surrogat ohne Partner)",
-        "unescaped_control" => "Ein Steuerzeichen im Text muss als Escape-Sequenz stehen",
-        "unterminated_string" => "Der Text endet ohne schließendes \"",
-        "expected_string" => "Hier fehlt ein Schlüssel in Anführungszeichen",
-        "expected_comma" => "Hier fehlt ein Komma oder eine schließende Klammer",
-        "expected_colon" => "Hier fehlt ein Doppelpunkt",
-        "duplicate_key" => "Der Schlüssel kommt doppelt vor",
-        _ => "Ungültiges JSON",
+        "invalid_utf8" => t!("Der Text ist kein gültiges UTF-8"),
+        "trailing_data" => t!("Nach dem Wert folgt noch etwas"),
+        "depth_limit" => t!("Die Daten sind zu tief verschachtelt (mehr als 64 Ebenen)"),
+        "expected_value" => t!("Hier fehlt ein Wert"),
+        "invalid_literal" => t!("Unbekanntes Wort (erlaubt sind true, false und null)"),
+        "invalid_number" => t!("Ungültige Zahl"),
+        "number_limit" => t!("Die Zahl ist zu lang"),
+        "invalid_escape" => t!("Ungültige Escape-Sequenz"),
+        "unpaired_surrogate" => t!("Ungültiges \\u-Zeichen (ein Surrogat ohne Partner)"),
+        "unescaped_control" => t!("Ein Steuerzeichen im Text muss als Escape-Sequenz stehen"),
+        "unterminated_string" => t!("Der Text endet ohne schließendes \""),
+        "expected_string" => t!("Hier fehlt ein Schlüssel in Anführungszeichen"),
+        "expected_comma" => t!("Hier fehlt ein Komma oder eine schließende Klammer"),
+        "expected_colon" => t!("Hier fehlt ein Doppelpunkt"),
+        "duplicate_key" => t!("Der Schlüssel kommt doppelt vor"),
+        _ => t!("Ungültiges JSON"),
     };
     let head = &text[..e.offset.min(text.len())];
     let line = 1 + head.iter().filter(|&&b| b == b'\n').count();
     let start = head.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
     let col = 1 + String::from_utf8_lossy(&head[start..]).chars().count();
-    Exc::Msg(format!("json.decode: {} (Zeile {}, Spalte {})", what, line, col))
+    Exc::Msg(tf!("json.decode: {} (Zeile {}, Spalte {})", what, line, col))
 }
 
 /// the syntax tree of a JSON text
@@ -256,7 +256,7 @@ pub(crate) fn decode_fn(vm: &mut Vm, _: &mut dyn Host, a: &[Value]) -> Result<Va
     let len = match arg(a, 0) {
         Value::Str(r) => heap::text(&vm.heap, r).len(),
         Value::Bytes(r) => vm.heap.bytes_of(r).len(),
-        v => return bad(vm, "json.decode", "text", "str oder bytes", v),
+        v => return bad(vm, "json.decode", "text", t!("str oder bytes"), v),
     };
     spend(vm, text_fuel(len))?;
     let tree = match arg(a, 0) {

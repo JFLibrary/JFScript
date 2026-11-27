@@ -86,8 +86,8 @@
 // an exception that leaves the callback keeps the position it was thrown at.  cancel() drops
 // a pending invocation.
 //
-// Runtime errors (wrong types, division by 0, a bad index) throw a str with a German message
-// that try/catch can catch; an uncaught one ends the invocation with an Error (message,
+// Runtime errors (wrong types, division by 0, a bad index) throw a str with a message (German,
+// or in the language of set_language: msg.rs) that try/catch can catch; an uncaught one ends the invocation with an Error (message,
 // line and column, a stack trace).  The limits (fuel per invocation, heap, call depth, stack)
 // end it at once and cannot be caught.
 //
@@ -215,7 +215,7 @@ pub struct TraceLine {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Error {
     pub kind: ErrorKind,
-    /// German text; for an uncaught throw the thrown value as text
+    /// the message (German, or set_language's); for an uncaught throw the thrown value as text
     pub msg: String,
     /// the file of the position (Program::name or a module's path; "" when not in the script)
     pub file: String,
@@ -230,14 +230,14 @@ impl core::fmt::Display for Error {
     /// "3:5: Fehler: Division durch 0", then a line per call: "  in teile (3:5)"; a call in
     /// another file than the error names it: "  in lade (lib/util.jfs:7:2)", "  im Modul (..)"
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "{}:{}: Fehler: {}", self.line, self.col, self.msg)?;
+        write!(f, "{}:{}: {}: {}", self.line, self.col, t!("Fehler"), self.msg)?;
         let last = self.trace.len().saturating_sub(1);
         for (i, t) in self.trace.iter().enumerate() {
             let at = if t.file == self.file { format!("{}:{}", t.line, t.col) } else { format!("{}:{}:{}", t.file, t.line, t.col) };
             if t.func.is_empty() {
-                write!(f, "\n  {} ({})", if i == last { "im Hauptprogramm" } else { "im Modul" }, at)?;
+                write!(f, "\n  {} ({})", if i == last { t!("im Hauptprogramm") } else { t!("im Modul") }, at)?;
             } else {
-                write!(f, "\n  in {} ({})", t.func, at)?;
+                write!(f, "\n  {}", tf!("in {} ({})", t.func, at))?;
             }
         }
         Ok(())
@@ -267,7 +267,7 @@ pub struct Warning {
 impl core::fmt::Display for Warning {
     /// "3:5: Warnung: das Teil schwebt 2 cm über dem Boden" (the file in front is the host's)
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "{}:{}: Warnung: {}", self.line, self.col, self.msg)
+        write!(f, "{}:{}: {}: {}", self.line, self.col, t!("Warnung"), self.msg)
     }
 }
 
@@ -324,7 +324,7 @@ pub trait Host {
     /// host has no modules.
     fn load(&mut self, cx: &mut Cx, path: &str) -> Result<String, String> {
         let _ = (cx, path);
-        Err(String::from("hier lassen sich keine Module laden"))
+        Err(String::from(t!("hier lassen sich keine Module laden")))
     }
 
     // ---- (S2) host objects; all optional: a host without objects never gets these calls
@@ -523,16 +523,16 @@ pub(crate) fn msg<T>(s: String) -> Result<T, Exc> {
 }
 
 pub(crate) fn internal<T>() -> Result<T, Exc> {
-    Err(Exc::Fatal(ErrorKind::Internal, String::from("Interner Fehler der Skript-VM")))
+    Err(Exc::Fatal(ErrorKind::Internal, String::from(t!("Interner Fehler der Skript-VM"))))
 }
 
 /// the message of the fuel limit; waited: (S3) the invocation waited in await before (the
 /// limit holds for the stretch since its last wait)
 pub(crate) fn fuel_msg(limit: u64, waited: bool) -> String {
     if waited {
-        format!("Rechenzeit aufgebraucht: mehr als {} Schritte seit dem letzten await – eine Endlosschleife?", limit)
+        tf!("Rechenzeit aufgebraucht: mehr als {} Schritte seit dem letzten await – eine Endlosschleife?", limit)
     } else {
-        format!("Rechenzeit aufgebraucht: mehr als {} Schritte in einem Aufruf – eine Endlosschleife?", limit)
+        tf!("Rechenzeit aufgebraucht: mehr als {} Schritte in einem Aufruf – eine Endlosschleife?", limit)
     }
 }
 
@@ -670,7 +670,8 @@ impl Vm {
             });
         }
         let tnames = TYPES.map(|t| Value::Str(heap.insert(Obj::Str(StrObj::new(t)))));
-        let limit = Value::Str(heap.insert(Obj::Str(StrObj::new("Speichergrenze erreicht"))));
+        // (G9) in the language set when the VM is made
+        let limit = Value::Str(heap.insert(Obj::Str(StrObj::new(t!("Speichergrenze erreicht")))));
         let permanent = heap.objs.len() as u32;
         heap.bytes = 0;
         let natives = code.hosts.iter().map(|h| (Arc::from(h.name.as_str()), builtin_of(&h.name))).collect();
@@ -734,17 +735,17 @@ impl Vm {
     pub fn call(&mut self, name: &str, args: &[Value]) -> Result<(), Error> {
         match self.global(name) {
             Some(f @ Value::Func(_)) => self.call_value(f, args),
-            _ => Err(usage(format!("Unbekannte Funktion {}", name))),
+            _ => Err(usage(tf!("Unbekannte Funktion {}", name))),
         }
     }
 
     /// start a call of a function value (run() runs it)
     pub fn call_value(&mut self, f: Value, args: &[Value]) -> Result<(), Error> {
         if self.busy() {
-            return Err(usage(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
+            return Err(usage(String::from(t!("Die VM ist noch beschäftigt – erst run() bis zum Ende"))));
         }
         let Value::Func(r) = f else {
-            return Err(usage(format!("{} ist keine Funktion", self.type_of(f))));
+            return Err(usage(tf!("{} ist keine Funktion", self.type_of(f))));
         };
         if !self.valid(f) || !args.iter().all(|a| self.valid(*a)) {
             return Err(invalid());
@@ -758,7 +759,7 @@ impl Vm {
         if let Err(e) = self.push_frame(&code, r, 0, args.len()) {
             let err = match e {
                 Exc::Fatal(kind, m) => Error { kind, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
-                _ => usage(String::from("Aufruf nicht möglich")),
+                _ => usage(String::from(t!("Aufruf nicht möglich"))),
             };
             self.abort();
             return Err(err);
@@ -769,7 +770,7 @@ impl Vm {
     /// run the pending invocation with up to `fuel` fuel (see the module comment)
     pub fn run(&mut self, host: &mut dyn Host, fuel: u64) -> Status {
         if !self.busy() {
-            return Status::Error(usage(String::from("Es läuft kein Aufruf – erst call()")));
+            return Status::Error(usage(String::from(t!("Es läuft kein Aufruf – erst call()"))));
         }
         self.used = 0;
         self.running = true;
@@ -781,7 +782,7 @@ impl Vm {
         if self.frames.len() == 1 && self.frames[0].closure.is_none() && self.frames[0].pc == 0 {
             // the top-level code: the stack check push_frame does for calls
             if 1 + self.code.protos[self.frames[0].proto as usize].max_stack as usize + 4 > self.lim.stack as usize {
-                let e = self.error_here(ErrorKind::Stack, format!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack));
+                let e = self.error_here(ErrorKind::Stack, tf!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack));
                 self.abort();
                 self.running = false;
                 return Status::Error(e);
@@ -1068,7 +1069,7 @@ impl Vm {
 
     /// append v to the list l
     pub fn list_push(&mut self, l: Value, v: Value) -> Result<(), Error> {
-        let Value::List(r) = l else { return Err(usage(String::from("list_push braucht eine Liste"))) };
+        let Value::List(r) = l else { return Err(usage(String::from(t!("list_push braucht eine Liste")))) };
         if !self.valid(l) || !self.valid(v) {
             return Err(invalid());
         }
@@ -1098,7 +1099,7 @@ impl Vm {
 
     /// replace the items of a list (sorting, filtering in place)
     pub fn list_replace(&mut self, l: Value, items: Vec<Value>) -> Result<(), Error> {
-        let Value::List(r) = l else { return Err(usage(String::from("list_replace braucht eine Liste"))) };
+        let Value::List(r) = l else { return Err(usage(String::from(t!("list_replace braucht eine Liste")))) };
         if !self.valid(l) || !items.iter().all(|v| self.valid(*v)) {
             return Err(invalid());
         }
@@ -1150,7 +1151,7 @@ impl Vm {
     /// the value as print() shows it (strings as they are, inside lists and maps quoted)
     pub fn display(&self, v: Value) -> String {
         if !self.valid(v) {
-            return String::from("<ungültig>");
+            return String::from(t!("<ungültig>"));
         }
         let mut s = String::new();
         self.write_value(&mut s, v, false, 0, &mut Vec::new(), None);
@@ -1166,7 +1167,7 @@ impl Vm {
     }
 
     /// v as JSON text like json.encode (indent 0: compact, else spaces per level); an Error
-    /// (kind Uncaught, the German message) for data JSON cannot hold
+    /// (kind Uncaught, the message) for data JSON cannot hold
     pub fn json_encode(&mut self, v: Value, indent: u32) -> Result<String, Error> {
         if !self.valid(v) {
             return Err(invalid());
@@ -1191,7 +1192,7 @@ impl Vm {
     /// display() with the host's text for its objects (Host::to_str), as print shows a value
     pub fn display_with(&self, v: Value, host: &dyn Host) -> String {
         if !self.valid(v) {
-            return String::from("<ungültig>");
+            return String::from(t!("<ungültig>"));
         }
         let mut s = String::new();
         self.write_value(&mut s, v, false, 0, &mut Vec::new(), Some(host));
@@ -1306,9 +1307,9 @@ impl Vm {
     /// handled (no error, its fuel so far); it goes on through Vm::wake.
     pub fn emit(&mut self, host: &mut dyn Host, obj: Value, event: &str, args: &[Value]) -> Result<Vec<Handled>, Error> {
         if self.busy() {
-            return Err(usage(String::from("Die VM ist noch beschäftigt – erst run() bis zum Ende")));
+            return Err(usage(String::from(t!("Die VM ist noch beschäftigt – erst run() bis zum Ende"))));
         }
-        let Value::Host(r) = obj else { return Err(usage(format!("emit braucht ein Objekt des Hosts, nicht {}", obj.type_name()))) };
+        let Value::Host(r) = obj else { return Err(usage(tf!("emit braucht ein Objekt des Hosts, nicht {}", obj.type_name()))) };
         if !self.valid(obj) || !args.iter().all(|a| self.valid(*a)) {
             return Err(invalid());
         }
@@ -1444,7 +1445,7 @@ impl Vm {
             self.escaped = None;
         }
         match r {
-            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(Exc::Fatal(ErrorKind::Host, format!("{} gab einen ungültigen Wert zurück", what))),
+            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(Exc::Fatal(ErrorKind::Host, tf!("{} gab einen ungültigen Wert zurück", what))),
             Ok(v) => Ok(v),
             Err(Fail::Unknown) => msg(unknown()),
             Err(Fail::Throw(v)) => Err(Exc::Throw(v)),
@@ -1475,14 +1476,14 @@ impl Vm {
                 let name = name(k)?;
                 let Value::Host(r) = self.stack[n - 1] else { return internal() };
                 let obj = self.object_of(r);
-                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || tf!("{} hat keine Eigenschaft {}", obj.ty, name))?;
                 self.stack[n - 1] = v;
             }
             Op::SetField(k) => {
                 let name = name(k)?;
                 let (Value::Host(r), v) = (self.stack[n - 2], self.stack[n - 1]) else { return internal() };
                 let obj = self.object_of(r);
-                self.hook(host, name, |h, cx| h.set(cx, obj, name, v).map(|()| Value::Nil), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                self.hook(host, name, |h, cx| h.set(cx, obj, name, v).map(|()| Value::Nil), || tf!("{} hat keine Eigenschaft {}", obj.ty, name))?;
                 self.stack.truncate(n - 2);
             }
             // (S3) {x, y} = a host object: its properties
@@ -1491,13 +1492,13 @@ impl Vm {
                 let base = self.frames.last().map_or(0, |f| f.base as usize);
                 let Value::Host(r) = self.stack[base + s as usize] else { return internal() };
                 let obj = self.object_of(r);
-                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || format!("{} hat keine Eigenschaft {}", obj.ty, name))?;
+                let v = self.hook(host, name, |h, cx| h.get(cx, obj, name), || tf!("{} hat keine Eigenschaft {}", obj.ty, name))?;
                 self.stack.push(v);
             }
             Op::Neg => {
                 let a = self.stack[n - 1];
                 let t = self.type_of(a);
-                let v = self.hook(host, "-", |h, cx| h.op(cx, Operator::Neg, a, Value::Nil), || format!("Das Minus passt nicht zu {}", t))?;
+                let v = self.hook(host, "-", |h, cx| h.op(cx, Operator::Neg, a, Value::Nil), || tf!("Das Minus passt nicht zu {}", t))?;
                 self.stack[n - 1] = v;
             }
             _ => {
@@ -1514,10 +1515,11 @@ impl Vm {
                     Op::Ge => Operator::Ge,
                     _ => return internal(),
                 };
-                let what = if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge) { "Der Vergleich" } else { "Der Operator" };
+                let cmp = matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge);
                 let (ta, tb) = (self.type_of(a), self.type_of(b));
-                let v = self.hook(host, o.text(), |h, cx| h.op(cx, o, a, b), || format!("{} {} passt nicht zu {} und {}", what, o.text(), ta, tb))?;
-                let v = if what == "Der Vergleich" { Value::Bool(v.truthy()) } else { v };
+                let what = || if cmp { t!("Der Vergleich") } else { t!("Der Operator") };
+                let v = self.hook(host, o.text(), |h, cx| h.op(cx, o, a, b), || tf!("{} {} passt nicht zu {} und {}", what(), o.text(), ta, tb))?;
+                let v = if cmp { Value::Bool(v.truthy()) } else { v };
                 self.stack.truncate(n - 2);
                 self.stack.push(v);
             }
@@ -1531,7 +1533,7 @@ impl Vm {
         let obj = self.object_of(r);
         match name {
             "on" | "off" => self.listen(host, obj, name == "on", args),
-            _ => self.hook(host, name, |h, cx| h.method(cx, obj, name, args), || format!("{} hat keine Methode {}", obj.ty, name)),
+            _ => self.hook(host, name, |h, cx| h.method(cx, obj, name, args), || tf!("{} hat keine Methode {}", obj.ty, name)),
         }
     }
 
@@ -1539,15 +1541,15 @@ impl Vm {
     fn listen(&mut self, host: &mut dyn Host, obj: Object, on: bool, args: &[Value]) -> Result<Value, Exc> {
         let w = if on { "on" } else { "off" };
         let (ev, f) = (args.first().copied().unwrap_or(Value::Nil), args.get(1).copied().unwrap_or(Value::Nil));
-        let Value::Str(er) = ev else { return msg(format!("{}.{}: das Ereignis muss str sein, nicht {}", obj.ty, w, self.type_of(ev))) };
+        let Value::Str(er) = ev else { return msg(tf!("{}.{}: das Ereignis muss str sein, nicht {}", obj.ty, w, self.type_of(ev))) };
         if let Value::Native(_) = f {
-            return msg(format!("{}.{}: hier muss eine Funktion des Skripts stehen, etwa fn(e) {{ .. }}", obj.ty, w));
+            return msg(tf!("{}.{}: hier muss eine Funktion des Skripts stehen, etwa fn(e) {{ .. }}", obj.ty, w));
         }
         if !(matches!(f, Value::Func(_)) || (!on && f == Value::Nil)) {
-            return msg(format!("{}.{}: hier muss eine Funktion stehen, nicht {}", obj.ty, w, self.type_of(f)));
+            return msg(tf!("{}.{}: hier muss eine Funktion stehen, nicht {}", obj.ty, w, self.type_of(f)));
         }
         let event = String::from(heap::text(&self.heap, er));
-        self.hook(host, w, |h, cx| h.listen(cx, obj, &event, on).map(|()| Value::Nil), || format!("{} hat kein Ereignis {}", obj.ty, event))?;
+        self.hook(host, w, |h, cx| h.listen(cx, obj, &event, on).map(|()| Value::Nil), || tf!("{} hat kein Ereignis {}", obj.ty, event))?;
         let Value::Host(r) = obj.value else { return internal() };
         if on {
             if self.listeners.iter().any(|l| l.obj == r && *l.event == *event && self.same(l.f, f)) {
@@ -1670,7 +1672,7 @@ impl Vm {
             self.gc();
         }
         if self.heap.bytes + n > self.lim.heap {
-            return Err(Exc::Fatal(ErrorKind::Heap, format!("Speichergrenze erreicht ({} Bytes)", self.lim.heap)));
+            return Err(Exc::Fatal(ErrorKind::Heap, tf!("Speichergrenze erreicht ({} Bytes)", self.lim.heap)));
         }
         Ok(())
     }
@@ -1800,7 +1802,7 @@ impl Vm {
             Exc::Fatal(kind, m) => Err((kind, m)),
             Exc::Throw(v) => Ok(v),
             Exc::Msg(m) => self.alloc_str(m.clone()).map_err(|_| (ErrorKind::Uncaught, m)),
-            Exc::Hook | Exc::Wait => Err((ErrorKind::Internal, String::from("Interner Fehler der Skript-VM"))),
+            Exc::Hook | Exc::Wait => Err((ErrorKind::Internal, String::from(t!("Interner Fehler der Skript-VM")))),
         }
     }
 
@@ -1844,10 +1846,10 @@ impl Vm {
     pub(crate) fn nested(&mut self, host: &mut dyn Host, f: Value, args: &[Value]) -> Result<Value, Fail> {
         if self.nest >= MAX_NEST {
             self.fatal_kind = Some(ErrorKind::Depth);
-            return Err(Fail::Fatal(format!("Zu tief verschachtelte Rückrufe (mehr als {})", MAX_NEST)));
+            return Err(Fail::Fatal(tf!("Zu tief verschachtelte Rückrufe (mehr als {})", MAX_NEST)));
         }
         if !self.valid(f) || !args.iter().all(|a| self.valid(*a)) {
-            return Err(Fail::Fatal(String::from("Ungültiger Wert für Cx::call")));
+            return Err(Fail::Fatal(String::from(t!("Ungültiger Wert für Cx::call"))));
         }
         let (fpos, entry) = (self.stack.len(), self.frames.len());
         self.stack.push(f);
@@ -1882,7 +1884,7 @@ impl Vm {
                 Ok(_) => self.exec(host, u64::MAX),
                 Err(e) => Err(e),
             },
-            v => msg(format!("{} ist keine Funktion", self.type_of(v))),
+            v => msg(tf!("{} ist keine Funktion", self.type_of(v))),
         };
         let mut yielded = false;
         loop {
@@ -1946,13 +1948,13 @@ impl Vm {
             }
         };
         if self.frames.len() as u32 >= self.lim.depth {
-            let m = format!("Zu viele Aufrufe ineinander (mehr als {}) – endet die Rekursion?", self.lim.depth);
+            let m = tf!("Zu viele Aufrufe ineinander (mehr als {}) – endet die Rekursion?", self.lim.depth);
             return Err(Exc::Fatal(ErrorKind::Depth, m));
         }
         let base = fpos + 1;
         let want = params as usize;
         if base + need as usize + 4 > self.lim.stack as usize {
-            return Err(Exc::Fatal(ErrorKind::Stack, format!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack)));
+            return Err(Exc::Fatal(ErrorKind::Stack, tf!("Der Stapel ist voll (mehr als {} Werte)", self.lim.stack)));
         }
         if argc < want {
             self.stack.resize(base + want, Value::Nil);
@@ -1969,7 +1971,7 @@ impl Vm {
         match self.stack[fpos] {
             Value::Func(r) => self.push_frame(code, r, fpos, argc),
             Value::Native(i) => self.call_native(host, i, fpos + 1, fpos),
-            v => msg(format!("{} ist keine Funktion", self.type_of(v))),
+            v => msg(tf!("{} ist keine Funktion", self.type_of(v))),
         }
     }
 
@@ -2016,14 +2018,14 @@ impl Vm {
         }
         match r {
             Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => {
-                Err(Exc::Fatal(ErrorKind::Host, format!("{} gab einen ungültigen Wert zurück", name)))
+                Err(Exc::Fatal(ErrorKind::Host, tf!("{} gab einen ungültigen Wert zurück", name)))
             }
             Ok(v) => Ok(v),
             Err(Fail::Unknown) => msg(match method {
-                Some(("map", m)) => format!("Die Map hat keine Funktion {}", m),
-                Some((t, m)) => format!("{} hat keine Methode {}", t, m),
-                None if stdlib::constant(name).is_some() => format!("{} ist keine Funktion", name),
-                None => format!("Unbekannte Funktion {}", name),
+                Some(("map", m)) => tf!("Die Map hat keine Funktion {}", m),
+                Some((t, m)) => tf!("{} hat keine Methode {}", t, m),
+                None if stdlib::constant(name).is_some() => tf!("{} ist keine Funktion", name),
+                None => tf!("Unbekannte Funktion {}", name),
             }),
             Err(Fail::Throw(v)) => Err(Exc::Throw(v)),
             Err(Fail::Fatal(m)) => Err(Exc::Fatal(self.fatal_kind.take().unwrap_or(ErrorKind::Host), m)),
@@ -2051,7 +2053,7 @@ impl Vm {
         let Const::Str(name) = &code.consts[k as usize] else { return internal() };
         if let Some(f) = self.map_get_str(obj, name) {
             if !matches!(f, Value::Func(_) | Value::Native(_)) {
-                return msg(format!("Das Feld {} ist keine Funktion, sondern {}", name, self.type_of(f)));
+                return msg(tf!("Das Feld {} ist keine Funktion, sondern {}", name, self.type_of(f)));
             }
             self.stack[opos] = f;
             return self.call_at(code, host, opos, argc);
@@ -2134,7 +2136,7 @@ impl Vm {
                 Value::Bytes(r) => self.heap.bytes_of(r).len() as i64,
                 Value::List(r) => self.heap.list(r).len() as i64,
                 Value::Map(r) => self.heap.map(r).live as i64,
-                v => return msg(format!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
+                v => return msg(tf!("len braucht str, bytes, list oder map, nicht {}", self.type_of(v))),
             })),
             Builtin::Type => match a {
                 Value::Host(r) => self.type_str(r),
@@ -2157,16 +2159,16 @@ impl Vm {
                 Value::Bool(b) => Ok(Value::Int(b as i64)),
                 Value::Float(f) => match num::to_i64(f) {
                     Some(i) => Ok(Value::Int(i)),
-                    None => msg(format!("int(…): {} passt nicht in int", self.display(a))),
+                    None => msg(tf!("int(…): {} passt nicht in int", self.display(a))),
                 },
                 Value::Str(r) => {
                     let s = heap::text(&self.heap, r);
                     match stdlib::parse_int(s, None) {
                         Some(i) => Ok(Value::Int(i)),
-                        None => msg(format!("int(…): \"{}\" ist keine ganze Zahl", s)),
+                        None => msg(tf!("int(…): \"{}\" ist keine ganze Zahl", s)),
                     }
                 }
-                v => msg(format!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
+                v => msg(tf!("int(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             Builtin::Float => match a {
                 Value::Float(_) => Ok(a),
@@ -2175,10 +2177,10 @@ impl Vm {
                     let s = heap::text(&self.heap, r);
                     match s.trim().parse::<f64>() {
                         Ok(f) => Ok(Value::Float(if num::is_nan(f) { num::NAN } else { f })),
-                        Err(_) => msg(format!("float(…): \"{}\" ist keine Zahl", s)),
+                        Err(_) => msg(tf!("float(…): \"{}\" ist keine Zahl", s)),
                     }
                 }
-                v => msg(format!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
+                v => msg(tf!("float(…) braucht eine Zahl oder einen Text, nicht {}", self.type_of(v))),
             },
             // call_native runs these with the host
             Builtin::Lib(_) | Builtin::Import => internal(),
@@ -2354,7 +2356,7 @@ impl Vm {
                     },
                     Op::AssignHost(h) => {
                         let n = &code.hosts[h as usize].name;
-                        msg(format!("{} ist nicht deklariert – lege die Variable mit let {} = … an", n, n))
+                        msg(tf!("{} ist nicht deklariert – lege die Variable mit let {} = … an", n, n))
                     }
                     Op::Closure(i) => self.closure(code, i, base, fr.closure),
                     Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Rem => self.arith(op),
@@ -2532,7 +2534,7 @@ impl Vm {
                         let at = base + b as usize;
                         match (self.stack[at], self.stack[at + 1]) {
                             (Value::Int(_), Value::Int(_)) => Ok(()),
-                            (Value::Int(_), v) | (v, _) => msg(format!("Ein Bereich a..b braucht ganze Zahlen, nicht {}", self.type_of(v))),
+                            (Value::Int(_), v) | (v, _) => msg(tf!("Ein Bereich a..b braucht ganze Zahlen, nicht {}", self.type_of(v))),
                         }
                     }
                     Op::RangeNext(b, t) => {
@@ -2595,7 +2597,7 @@ impl Vm {
             return Ok(());
         }
         if self.natives[h as usize].1.is_none() && !host.knows(name) {
-            return msg(format!("Unbekannter Name {}", name));
+            return msg(tf!("Unbekannter Name {}", name));
         }
         self.stack.push(Value::Native(h));
         Ok(())
@@ -2630,7 +2632,7 @@ impl Vm {
                 Op::Add => x.wrapping_add(y),
                 Op::Sub => x.wrapping_sub(y),
                 Op::Mul => x.wrapping_mul(y),
-                Op::Div | Op::Rem if y == 0 => return msg(String::from("Division durch 0")),
+                Op::Div | Op::Rem if y == 0 => return msg(String::from(t!("Division durch 0"))),
                 Op::Div => x.wrapping_div(y),
                 _ => x.wrapping_rem(y),
             }),
@@ -2774,21 +2776,21 @@ impl Vm {
         let k = heap::text(&self.heap, kr);
         match obj {
             Value::Host(_) => Exc::Hook,
-            _ if set => Exc::Msg(format!("Nur Maps haben Felder, nicht {} (Feld {})", obj.type_name(), k)),
-            _ => Exc::Msg(format!("{} hat kein Feld {}", obj.type_name(), k)),
+            _ if set => Exc::Msg(tf!("Nur Maps haben Felder, nicht {} (Feld {})", obj.type_name(), k)),
+            _ => Exc::Msg(tf!("{} hat kein Feld {}", obj.type_name(), k)),
         }
     }
 
     /// m[k] = v for a map m
     pub(crate) fn set_key(&mut self, m: Value, k: Value, v: Value) -> Result<(), Exc> {
-        let Value::Map(r) = m else { return msg(format!("{} ist keine Map", m.type_name())) };
+        let Value::Map(r) = m else { return msg(tf!("{} ist keine Map", m.type_name())) };
         if self.heap.key(k).is_none() {
             return key_error(self.type_of(k));
         }
         self.reserve(48)?;
         self.heap.map_set(r, k, v);
         if self.heap.bytes > self.lim.heap {
-            return Err(Exc::Fatal(ErrorKind::Heap, format!("Speichergrenze erreicht ({} Bytes)", self.lim.heap)));
+            return Err(Exc::Fatal(ErrorKind::Heap, tf!("Speichergrenze erreicht ({} Bytes)", self.lim.heap)));
         }
         Ok(())
     }
@@ -2801,7 +2803,7 @@ impl Vm {
                 let items = self.heap.list(l);
                 match usize::try_from(i).ok().and_then(|i| items.get(i)) {
                     Some(v) => *v,
-                    None => return msg(format!("Index {} liegt außerhalb der Liste (Länge {})", i, items.len())),
+                    None => return msg(tf!("Index {} liegt außerhalb der Liste (Länge {})", i, items.len())),
                 }
             }
             (Value::Map(m), k) => {
@@ -2820,20 +2822,20 @@ impl Vm {
                         t.push(c);
                         self.alloc_str(t)?
                     }
-                    None => return msg(format!("Index {} liegt außerhalb des Textes (Länge {})", i, chars)),
+                    None => return msg(tf!("Index {} liegt außerhalb des Textes (Länge {})", i, chars)),
                 }
             }
             (Value::Bytes(b), Value::Int(i)) => {
                 let bs = self.heap.bytes_of(b);
                 match usize::try_from(i).ok().and_then(|i| bs.get(i)) {
                     Some(x) => Value::Int(*x as i64),
-                    None => return msg(format!("Index {} liegt außerhalb der Bytes (Länge {})", i, bs.len())),
+                    None => return msg(tf!("Index {} liegt außerhalb der Bytes (Länge {})", i, bs.len())),
                 }
             }
             (Value::List(_) | Value::Str(_) | Value::Bytes(_), i) => {
-                return msg(format!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i)));
+                return msg(tf!("Ein Index von {} muss int sein, nicht {}", obj.type_name(), self.type_of(i)));
             }
-            _ => return msg(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
+            _ => return msg(tf!("{} lässt sich nicht indizieren", self.type_of(obj))),
         };
         self.stack.truncate(n - 2);
         self.stack.push(v);
@@ -2852,13 +2854,13 @@ impl Vm {
                             items[i] = v;
                         }
                     }
-                    _ => return msg(format!("Index {} liegt außerhalb der Liste (Länge {})", i, len)),
+                    _ => return msg(tf!("Index {} liegt außerhalb der Liste (Länge {})", i, len)),
                 }
             }
-            (Value::List(_), i) => return msg(format!("Ein Index von list muss int sein, nicht {}", self.type_of(i))),
+            (Value::List(_), i) => return msg(tf!("Ein Index von list muss int sein, nicht {}", self.type_of(i))),
             (Value::Map(_), k) => self.set_key(obj, k, v)?,
-            (Value::Str(_) | Value::Bytes(_), _) => return msg(format!("{} lässt sich nicht ändern", obj.type_name())),
-            _ => return msg(format!("{} lässt sich nicht indizieren", self.type_of(obj))),
+            (Value::Str(_) | Value::Bytes(_), _) => return msg(tf!("{} lässt sich nicht ändern", obj.type_name())),
+            _ => return msg(tf!("{} lässt sich nicht indizieren", self.type_of(obj))),
         }
         self.stack.truncate(n - 3);
         Ok(())
@@ -2875,7 +2877,7 @@ impl Vm {
                 let l = self.alloc(Obj::List(keys))?;
                 self.stack[at + 1] = Value::List(l);
             }
-            v => return msg(format!("for braucht list, map, str oder bytes, nicht {}", self.type_of(v))),
+            v => return msg(tf!("for braucht list, map, str oder bytes, nicht {}", self.type_of(v))),
         }
         if !matches!(self.stack[at], Value::Map(_)) {
             self.stack[at + 1] = Value::Int(0);
@@ -2955,7 +2957,7 @@ impl Vm {
                 self.stack.push(v);
                 Ok(())
             }
-            v => msg(format!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(v))),
+            v => msg(tf!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(v))),
         }
     }
 
@@ -2963,7 +2965,7 @@ impl Vm {
     #[inline(never)]
     fn rest(&mut self, at: usize, i: usize) -> Result<(), Exc> {
         let Value::List(l) = self.stack[at] else {
-            return msg(format!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(self.stack[at])));
+            return msg(tf!("Das Muster [..] braucht eine Liste, nicht {}", self.type_of(self.stack[at])));
         };
         let items: Vec<Value> = self.heap.list(l).get(i..).unwrap_or(&[]).to_vec();
         self.used += items.len() as u64 / 8;
@@ -2985,7 +2987,7 @@ impl Vm {
                 Ok(())
             }
             Value::Host(_) => Err(Exc::Hook),
-            v => msg(format!("Das Muster {{..}} braucht eine Map oder ein Objekt des Hosts, nicht {}", self.type_of(v))),
+            v => msg(tf!("Das Muster {{..}} braucht eine Map oder ein Objekt des Hosts, nicht {}", self.type_of(v))),
         }
     }
 
@@ -3062,8 +3064,8 @@ impl Vm {
             Value::Func(r) => {
                 let code = self.code.clone();
                 let p = &code.protos[self.heap.closure(r).proto as usize];
-                let who = if p.name == "fn" || p.name.is_empty() { String::from("Die Funktion") } else { p.name.clone() };
-                self.bind_script(&who, &p.pnames, fpos + 1, nc)
+                let who = if p.name == "fn" || p.name.is_empty() { None } else { Some(p.name.as_str()) };
+                self.bind_script(who, &p.pnames, fpos + 1, nc)
             }
             Value::Native(i) => {
                 let name = self.natives[i as usize].0.clone();
@@ -3075,22 +3077,25 @@ impl Vm {
     }
 
     /// a script function's arguments: the positional ones first (the extra ones are dropped, as
-    /// in any call), each named one in its parameter's place, nil in the gaps
-    fn bind_script(&mut self, who: &str, params: &[String], at: usize, nc: &NamedCall) -> Result<(), Exc> {
+    /// in any call), each named one in its parameter's place, nil in the gaps; who: the
+    /// function's name (None: an anonymous one)
+    fn bind_script(&mut self, who: Option<&str>, params: &[String], at: usize, nc: &NamedCall) -> Result<(), Exc> {
         let p = nc.positional as usize;
         let keep = p.min(params.len());
         let mut out: Vec<Value> = self.stack[at..at + keep].to_vec();
+        let who = || who.unwrap_or_else(|| t!("Die Funktion"));
         for (j, name) in nc.names.iter().enumerate() {
             let v = self.stack[at + p + j];
             let Some(i) = params.iter().position(|x| x == name) else {
-                let mut m = format!("{} hat keinen Parameter {}", who, name);
+                let who = who();
+                let mut m = tf!("{} hat keinen Parameter {}", who, name);
                 if let Some(c) = crate::check::suggest_member(name, params.iter().map(|s| s.as_str()).filter(|s| !s.is_empty())) {
-                    m.push_str(&format!(" – meinst du {}?", c));
+                    m = tf!("{} – meinst du {}?", m, c);
                 }
                 return msg(m);
             };
             if i < p {
-                return msg(format!("{}: der Parameter {} hat schon ein Argument", who, name));
+                return msg(tf!("{}: der Parameter {} hat schon ein Argument", who(), name));
             }
             if out.len() <= i {
                 out.resize(i + 1, Value::Nil);
@@ -3112,7 +3117,7 @@ impl Vm {
         let forms: Vec<&crate::api::Sig> = match (&lib, &api) {
             (Some(s), _) => alloc::vec![s],
             (None, Some(a)) => a.sigs(name),
-            (None, None) => return msg(format!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", name)),
+            (None, None) => return msg(tf!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", name)),
         };
         self.bind_forms(name, &forms, at, positional, nc)
     }
@@ -3145,7 +3150,7 @@ impl Vm {
                 let api = self.code.strict.as_ref().and_then(|s| s.api.clone());
                 let forms: Vec<&crate::api::Sig> = match (&api, api.as_ref().and_then(|a| a.get_type(o.ty))) {
                     (Some(_), Some(t)) => t.sigs(name),
-                    _ => return msg(format!("{}: benannte Argumente gehen an Methoden des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", shown)),
+                    _ => return msg(tf!("{}: benannte Argumente gehen an Methoden des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", shown)),
                 };
                 self.bind_forms(&shown, &forms, opos + 1, nc.positional as usize, nc)
             }
@@ -3154,7 +3159,7 @@ impl Vm {
                 match crate::lsdoc::sig(&shown) {
                     // (the object is the method's first argument)
                     Some(s) => self.bind_forms(&shown, &[&s], opos, nc.positional as usize + 1, nc),
-                    None => msg(format!("{}: benannte Argumente gehen nur an Funktionen, deren Parameter bekannt sind", shown)),
+                    None => msg(tf!("{}: benannte Argumente gehen nur an Funktionen, deren Parameter bekannt sind", shown)),
                 }
             }
         }
@@ -3174,7 +3179,7 @@ impl Vm {
         let b = match crate::api::bind_lenient(forms, &args) {
             Ok(b) => b,
             Err(Some(m)) => return msg(crate::api::named_message(shown, forms[0], &args, m)),
-            Err(None) => return msg(format!("{} nimmt keine benannten Argumente", shown)),
+            Err(None) => return msg(tf!("{} nimmt keine benannten Argumente", shown)),
         };
         let mut out: Vec<Value> = Vec::with_capacity(vals.len());
         if let Some(last) = b.params.iter().rposition(|v| !v.is_empty()) {
@@ -3504,7 +3509,7 @@ impl Cx<'_> {
             }
             Exc::Hook | Exc::Wait => {
                 self.vm.fatal_kind = Some(ErrorKind::Internal);
-                Fail::Fatal(String::from("Interner Fehler der Skript-VM"))
+                Fail::Fatal(String::from(t!("Interner Fehler der Skript-VM")))
             }
         }
     }
@@ -3629,20 +3634,20 @@ fn usage(msg: String) -> Error {
 }
 
 fn invalid() -> Error {
-    usage(String::from("Ungültiger Wert: von einer anderen VM, oder freigegeben, weil er nicht gepinnt war"))
+    usage(String::from(t!("Ungültiger Wert: von einer anderen VM, oder freigegeben, weil er nicht gepinnt war")))
 }
 
 pub(crate) fn plain(e: Exc) -> Error {
     match e {
         Exc::Msg(m) => Error { kind: ErrorKind::Uncaught, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
-        Exc::Throw(_) => usage(String::from("Ausnahme")),
+        Exc::Throw(_) => usage(String::from(t!("Ausnahme"))),
         Exc::Fatal(kind, m) => Error { kind, msg: m, file: String::new(), line: 0, col: 0, trace: Vec::new() },
-        Exc::Hook | Exc::Wait => Error { kind: ErrorKind::Internal, msg: String::from("Interner Fehler der Skript-VM"), file: String::new(), line: 0, col: 0, trace: Vec::new() },
+        Exc::Hook | Exc::Wait => Error { kind: ErrorKind::Internal, msg: String::from(t!("Interner Fehler der Skript-VM")), file: String::new(), line: 0, col: 0, trace: Vec::new() },
     }
 }
 
 fn key_error<T>(ty: &str) -> Result<T, Exc> {
-    msg(format!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", ty))
+    msg(tf!("Ein Map-Schlüssel muss str, int oder bool sein, nicht {}", ty))
 }
 
 fn to_float(v: Value) -> f64 {
@@ -3662,8 +3667,8 @@ fn op_error(op: Op, a: Value, b: Value) -> Exc {
     if matches!(a, Value::Host(_)) || matches!(b, Value::Host(_)) {
         return Exc::Hook;
     }
-    let what = if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge) { "Der Vergleich" } else { "Der Operator" };
-    Exc::Msg(format!("{} {} passt nicht zu {} und {}", what, op_text(op), a.type_name(), b.type_name()))
+    let what = if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge) { t!("Der Vergleich") } else { t!("Der Operator") };
+    Exc::Msg(tf!("{} {} passt nicht zu {} und {}", what, op_text(op), a.type_name(), b.type_name()))
 }
 
 /// -v of a value without a minus: (S2) Exc::Hook for a host object, else the error
@@ -3672,7 +3677,7 @@ fn op_error(op: Op, a: Value, b: Value) -> Exc {
 fn neg_error(v: Value) -> Exc {
     match v {
         Value::Host(_) => Exc::Hook,
-        v => Exc::Msg(format!("Das Minus passt nicht zu {}", v.type_name())),
+        v => Exc::Msg(tf!("Das Minus passt nicht zu {}", v.type_name())),
     }
 }
 

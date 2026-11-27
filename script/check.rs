@@ -224,7 +224,7 @@ impl<'a> Resolver<'a> {
 
     fn declare_top(&mut self, n: &'a Name, from: u32) {
         if let Some(&(_, _, line)) = self.top.iter().find(|d| d.0 == n.text) {
-            self.name_error(n, format!("{} ist schon deklariert (Zeile {})", n.text, line));
+            self.name_error(n, tf!("{} ist schon deklariert (Zeile {})", n.text, line));
         } else {
             self.top.push((n.text.as_str(), from, n.span.line));
         }
@@ -236,9 +236,9 @@ impl<'a> Resolver<'a> {
         if let Some(prev) = scope.iter().find(|p| p.text == n.text) {
             let line = prev.span.line;
             let msg = if param {
-                format!("Der Parameter {} kommt zweimal vor", n.text)
+                tf!("Der Parameter {} kommt zweimal vor", n.text)
             } else {
-                format!("{} ist in diesem Block schon deklariert (Zeile {})", n.text, line)
+                tf!("{} ist in diesem Block schon deklariert (Zeile {})", n.text, line)
             };
             self.name_error(n, msg);
         } else {
@@ -260,7 +260,7 @@ impl<'a> Resolver<'a> {
         }
         if let Some(&(_, from, line)) = self.top.iter().find(|d| d.0 == name) {
             if self.fns == 0 && sp.start < from && !assign {
-                let msg = format!("{} wird benutzt, bevor es mit let angelegt wird (Zeile {})", name, line);
+                let msg = tf!("{} wird benutzt, bevor es mit let angelegt wird (Zeile {})", name, line);
                 self.report(sp, name.chars().count(), false, msg);
             }
             return;
@@ -273,11 +273,11 @@ impl<'a> Resolver<'a> {
             self.report(sp, name.chars().count(), self.strict, msg);
             return;
         }
-        let mut msg = format!("Unbekannter Name {}", name);
+        let mut msg = tf!("Unbekannter Name {}", name);
         if let Some(s) = self.similar(name) {
-            msg.push_str(&format!(" – meinst du {}?", s));
+            msg = tf!("{} – meinst du {}?", msg, s);
         } else if assign {
-            msg.push_str(&format!(" – eine neue Variable wird mit let {} = … angelegt", name));
+            msg = tf!("{} – eine neue Variable wird mit let {} = … angelegt", msg, name);
         }
         self.report(sp, name.chars().count(), self.strict, msg);
     }
@@ -358,9 +358,9 @@ impl<'a> Resolver<'a> {
         if matches!(src, ForSrc::Range(..)) {
             if let Some(b) = b {
                 let at = b.name().map_or(Name { text: String::from(","), span: b.span }, |n| n.clone());
-                self.name_error(&at, String::from("Ein Bereich a..b hat nur eine Laufvariable"));
+                self.name_error(&at, String::from(t!("Ein Bereich a..b hat nur eine Laufvariable")));
             } else if a.name().is_none() {
-                self.report(a.span, 1, true, String::from("Ein Bereich a..b gibt ganze Zahlen: die lassen sich nicht zerlegen"));
+                self.report(a.span, 1, true, String::from(t!("Ein Bereich a..b gibt ganze Zahlen: die lassen sich nicht zerlegen")));
             }
         }
     }
@@ -411,12 +411,12 @@ impl<'a> Resolver<'a> {
             StmtKind::Break | StmtKind::Continue => {
                 if self.loops == 0 {
                     let (w, len) = if s.kind == StmtKind::Break { ("break", 5) } else { ("continue", 8) };
-                    self.report(s.span, len, true, format!("{} steht außerhalb einer Schleife", w));
+                    self.report(s.span, len, true, tf!("{} steht außerhalb einer Schleife", w));
                 }
             }
             StmtKind::Return(v) => {
                 if self.fns == 0 {
-                    self.report(s.span, 6, true, String::from("return steht außerhalb einer Funktion"));
+                    self.report(s.span, 6, true, String::from(t!("return steht außerhalb einer Funktion")));
                 }
                 if let Some(e) = v {
                     self.expr(e);
@@ -523,7 +523,7 @@ impl<'a> Resolver<'a> {
             if let ExprKind::Named(n, _) = &a.kind
                 && args[..i].iter().any(|b| matches!(&b.kind, ExprKind::Named(m, _) if m.text == n.text))
             {
-                self.name_error(n, format!("Das benannte Argument {} kommt zweimal vor", n.text));
+                self.name_error(n, tf!("Das benannte Argument {} kommt zweimal vor", n.text));
                 return;
             }
         }
@@ -552,14 +552,14 @@ impl<'a> Resolver<'a> {
             (Some(s), _) => alloc::vec![s],
             (None, Some(a)) => a.sigs(&full).into_iter().cloned().collect(),
             (None, None) => {
-                let msg = format!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", full);
+                let msg = tf!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", full);
                 self.name_error(&shown, msg);
                 return;
             }
         };
         if forms.is_empty() {
             if self.api.is_some_and(|a| a.global(&full).is_some()) {
-                let msg = format!("{} ist keine Funktion des Hosts, die benannte Argumente nimmt", full);
+                let msg = tf!("{} ist keine Funktion des Hosts, die benannte Argumente nimmt", full);
                 self.name_error(&shown, msg);
             }
             return;
@@ -582,13 +582,13 @@ impl<'a> Resolver<'a> {
             let ExprKind::Named(n, _) = &a.kind else { continue };
             let msg = match params.iter().position(|p| *p == Some(n.text.as_str())) {
                 None => {
-                    let mut m = format!("{} hat keinen Parameter {}", name, n.text);
+                    let mut m = tf!("{} hat keinen Parameter {}", name, n.text);
                     if let Some(c) = suggest_member(&n.text, params.iter().flatten().copied()) {
-                        m.push_str(&format!(" – meinst du {}?", c));
+                        m = tf!("{} – meinst du {}?", m, c);
                     }
                     m
                 }
-                Some(i) if i < pos => format!("{}: der Parameter {} hat schon ein Argument", name, n.text),
+                Some(i) if i < pos => tf!("{}: der Parameter {} hat schon ein Argument", name, n.text),
                 Some(_) => continue,
             };
             self.report(n.span, n.text.chars().count(), false, msg);

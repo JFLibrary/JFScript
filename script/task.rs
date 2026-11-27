@@ -148,7 +148,7 @@ impl Tasks {
 /// the message of await in a callback of a native
 fn in_callback() -> String {
     String::from(
-        "await kann in einem Rückruf, den eine Funktion aufruft (list.map, list.sort, eine Funktion des Hosts), nicht warten: der Wert steht noch aus – warte außerhalb, etwa in einer for-Schleife",
+        t!("await kann in einem Rückruf, den eine Funktion aufruft (list.map, list.sort, eine Funktion des Hosts), nicht warten: der Wert steht noch aus – warte außerhalb, etwa in einer for-Schleife"),
     )
 }
 
@@ -284,7 +284,7 @@ impl Vm {
                 self.units[u].state = UnitState::Failed;
             }
         }
-        self.reject_msg(id, "Der Aufruf wurde abgebrochen")
+        self.reject_msg(id, t!("Der Aufruf wurde abgebrochen"))
     }
 
     // ---- the VM's side
@@ -370,7 +370,7 @@ impl Vm {
     /// cancel(): the pending invocation's promise, if it waited before
     pub(crate) fn task_cancelled(&mut self) {
         if let Some((id, _)) = self.tasks.current.take() {
-            self.reject_msg(id, "Der Aufruf wurde abgebrochen");
+            self.reject_msg(id, t!("Der Aufruf wurde abgebrochen"));
         }
     }
 
