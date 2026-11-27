@@ -47,6 +47,22 @@ use crate::Diagnostic;
 /// known)
 pub(crate) type ArgTy = (Option<String>, String);
 
+/// (S3) the targets of an assignment's pattern ([a, m.k] = ..)
+fn targets<'a>(p: &'a Pattern, out: &mut Vec<&'a Expr>) {
+    match &p.kind {
+        PatKind::Target(e) => out.push(e),
+        PatKind::List(items, rest) => {
+            items.iter().for_each(|x| targets(x, out));
+            if let Some(r) = rest {
+                targets(r, out);
+            }
+        }
+        PatKind::Map(entries) => entries.iter().for_each(|(_, x)| targets(x, out)),
+        PatKind::Default(x, _) => targets(x, out),
+        PatKind::Name(_) => {}
+    }
+}
+
 /// what the code before a dot is: a value of a type, or a namespace of the host
 pub(crate) enum Known {
     Ty(String),
@@ -212,6 +228,15 @@ impl Types<'_> {
             StmtKind::AssignPat { pat, value } => {
                 self.expr_walk(value);
                 self.pattern_walk(pat);
+                // (a variable assigned through a pattern: its type is not known any more)
+                let mut leaves: Vec<&Expr> = Vec::new();
+                targets(pat, &mut leaves);
+                for t in leaves {
+                    if let ExprKind::Var(_) = &t.kind {
+                        let sym = self.idx.use_from(t.span.start).and_then(|u| u.sym);
+                        self.assigned(sym, "");
+                    }
+                }
             }
             StmtKind::Fn(f) => self.func(f),
             StmtKind::If { arms, els } => {

@@ -623,6 +623,8 @@ fn services(t: &mut T) {
     t.eq("type let map pattern", ls::hover(src, at(src, "x", 0, 0), acx).map(|h| h.sig), Some(String::from("let x: float")));
     t.eq("type comprehension", ls::hover(src, at(src, "ms", 0, 0), acx).map(|h| h.sig), Some(String::from("let ms: list<mesh>")));
     t.eq("type for pattern", ls::hover(src, at(src, "px", 0, 0), acx).map(|h| h.sig), Some(String::from("for px: float")));
+    let src = "let m2 = box(1)\n[m2] = [5]\nprint(m2)";
+    t.eq("type lost through a pattern assignment", ls::hover(src, at(src, "m2", 0, 0), acx).map(|h| h.sig), Some(String::from("let m2")));
     let src = "let ms = [box(i) for i in 0..3]\nms[0].";
     let c = ls::complete(src, src.len() as u32, acx);
     t.check("complete through a comprehension", c.items.iter().any(|i| i.label == "bevel"));
