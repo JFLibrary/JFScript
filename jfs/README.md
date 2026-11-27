@@ -52,6 +52,7 @@ a host of JFNetworker:
 | `rand()`, `rand(n)`, `rand(a, b)` | `[0, 1)`, `0 .. n-1`, `a .. b` |
 | `config` | the map of `JFS_CONFIG`, `--config`, `env` (the `--env` variables), `args`, `script` |
 | `timer.after(ms, f)`, `timer.every(ms, f)`, `timer.cancel(id)` | an event loop; due timers run in the order of their times, then of their creation; `every` runs at most every 10 µs (a shorter period is a warning) |
+| `timer.sleep(ms, value)` | (S3) a promise resolved with `value` (`nil` without it) when the clock reaches `now() + ms`: `let v = await timer.sleep(100, "x")` waits 100 ms while timers and callbacks run on |
 | `disk.get / put / delete / scan` | as in JFNetworker (JSON values, callbacks `fn(err, ..)` after the current code) |
 | `net`, `dns`, `http`, `metrics` | JFNetworker's: a catchable error ("… gibt es nur in JFNetworker") |
 | `import(path)` | a module: another `.jfs` file's top-level names as a map, its path relative to the importing file |
@@ -78,6 +79,24 @@ the exit code; with `--test` it is part of what a failing test printed:
 
 ```text
 app.jfs:4:18: Warnung: timer.every: 0 ms ist kürzer als 10 µs, der Zeitgeber läuft alle 10 µs
+```
+
+## await
+
+(S3) `await timer.sleep(ms)` waits in the middle of any code: the top level, a function, a timer's
+callback. While one invocation waits, the event loop goes on (timers, disk callbacks, other
+invocations that wait); once its promise is resolved it goes on first, before the next timer, in
+the order the promises were resolved. An invocation is still one over its wait: `--fuel` holds for
+all of it. A callback that `list.map` or `list.sort` runs cannot wait (an error at the `await`;
+`--check` warns), see [docs/LANGUAGE.md](../docs/LANGUAGE.md#waiting-await).
+
+```js
+fn fetch(name, ms) {
+  let v = await timer.sleep(ms, "${name} nach ${ms} ms")   // the program goes on meanwhile
+  return v.upper()
+}
+timer.after(5, fn() { print("timer at", now()) })         // timer at 5.0
+print(fetch("a", 10), now())                               // A NACH 10 MS 10.0
 ```
 
 ## Modules
@@ -173,8 +192,10 @@ cover hello world, arguments and config, timers on the virtual and the real cloc
 line, column and calls, `--check`, `-e`, stdin, the limits, JFNetworker's names, the disk file
 across two runs, `log` and `rand` with a seed, modules (`modules.test`: relative paths, once
 per run, privacy, errors in modules, cycles, compile errors), `--test` (`unittest.test`:
-passing and failing tests, timers, no tests) and `--debug` (`debug.test`: breakpoints in the
-script and in a module, the calls, locals, expressions, the step commands, quit, an error).
+passing and failing tests, timers, no tests), `--debug` (`debug.test`: breakpoints in the
+script and in a module, the calls, locals, expressions, the step commands, quit, an error) and
+await (`await.test`: `timer.sleep`, callbacks and timers while code waits, errors after a wait
+and in a callback of `list.map`, `--check`, a test that waits, `next` across an await).
 
 ## Files
 

@@ -9,7 +9,9 @@ compiles and behaves as before.
 
 What the script sees is in [LANGUAGE.md](LANGUAGE.md#host-objects). The checks of all of it are
 the group `scripthost` of `scripttest` ([`scripthostt.rs`](../scripttest/src/scripthostt.rs)), a
-host like modeltool's and JFDiagrammer's in about 400 lines.
+host like modeltool's and JFDiagrammer's in about 400 lines. (S3) Long operations with promises
+and `await` are [below](#long-operations-promises-and-await), their checks the group
+`scriptawait` ([`scriptawaitt.rs`](../scripttest/src/scriptawaitt.rs)).
 
 ## Objects
 
@@ -171,6 +173,94 @@ fn click(&mut self, vm: &mut Vm, shape: u64) {
 * JFNetworker's page scripts keep their handlers themselves (`pagescript.rs`); moving them to
   these listeners is possible and optional (G8.5).
 
+## Long operations: promises and await
+
+(S3, G4.6 of [RICHTUNG.md](RICHTUNG.md)) A file dialog, a download, a query to a server: the
+native starts the work and gives the script a promise; the script writes `await` and waits for the
+value, while the app runs other invocations. Callbacks (`fetch(url, fn(err, resp) { .. })`) keep
+working as before; a host offers either, or both. What the script sees is in
+[LANGUAGE.md](LANGUAGE.md#waiting-await); the VM's side in [`task.rs`](../script/task.rs).
+
+```rust
+use script::{Status, Value};
+
+// the native: start the work, give the script the promise, keep its id
+fn call(&mut self, cx: &mut Cx, name: &str, args: &[Value]) -> Result<Value, Fail> {
+    match name {
+        "ui.open_file" => {
+            let p = cx.promise()?;                           // Promise { id, value }
+            self.dialogs.open_file(p.id, filter(cx, args)); // the app's own, asynchronous
+            Ok(p.value)                                      // `await ui.open_file(..)` waits
+        }
+        _ => Err(Fail::Unknown),
+    }
+}
+
+// the macro: an invocation like any other
+vm.call("macro", &[])?;
+match run_budget(&mut vm, &mut host) {                       // run() in slices, as before
+    Status::Done(v) if vm.is_waiting(v) => self.macros.push(v),  // it waits: v is its promise
+    Status::Done(v) => { /* finished with v */ }
+    Status::Error(e) => self.console(&e.to_string()),
+    _ => {}
+}
+
+// later, between runs: the dialog closed
+match chosen {
+    Some(path) => { let s = vm.new_str(&path)?; vm.resolve(id, s); }
+    None => { vm.resolve(id, Value::Nil); }               // or vm.reject_msg(id, "abgebrochen")
+}
+
+// each frame, while the VM is idle: the invocations whose value came go on
+while let Some(p) = vm.wake() {                              // p: the promise Done gave
+    match run_budget(&mut vm, &mut host) {
+        Status::Done(v) if vm.is_waiting(v) => {}            // it waits again (v == p)
+        Status::Done(v) => self.macro_done(p, v),
+        Status::Error(e) => self.console(&e.to_string()),
+        _ => {}
+    }
+}
+```
+
+* `cx.promise()` (inside a native) or `vm.new_promise()` (between runs) make a promise: its `id`
+  and its `value` for the script (`type(p)` is `"promise"`; `vm.object(p)` gives the id too).
+  It stays alive until it is settled -- the host holds it by its id, as with a pin -- whether
+  the script keeps it or not.
+* `vm.resolve(id, v)`, `vm.reject(id, reason)` and `vm.reject_msg(id, "Text")` settle it, between
+  runs or inside a native (`cx.resolve` / `cx.reject`); `false` when no promise of that id waits
+  (settled already, unknown) or the value is not valid. A rejection throws the reason at the
+  script's `await`, catchable, with the await's line and column. `vm.promise_state(v)` tells
+  `Waiting`, `Resolved(v)` or `Rejected(v)`.
+* An invocation that awaits a promise that is not settled waits: its stack and frames leave the
+  VM, `run()` returns `Status::Done(p)` with `p` the invocation's own promise (the same one at
+  each of its later waits; `vm.is_waiting(p)` tells it from a promise the script returned), and
+  the VM is idle -- `call`, `call_value`, `emit` and `add_script` work. No new `Status`: a host
+  that makes no promises never sees any of this, and its code compiles and runs as before.
+* `vm.wake()` makes the oldest invocation whose promise settled the pending one again and gives
+  its promise; `run()` continues it after its `await`. When it ends, its promise settles: resolved
+  with its result, rejected with the message of its error -- so a host may also hand `p` to
+  another invocation that awaits it. Order: in the order the promises were settled, the
+  invocations of one promise in the order they began to wait; nothing runs unless the host calls
+  `wake()`. `vm.waiting()` counts the waiting invocations, `vm.ready()` those that can go on;
+  `vm.cancel_waiting(p)` drops one (its promise is rejected), `vm.cancel()` drops the pending one
+  as before.
+* Listeners: `vm.emit` runs them as before; one that waits counts as handled (`Handled { fuel,
+  error: None }`) and goes on through `wake()`. Inside a native (`cx.call`, `cx.emit`) a callback
+  runs to its end and cannot wait: `await` of a promise that is not settled throws there.
+* Fuel and limits per invocation (G5.5): a waiting invocation is still the same invocation, its
+  fuel counts on over the wait (`vm.call_fuel()`); the frame budget is the host's, as before, per
+  `run()`. Splitting into slices of any size gives the same result, waits included.
+* The collector keeps what a waiting invocation holds (its stack, its closures, its promise) and
+  every promise that is not settled. `Vm: Clone` copies waiting invocations and promises with
+  their ids; the host settles them in each copy it lets go on. Drops of host objects come when an
+  invocation begins to wait, as when one ends.
+* The debugger: a step goes with its invocation over the wait, breakpoints stop in a woken one
+  as in any other, `frames()` and `locals()` show it.
+* The description: a function that returns a promise is written `promise<T>` (or `promise`):
+  `.func("ui.open_file(filter: str): promise<str>", "..")`; `let path = await ui.open_file(..)`
+  then has the type `str` in the language services. `promise` is a name of the language, not of
+  a host's type.
+
 ## Descriptions
 
 A host describes its object model as data (`script::Api`, [`api.rs`](../script/api.rs)). The
@@ -206,7 +296,8 @@ let prog = script::compile_with("model.jfs", src, &api.names())?;   // its names
 ```
 
 * Types are text: `int float str bool bytes list map fn nil any`, a described type, `list<T>`
-  (a list of T: `for x in` and `l[i]` give T). Anything else is shown as written.
+  (a list of T: `for x in` and `l[i]` give T), (S3) `promise` and `promise<T>` (`await` gives a
+  T). Anything else is shown as written.
 * Parameters: `name: T`, `name: T = default`, `...rest: T`; a parameter without a type is any;
   a function without `: R` returns nothing known.
 * Operators: `A op B: R` for `+ - * / % < <= > >=`, `-A: R` for the minus; listed under the type
