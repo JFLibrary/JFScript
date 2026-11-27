@@ -43,7 +43,7 @@ use core::fmt::{Display, Write};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 /// the table (see the module comment)
-pub(crate) const TABLE: &str = include_str!("locales/messages.tsv");
+const TABLE: &str = include_str!("locales/messages.tsv");
 
 /// the text in the current language: a literal German text is the key
 macro_rules! t {

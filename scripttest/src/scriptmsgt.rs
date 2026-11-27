@@ -404,9 +404,6 @@ fn table(t: &mut T) {
     let mut keys: BTreeMap<String, (&'static str, &'static str, u32)> = BTreeMap::new();
     let mut loose = 0;
     for &(file, src) in SOURCES {
-        if file == "msg.rs" {
-            continue;
-        }
         for l in literals(file, src) {
             match l.mac {
                 Some(m) => {

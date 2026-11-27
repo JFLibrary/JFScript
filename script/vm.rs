@@ -522,6 +522,21 @@ pub(crate) fn msg<T>(s: String) -> Result<T, Exc> {
     Err(Exc::Msg(s))
 }
 
+/// (G9) the message a hook makes when the host does not know the name, out of line: the text is
+/// made (and translated) only on that path, the hook's own code stays small
+#[cold]
+#[inline(never)]
+fn cold_msg<T>(text: impl FnOnce() -> String) -> Result<T, Exc> {
+    Err(Exc::Msg(text()))
+}
+
+/// a host function or hook that returned a value that is not valid
+#[cold]
+#[inline(never)]
+fn invalid_return(what: &str) -> Exc {
+    Exc::Fatal(ErrorKind::Host, tf!("{} gab einen ungültigen Wert zurück", what))
+}
+
 pub(crate) fn internal<T>() -> Result<T, Exc> {
     Err(Exc::Fatal(ErrorKind::Internal, String::from(t!("Interner Fehler der Skript-VM"))))
 }
@@ -1445,9 +1460,9 @@ impl Vm {
             self.escaped = None;
         }
         match r {
-            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(Exc::Fatal(ErrorKind::Host, tf!("{} gab einen ungültigen Wert zurück", what))),
+            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(invalid_return(what)),
             Ok(v) => Ok(v),
-            Err(Fail::Unknown) => msg(unknown()),
+            Err(Fail::Unknown) => cold_msg(unknown),
             Err(Fail::Throw(v)) => Err(Exc::Throw(v)),
             Err(Fail::Fatal(m)) => Err(Exc::Fatal(self.fatal_kind.take().unwrap_or(ErrorKind::Host), m)),
         }
@@ -2017,9 +2032,7 @@ impl Vm {
             self.escaped = None;
         }
         match r {
-            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => {
-                Err(Exc::Fatal(ErrorKind::Host, tf!("{} gab einen ungültigen Wert zurück", name)))
-            }
+            Ok(v) | Err(Fail::Throw(v)) if !self.valid(v) => Err(invalid_return(name)),
             Ok(v) => Ok(v),
             Err(Fail::Unknown) => msg(match method {
                 Some(("map", m)) => tf!("Die Map hat keine Funktion {}", m),
