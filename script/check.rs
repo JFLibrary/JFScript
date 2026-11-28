@@ -548,9 +548,9 @@ impl<'a> Resolver<'a> {
             },
             _ => return,
         };
-        let forms: Vec<api::Sig> = match (crate::lsdoc::sig(&full), self.api) {
-            (Some(s), _) => alloc::vec![s],
-            (None, Some(a)) => a.sigs(&full).into_iter().cloned().collect(),
+        let (forms, host): (Vec<api::Sig>, bool) = match (crate::lsdoc::sig(&full), self.api) {
+            (Some(s), _) => (alloc::vec![s], false),
+            (None, Some(a)) => (a.sigs(&full).into_iter().cloned().collect(), true),
             (None, None) => {
                 let msg = tf!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", full);
                 self.name_error(&shown, msg);
@@ -566,8 +566,8 @@ impl<'a> Resolver<'a> {
         }
         let a: Vec<Arg> = args.iter().map(arg_of).collect();
         let refs: Vec<&api::Sig> = forms.iter().collect();
-        if let Err(Some(m)) = api::bind_lenient(&refs, &a) {
-            let msg = api::named_message(&full, refs[0], &a, m);
+        if let Err(Some((sig, m))) = api::bind_lenient(&refs, &a, host) {
+            let msg = api::named_message(&full, sig, &a, m);
             let at = mismatch_at(args, m).unwrap_or(shown);
             self.name_error(&at, msg);
         }

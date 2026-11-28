@@ -1003,8 +1003,8 @@ impl Diags<'_, '_> {
                     // (S3) named arguments: one of the forms must take them
                     let a: Vec<Arg> = args.iter().map(crate::check::arg_of).collect();
                     let forms = t.sigs(n);
-                    if let Err(Some(m)) = api::bind_lenient(&forms, &a) {
-                        let msg = api::named_message(&format!("{}.{}", t.name, n), forms[0], &a, m);
+                    if let Err(Some((sig, m))) = api::bind_lenient(&forms, &a, true) {
+                        let msg = api::named_message(&format!("{}.{}", t.name, n), sig, &a, m);
                         let at = match m {
                             api::Mismatch::NoParam { arg } | api::Mismatch::Twice { arg, .. } => match &args[arg].kind {
                                 ExprKind::Named(x, _) => x.clone(),

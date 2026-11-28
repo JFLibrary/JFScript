@@ -3127,12 +3127,12 @@ impl Vm {
     fn bind_native(&mut self, name: &str, at: usize, positional: usize, nc: &NamedCall) -> Result<(), Exc> {
         let api = self.code.strict.as_ref().and_then(|s| s.api.clone());
         let lib = crate::lsdoc::sig(name);
-        let forms: Vec<&crate::api::Sig> = match (&lib, &api) {
-            (Some(s), _) => alloc::vec![s],
-            (None, Some(a)) => a.sigs(name),
+        let (forms, host): (Vec<&crate::api::Sig>, bool) = match (&lib, &api) {
+            (Some(s), _) => (alloc::vec![s], false),
+            (None, Some(a)) => (a.sigs(name), true),
             (None, None) => return msg(tf!("{}: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", name)),
         };
-        self.bind_forms(name, &forms, at, positional, nc)
+        self.bind_forms(name, &forms, host, at, positional, nc)
     }
 
     /// the arguments of obj.name(..) with obj at stack[opos]: a map's function as a call of it,
@@ -3158,20 +3158,20 @@ impl Vm {
                 let shown = format!("{}.{}", o.ty, name);
                 if name == "on" || name == "off" {
                     let s = crate::api::Sig { params: crate::api::parse_params("event, f"), ret: String::new() };
-                    return self.bind_forms(&shown, &[&s], opos + 1, nc.positional as usize, nc);
+                    return self.bind_forms(&shown, &[&s], false, opos + 1, nc.positional as usize, nc);
                 }
                 let api = self.code.strict.as_ref().and_then(|s| s.api.clone());
                 let forms: Vec<&crate::api::Sig> = match (&api, api.as_ref().and_then(|a| a.get_type(o.ty))) {
                     (Some(_), Some(t)) => t.sigs(name),
                     _ => return msg(tf!("{}: benannte Argumente gehen an Methoden des Hosts nur mit seiner Beschreibung (script::Api, compile_api)", shown)),
                 };
-                self.bind_forms(&shown, &forms, opos + 1, nc.positional as usize, nc)
+                self.bind_forms(&shown, &forms, true, opos + 1, nc.positional as usize, nc)
             }
             _ => {
                 let shown = format!("{}.{}", obj.type_name(), name);
                 match crate::lsdoc::sig(&shown) {
                     // (the object is the method's first argument)
-                    Some(s) => self.bind_forms(&shown, &[&s], opos, nc.positional as usize + 1, nc),
+                    Some(s) => self.bind_forms(&shown, &[&s], false, opos, nc.positional as usize + 1, nc),
                     None => msg(tf!("{}: benannte Argumente gehen nur an Funktionen, deren Parameter bekannt sind", shown)),
                 }
             }
@@ -3179,8 +3179,9 @@ impl Vm {
     }
 
     /// place the arguments from stack[at] on by the first form that takes them
-    /// (api::bind_lenient: the types as type(x) gives them)
-    fn bind_forms(&mut self, shown: &str, forms: &[&crate::api::Sig], at: usize, positional: usize, nc: &NamedCall) -> Result<(), Exc> {
+    /// (api::bind_lenient: the types as type(x) gives them; host: the forms are the host's
+    /// description, a parameter that may not be left out is not)
+    fn bind_forms(&mut self, shown: &str, forms: &[&crate::api::Sig], host: bool, at: usize, positional: usize, nc: &NamedCall) -> Result<(), Exc> {
         let vals: Vec<Value> = self.stack[at..].to_vec();
         let tys: Vec<&'static str> = vals.iter().map(|v| self.type_of(*v)).collect();
         let args: Vec<crate::api::Arg> = (0..vals.len())
@@ -3189,9 +3190,9 @@ impl Vm {
                 None => crate::api::Arg::pos(tys[i]),
             })
             .collect();
-        let b = match crate::api::bind_lenient(forms, &args) {
+        let b = match crate::api::bind_lenient(forms, &args, host) {
             Ok(b) => b,
-            Err(Some(m)) => return msg(crate::api::named_message(shown, forms[0], &args, m)),
+            Err(Some((sig, m))) => return msg(crate::api::named_message(shown, sig, &args, m)),
             Err(None) => return msg(tf!("{} nimmt keine benannten Argumente", shown)),
         };
         let mut out: Vec<Value> = Vec::with_capacity(vals.len());

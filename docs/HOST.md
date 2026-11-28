@@ -399,8 +399,11 @@ existing host needs no change:
   takes the forms of the function (`api.sigs("box")`) or of the method of the object's type
   (`api.get_type("mesh").sigs("bevel")`), binds the arguments with `api::bind_lenient` -- the
   first form that fits (`bind`, the types as `type(x)` gives them), else the first that takes
-  them by position and name alone (`Sig::bind_names`: a parameter left out and the types are the
-  host's matter, as for a call by position) -- and calls the host with the values in that form's
+  them by position and name alone (`Sig::bind_names`: the types are the host's matter, as for a
+  call by position) and leaves out no parameter that may not be left out (one without `?` or a
+  default: with the forms `scale(sx, sy, sz)` and `scale(s)`, `m.scale(sx: 2)` is the error
+  "mesh.scale: der Parameter sy fehlt", for it would arrive as `scale(2)`, the other form's
+  call) -- and calls the host with the values in that form's
   parameter order: `nil` for a parameter left out before the last one given, nothing after it, a
   rest parameter's values in their place. With `box(w: float, h: float = 1, d?: float)`,
   `box(1, d: 3)` arrives as `box(1, nil, 3)`, `box(w: 2)` as `box(2)`, `box(d: 1, w: 2)` as

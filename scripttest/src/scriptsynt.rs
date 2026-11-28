@@ -380,7 +380,7 @@ impl Host for Geo {
         let shown: Vec<String> = args.iter().map(|v| cx.display(*v)).collect();
         self.log.push(format!("{}.{}({})", obj.ty, name, shown.join(", ")));
         match (obj.ty, name) {
-            ("mesh", "bevel") => cx.new_object("mesh", 100 + self.log.len() as u64),
+            ("mesh", "bevel" | "scale") => cx.new_object("mesh", 100 + self.log.len() as u64),
             _ => Err(Fail::Unknown),
         }
     }
@@ -404,7 +404,13 @@ fn geo_api() -> Api {
         .func("pts(): list<vec>", "Punkte.")
         .namespace("geom", "Formen.")
         .func("geom.cyl(r: float, h: float): mesh", "Ein Zylinder.")
-        .typ(Type::new("mesh", "Ein Netz.").prop("readonly faces: int", "Flächen.").method("bevel(width: float, segments: int = 1): mesh", "Abgeschrägt."))
+        .typ(
+            Type::new("mesh", "Ein Netz.")
+                .prop("readonly faces: int", "Flächen.")
+                .method("bevel(width: float, segments: int = 1): mesh", "Abgeschrägt.")
+                .method("scale(sx: float, sy: float, sz: float): mesh", "Je Achse skaliert.")
+                .method("scale(s: float): mesh", "In allen Achsen skaliert."),
+        )
         .typ(Type::new("vec", "Ein Vektor.").value().prop("readonly x: float", "x").prop("readonly y: float", "y"))
 }
 
@@ -432,7 +438,9 @@ fn named_host(t: &mut T) {
     // the host gets the values by position in the form's order, nil in the gaps
     t.eq("host by name", geo_run("box(1, d: 3)\nbox(w: 2)\nbox(d: 1, w: 2)\nbox(1, 2, 3)").0, s(&["box(1, nil, 3)", "box(2)", "box(2, nil, 1)", "box(1, 2, 3)"]));
     t.eq("host namespace", geo_run("geom.cyl(h: 2, r: 1)").0, s(&["geom.cyl(1, 2)"]));
-    t.eq("host forms", geo_run("vec(v: [1, 2])\nvec(y: 2, x: 1)\nvec(1, z: 3)").0, s(&["vec([1, 2])", "vec(1, 2)", "vec(1, nil, 3)"]));
+    t.eq("host forms", geo_run("vec(v: [1, 2])\nvec(y: 2, x: 1)\nvec(1, 2, z: 3)").0, s(&["vec([1, 2])", "vec(1, 2)", "vec(1, 2, 3)"]));
+    // a gap is nil only where the parameter may be left out: y of vec(x, y, z?) may not
+    eqs(t, "host gap required", geo_run("vec(1, z: 3)").1, "ERR 1:1: Fehler: vec: der Parameter y fehlt");
     t.eq("host rest", geo_run("note(1, 2)").0, s(&["note(1, 2)"]));
     t.eq("host method", geo_run("let m = box(1)\nm.bevel(width: 0.1)\nm.bevel(segments: 3, width: 0.2)").0, s(&["box(1)", "mesh.bevel(0.1)", "mesh.bevel(0.2, 3)"]));
     t.eq("host value of a name", geo_run("let b = box\nb(d: 5, w: 1)").0, s(&["box(1, nil, 5)"]));
@@ -449,6 +457,13 @@ fn named_host(t: &mut T) {
     t.eq("host method warning", w, Ok(s(&["2:9: Warnung: mesh.bevel hat keinen Parameter widht – meinst du width?"])));
     // at run time: a method's name that no form takes
     eqs(t, "host method run", geo_run("let m = [box(1)][0]\nm.bevel(widht: 1)").1, "2:3: mesh.bevel hat keinen Parameter widht – meinst du width?");
+    // a host's form leaves out no parameter that may not be left out: scale(sx: 2) of
+    // scale(sx, sy, sz) would reach the host as scale(2), the other form's call
+    t.eq("host forms by name", geo_run("let m = box(1)\nm.scale(s: 2)\nm.scale(sz: 3, sx: 1, sy: 2)").0, s(&["box(1)", "mesh.scale(2)", "mesh.scale(1, 2, 3)"]));
+    eqs(t, "host required left out", geo_run("geom.cyl(r: 1)").1, "ERR 1:6: Fehler: geom.cyl: der Parameter h fehlt");
+    let w = script::compile_api("g.jfs", "let m = box(1)\nm.scale(sx: 2)", &api).map(|c| c.warnings.iter().map(|d| d.to_string()).collect::<Vec<_>>());
+    t.eq("host method required warning", w, Ok(s(&["2:3: Warnung: mesh.scale: der Parameter sy fehlt"])));
+    eqs(t, "host method required run", geo_run("let m = [box(1)][0]\nm.scale(sx: 2)").1, "2:3: mesh.scale: der Parameter sy fehlt");
     // without a description: an error at compile time where the call shows it, else at run time
     let plain = script::compile_with("p.jfs", "box(w: 1)", &["box"]);
     t.eq("no description", plain.err().map(|d| d[0].to_string()), Some(String::from("1:1: Fehler: box: benannte Argumente gehen an Funktionen des Hosts nur mit seiner Beschreibung (script::Api, compile_api)")));

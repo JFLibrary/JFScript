@@ -63,10 +63,12 @@
 // and a host binds when it wants to (to pick an overload: Binding::arg("width")).  (S3) A call
 // with named arguments (`box(1, d: 3)`) is bound by the VM: bind_lenient takes the first form
 // that fits (bind), else the first that takes the arguments by position and name alone
-// (Sig::bind_names: rules 1 and 2), and Host::call gets the values by position in that form's
-// order, nil for a parameter left out before the last one given, a rest parameter's in their
-// place (box(w: 2) is box(2), box(1, d: 3) is box(1, nil, 3)); named_message says why none
-// fits.  The compiler checks the same where it sees the callee (check.rs).
+// (Sig::bind_names: rules 1 and 2) and leaves out no parameter that may not be left out (rule
+// 3 holds for a host's forms: scale(sx: 2) of scale(sx, sy, sz) is an error, not scale(2)),
+// and Host::call gets the values by position in that form's order, nil for a parameter left
+// out before the last one given, a rest parameter's in their place (box(w: 2) is box(2) for
+// box(w, h = 1, d?), box(1, d: 3) is box(1, nil, 3)); named_message says why none fits.  The
+// compiler checks the same where it sees the callee (check.rs).
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -826,17 +828,29 @@ impl Sig {
 /// (S3) the form a call with named arguments goes to (the VM's binding, and the check of the
 /// compiler): the first form that fits it (bind), else the first whose parameters take its
 /// arguments by position and name (Sig::bind_names: a parameter left out is nil, the types are
-/// the host's to check); Err: the first form's mismatch of bind_names (None: no forms)
-pub fn bind_lenient<'s>(forms: &[&'s Sig], args: &[Arg]) -> Result<Binding<'s>, Option<Mismatch>> {
+/// the host's to check).  host: the forms are a host's description, which marks what may be
+/// left out (`?`, a default): there a form that leaves out a parameter that may not be left out
+/// is no fallback (Missing), for the host could not tell such a call from a shorter form's
+/// (scale(sx: 2) is not scale(2) of scale(s)); the library's parameters (lsdoc.rs) mark nothing,
+/// so there it is.  Err: the first such form's mismatch and that form (None: no forms)
+pub fn bind_lenient<'s>(forms: &[&'s Sig], args: &[Arg], host: bool) -> Result<Binding<'s>, Option<(&'s Sig, Mismatch)>> {
     if let Ok(b) = bind(forms, args) {
         return Ok(b);
     }
     let mut first = None;
     for (k, s) in forms.iter().enumerate() {
         match s.bind_names(args) {
-            Ok(params) => return Ok(Binding { form: k, sig: s, params }),
+            Ok(params) => {
+                let ps = &s.params;
+                match (0..ps.len()).find(|&j| host && !ps[j].optional && !ps[j].rest && params[j].is_empty()) {
+                    Some(param) => {
+                        first.get_or_insert((*s, Mismatch::Missing { param }));
+                    }
+                    None => return Ok(Binding { form: k, sig: s, params }),
+                }
+            }
             Err(m) => {
-                first.get_or_insert(m);
+                first.get_or_insert((*s, m));
             }
         }
     }
@@ -844,7 +858,7 @@ pub fn bind_lenient<'s>(forms: &[&'s Sig], args: &[Arg]) -> Result<Binding<'s>, 
 }
 
 /// (S3) the message for a call with named arguments that fits no form (bind_lenient's
-/// mismatch of the first form): "geom.box hat keinen Parameter widht – meinst du width?",
+/// mismatch and its form): "geom.box hat keinen Parameter widht – meinst du width?",
 /// "geom.box: der Parameter w hat schon ein Argument", "geom.box: 4 Argumente vor den
 /// benannten, nimmt aber höchstens 3"; shown: how it names the function
 pub fn named_message(shown: &str, sig: &Sig, args: &[Arg], m: Mismatch) -> String {
